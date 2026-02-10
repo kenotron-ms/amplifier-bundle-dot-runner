@@ -95,6 +95,7 @@ class PipelineOrchestrator:
             context=pipeline_context,
             handler_registry=registry,
             logs_root=logs_root,
+            hooks=hooks,
         )
         outcome = await engine.run(goal=prompt or None)
 
