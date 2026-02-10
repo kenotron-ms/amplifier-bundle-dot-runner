@@ -1,0 +1,306 @@
+"""Tests for fidelity wiring into the AmplifierBackend (Tasks 1.4, 1.7).
+
+Verifies that resolve_fidelity(), build_preamble(), and the session pool
+are actually called from backend.py's run() method.
+
+Spec coverage: FID-001-010, Section 4.5, Section 5.4.
+"""
+
+import pytest
+
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class MockCoordinator:
+    """Mock coordinator that tracks spawn calls."""
+
+    def __init__(self, spawn_result: dict | None = None):
+        self._spawn_result = spawn_result or {
+            "output": "done",
+            "session_id": "child-1",
+        }
+        self.spawn_called = False
+        self.spawn_call_count = 0
+        self.last_spawn_kwargs: dict = {}
+
+    def get_capability(self, name: str):
+        if name == "session.spawn":
+            return self._spawn_fn
+        return None
+
+    async def _spawn_fn(self, **kwargs):
+        self.spawn_called = True
+        self.spawn_call_count += 1
+        self.last_spawn_kwargs = kwargs
+        return self._spawn_result
+
+
+def _make_node(**kwargs) -> Node:
+    defaults: dict = {"id": "implement", "prompt": "Build it"}
+    defaults.update(kwargs)
+    return Node(**defaults)
+
+
+def _make_context(goal: str = "Build feature X") -> PipelineContext:
+    ctx = PipelineContext()
+    ctx.set("graph.goal", goal)
+    return ctx
+
+
+def _make_graph_with_fidelity(
+    node_fidelity: str | None = None,
+    edge_fidelity: str | None = None,
+    graph_default: str | None = None,
+) -> tuple[Node, Edge | None, Graph]:
+    """Build a minimal graph with configurable fidelity settings."""
+    node_attrs: dict = {"llm_provider": "anthropic"}
+    if node_fidelity:
+        node_attrs["fidelity"] = node_fidelity
+    node = Node(id="impl", prompt="Do the work", attrs=node_attrs)
+
+    edge_attrs: dict = {}
+    if edge_fidelity:
+        edge_attrs["fidelity"] = edge_fidelity
+    edge = Edge(from_node="start", to_node="impl", attrs=edge_attrs)
+
+    graph_attrs: dict = {}
+    if graph_default:
+        graph_attrs["default_fidelity"] = graph_default
+
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "impl": node,
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="impl"),
+            Edge(from_node="impl", to_node="exit"),
+        ],
+        graph_attrs=graph_attrs,
+    )
+    return node, edge, graph
+
+
+# ---------------------------------------------------------------------------
+# Task 1.4: Fidelity preamble is prepended to prompt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_prepends_compact_preamble():
+    """Backend builds a preamble from compact fidelity and prepends to prompt."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    node = _make_node(attrs={"llm_provider": "anthropic", "fidelity": "compact"})
+    _, edge, graph = _make_graph_with_fidelity(node_fidelity="compact")
+    context = _make_context("Build feature X")
+
+    await backend.run(
+        node,
+        "Implement the plan",
+        context,
+        incoming_edge=edge,
+        graph=graph,
+    )
+
+    # Verify spawn was called with a prompt that includes the preamble
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    assert "Goal:" in instruction  # compact preamble starts with Goal:
+    assert "Implement the plan" in instruction
+
+
+@pytest.mark.asyncio
+async def test_backend_truncate_preamble_is_minimal():
+    """Truncate fidelity produces a minimal preamble with just goal and run ID."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    node = _make_node(attrs={"llm_provider": "anthropic", "fidelity": "truncate"})
+    _, edge, graph = _make_graph_with_fidelity(node_fidelity="truncate")
+    context = _make_context("Build feature X")
+
+    await backend.run(node, "Do the work", context, incoming_edge=edge, graph=graph)
+
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    assert "Goal:" in instruction
+    assert "Do the work" in instruction
+
+
+@pytest.mark.asyncio
+async def test_backend_no_preamble_for_full_fidelity():
+    """Full fidelity mode does not prepend a preamble (session is reused)."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    node = _make_node(attrs={"llm_provider": "anthropic", "fidelity": "full"})
+    _, edge, graph = _make_graph_with_fidelity(node_fidelity="full")
+    context = _make_context()
+
+    await backend.run(node, "Do the work", context, incoming_edge=edge, graph=graph)
+
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    # For full fidelity, the instruction should be the raw prompt without preamble
+    assert instruction == "Do the work"
+
+
+@pytest.mark.asyncio
+async def test_backend_default_fidelity_is_compact():
+    """Without explicit fidelity, default is compact (prepends preamble)."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    node = _make_node(attrs={"llm_provider": "anthropic"})  # No fidelity attr
+    _, edge, graph = _make_graph_with_fidelity()  # No graph default either
+    context = _make_context("Build feature X")
+
+    await backend.run(node, "Do it", context, incoming_edge=edge, graph=graph)
+
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    assert "Goal:" in instruction  # compact is the default
+
+
+# ---------------------------------------------------------------------------
+# Task 1.7: Session pool for full fidelity thread reuse
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_reuses_session_for_full_fidelity():
+    """Full fidelity with same thread_id reuses the session_id from pool."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "sess-abc"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    # First call: creates new session
+    node1 = _make_node(
+        id="step1",
+        attrs={
+            "llm_provider": "anthropic",
+            "fidelity": "full",
+            "thread_id": "main-thread",
+        },
+    )
+    _, edge, graph = _make_graph_with_fidelity(node_fidelity="full")
+    context = _make_context()
+
+    await backend.run(node1, "First task", context, incoming_edge=edge, graph=graph)
+
+    # Second call: same thread_id should reuse session
+    node2 = _make_node(
+        id="step2",
+        attrs={
+            "llm_provider": "anthropic",
+            "fidelity": "full",
+            "thread_id": "main-thread",
+        },
+    )
+    await backend.run(node2, "Second task", context, incoming_edge=edge, graph=graph)
+    second_call_kwargs = coordinator.last_spawn_kwargs
+
+    # The second call should include session_id for resumption
+    assert "session_id" in second_call_kwargs
+    assert second_call_kwargs["session_id"] == "sess-abc"
+
+
+@pytest.mark.asyncio
+async def test_backend_separate_sessions_for_different_threads():
+    """Different thread_ids get separate sessions, not reused."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "sess-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    _, edge, graph = _make_graph_with_fidelity(node_fidelity="full")
+    context = _make_context()
+
+    node1 = _make_node(
+        id="a",
+        attrs={
+            "llm_provider": "anthropic",
+            "fidelity": "full",
+            "thread_id": "thread-A",
+        },
+    )
+    await backend.run(node1, "Task A", context, incoming_edge=edge, graph=graph)
+
+    # Second call with different thread
+    coordinator._spawn_result = {"output": "done", "session_id": "sess-2"}
+    node2 = _make_node(
+        id="b",
+        attrs={
+            "llm_provider": "anthropic",
+            "fidelity": "full",
+            "thread_id": "thread-B",
+        },
+    )
+    await backend.run(node2, "Task B", context, incoming_edge=edge, graph=graph)
+
+    # Should NOT have session_id since thread-B is new
+    assert "session_id" not in coordinator.last_spawn_kwargs
+
+
+@pytest.mark.asyncio
+async def test_backend_records_completed_node_outcomes():
+    """Backend tracks completed node outcomes for preamble building."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    _, edge, graph = _make_graph_with_fidelity(node_fidelity="compact")
+    context = _make_context("Build it")
+
+    node1 = _make_node(
+        id="plan", attrs={"llm_provider": "anthropic", "fidelity": "compact"}
+    )
+    await backend.run(node1, "Plan the work", context, incoming_edge=edge, graph=graph)
+
+    # After first run, the backend should have recorded the outcome
+    node2 = _make_node(
+        id="impl", attrs={"llm_provider": "anthropic", "fidelity": "compact"}
+    )
+    await backend.run(node2, "Implement", context, incoming_edge=edge, graph=graph)
+
+    # Second call's preamble should mention the completed stage
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    assert "plan" in instruction.lower()  # completed stage appears in preamble
