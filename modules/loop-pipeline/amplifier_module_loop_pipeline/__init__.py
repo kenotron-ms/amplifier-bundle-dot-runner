@@ -75,7 +75,7 @@ class DirectProviderBackend:
         )
 
         messages: list[Message] = [Message(role="user", content=prompt)]
-        reasoning_effort = node.attrs.get("reasoning_effort", "high")
+        reasoning_effort = node.attrs.get("reasoning_effort")
         tool_specs = _build_tool_specs(self._tools)
 
         for _round in range(_MAX_TOOL_LOOP_ROUNDS):

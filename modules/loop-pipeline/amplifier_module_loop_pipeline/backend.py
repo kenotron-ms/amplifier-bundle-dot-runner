@@ -110,7 +110,7 @@ class AmplifierBackend:
         # 2. Resolve provider and profile from node attributes
         provider = node.attrs.get("llm_provider", "anthropic")
         model = node.attrs.get("llm_model")
-        reasoning_effort = node.attrs.get("reasoning_effort", "high")
+        reasoning_effort = node.attrs.get("reasoning_effort")
         profile_name = self._profiles.get(
             provider, next(iter(self._profiles.values()), "")
         )
@@ -184,7 +184,7 @@ class AmplifierBackend:
         instruction: str,
         provider: str,
         model: str | None,
-        reasoning_effort: str,
+        reasoning_effort: str | None,
         profile_name: str,
         fidelity: str,
         incoming_edge: Edge | None,
@@ -257,7 +257,7 @@ class AmplifierBackend:
         self,
         node: Node,
         instruction: str,
-        reasoning_effort: str,
+        reasoning_effort: str | None,
     ) -> Outcome:
         """Execute a mini agentic loop directly (no child session).
 
@@ -450,7 +450,7 @@ def _build_assistant_message(response: Any) -> Any:
                 tool_calls_list.append(
                     {
                         "id": tc_id,
-                        "tool": tc_name,
+                        "name": tc_name,
                         "arguments": tc_args if isinstance(tc_args, dict) else {},
                     }
                 )
@@ -466,7 +466,7 @@ def _build_assistant_message(response: Any) -> Any:
                 tool_calls_list.append(
                     {
                         "id": tc_id,
-                        "tool": getattr(tc, "name", ""),
+                        "name": getattr(tc, "name", ""),
                         "arguments": getattr(tc, "arguments", {}),
                     }
                 )
