@@ -10,12 +10,15 @@ Node attributes:
     max_parallel   – Maximum concurrent branches (default 4).
     join_policy    – wait_all | first_success | k_of_n | quorum (default wait_all).
     error_policy   – fail_fast | continue | ignore (default continue).
+    min_success    – Required successes for k_of_n (default 1).
+    quorum_fraction – Required fraction for quorum (default 0.5).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any, Callable, Coroutine
 
 from ..context import PipelineContext
@@ -73,6 +76,7 @@ class ParallelHandler:
 
         max_parallel = int(node.attrs.get("max_parallel", 4))
         join_policy = str(node.attrs.get("join_policy", "wait_all"))
+        error_policy = str(node.attrs.get("error_policy", "continue"))
         semaphore = asyncio.Semaphore(max_parallel)
 
         async def run_branch(target_node_id: str) -> dict[str, Any]:
@@ -104,26 +108,100 @@ class ParallelHandler:
                     "context_updates": outcome.context_updates,
                 }
 
-        # Launch all branches concurrently
-        tasks = [run_branch(edge.to_node) for edge in branches]
-        results: list[dict[str, Any]] = await asyncio.gather(*tasks)
+        # Dispatch based on error policy
+        if error_policy == "fail_fast":
+            results = await _run_fail_fast(branches, run_branch, semaphore)
+        else:
+            # Default (continue) and ignore both run all branches
+            tasks = [run_branch(edge.to_node) for edge in branches]
+            results = list(await asyncio.gather(*tasks))
+
+        # Apply ignore error policy: filter out failures before storing
+        if error_policy == "ignore":
+            results = [
+                r for r in results if r["status"] in ("success", "partial_success")
+            ]
 
         # Store results in parent context for fan-in
         context.set("parallel.results", results)
         context.set("parallel.count", len(results))
 
         # Evaluate join policy
-        return _apply_join_policy(results, join_policy)
+        return _apply_join_policy(results, join_policy, node_attrs=node.attrs)
 
 
-def _apply_join_policy(results: list[dict[str, Any]], policy: str) -> Outcome:
+async def _run_fail_fast(
+    branches: list,
+    run_branch: Callable,
+    semaphore: asyncio.Semaphore,
+) -> list[dict[str, Any]]:
+    """Execute branches with fail_fast: cancel remaining on first failure.
+
+    Uses asyncio tasks with a shared cancellation event. When any branch
+    completes with a failure status, remaining branches are cancelled.
+    """
+    results: list[dict[str, Any]] = []
+    failure_event = asyncio.Event()
+
+    async def guarded_branch(edge) -> dict[str, Any] | None:
+        """Run a branch but bail early if failure_event is set."""
+        if failure_event.is_set():
+            return None
+        result = await run_branch(edge.to_node)
+        if result["status"] == "fail":
+            failure_event.set()
+        return result
+
+    tasks = [asyncio.create_task(guarded_branch(edge)) for edge in branches]
+
+    # Wait with FIRST_EXCEPTION so we can cancel promptly
+    done: set[asyncio.Task] = set()
+    pending: set[asyncio.Task] = set(tasks)
+
+    while pending:
+        newly_done, pending = await asyncio.wait(
+            pending, return_when=asyncio.FIRST_COMPLETED
+        )
+        done.update(newly_done)
+
+        # Check if any completed task indicates failure
+        for task in newly_done:
+            result = task.result()
+            if result is not None:
+                results.append(result)
+                if result["status"] == "fail":
+                    # Cancel remaining pending tasks
+                    for p in pending:
+                        p.cancel()
+                    # Collect any already-done results from pending
+                    if pending:
+                        cancelled_done, _ = await asyncio.wait(pending)
+                        for ct in cancelled_done:
+                            try:
+                                cr = ct.result()
+                                if cr is not None:
+                                    results.append(cr)
+                            except asyncio.CancelledError:
+                                pass
+                    return results
+
+    return results
+
+
+def _apply_join_policy(
+    results: list[dict[str, Any]],
+    policy: str,
+    node_attrs: dict[str, Any] | None = None,
+) -> Outcome:
     """Evaluate a join policy against branch results.
 
-    Currently implements wait_all. Other policies can be added
-    incrementally.
+    Supports: wait_all, first_success, k_of_n, quorum.
+    Unknown policies fall back to wait_all behaviour.
     """
     if not results:
         return Outcome(status=StageStatus.SUCCESS, notes="No branches")
+
+    attrs = node_attrs or {}
 
     success_count = sum(
         1 for r in results if r["status"] in ("success", "partial_success")
@@ -131,6 +209,7 @@ def _apply_join_policy(results: list[dict[str, Any]], policy: str) -> Outcome:
     fail_count = sum(1 for r in results if r["status"] == "fail")
     total = len(results)
 
+    # -- wait_all --------------------------------------------------------
     if policy == "wait_all":
         if fail_count == 0:
             return Outcome(
@@ -142,6 +221,7 @@ def _apply_join_policy(results: list[dict[str, Any]], policy: str) -> Outcome:
             notes=f"{success_count}/{total} branches succeeded, {fail_count} failed",
         )
 
+    # -- first_success ---------------------------------------------------
     if policy == "first_success":
         if success_count > 0:
             return Outcome(
@@ -153,7 +233,43 @@ def _apply_join_policy(results: list[dict[str, Any]], policy: str) -> Outcome:
             failure_reason=f"No branches succeeded out of {total}",
         )
 
-    # Default: treat as wait_all
+    # -- k_of_n ----------------------------------------------------------
+    if policy == "k_of_n":
+        k = int(attrs.get("min_success", 1))
+        if success_count >= k:
+            return Outcome(
+                status=StageStatus.SUCCESS,
+                notes=f"{success_count}/{total} branches succeeded (needed {k})",
+            )
+        return Outcome(
+            status=StageStatus.FAIL,
+            failure_reason=(
+                f"Only {success_count}/{k} required branches succeeded "
+                f"(out of {total} total)"
+            ),
+        )
+
+    # -- quorum ----------------------------------------------------------
+    if policy == "quorum":
+        fraction = float(attrs.get("quorum_fraction", 0.5))
+        needed = math.ceil(total * fraction)
+        if success_count >= needed:
+            return Outcome(
+                status=StageStatus.SUCCESS,
+                notes=(
+                    f"{success_count}/{total} branches succeeded "
+                    f"(needed {needed}, fraction={fraction})"
+                ),
+            )
+        return Outcome(
+            status=StageStatus.FAIL,
+            failure_reason=(
+                f"Only {success_count}/{needed} required branches succeeded "
+                f"(fraction={fraction}, total={total})"
+            ),
+        )
+
+    # -- Unknown policy: fall back to wait_all ---------------------------
     if fail_count == 0:
         return Outcome(
             status=StageStatus.SUCCESS,
