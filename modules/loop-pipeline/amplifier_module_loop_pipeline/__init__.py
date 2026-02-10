@@ -22,9 +22,124 @@ from .context import PipelineContext
 from .dot_parser import parse_dot
 from .engine import PipelineEngine
 from .handlers import HandlerRegistry
+from .outcome import Outcome, StageStatus
 from .validation import validate_or_raise
 
 logger = logging.getLogger(__name__)
+
+
+class DirectProviderBackend:
+    """Backend that calls a provider directly for each codergen node.
+
+    This is the default backend when no session.spawn capability is
+    available.  It builds a single-turn ChatRequest from the node's
+    prompt and calls ``provider.complete()``, returning an Outcome.
+
+    This is intentionally simple — one LLM call per node, no tool
+    execution.  It proves the pipeline-to-real-API chain works and
+    can be replaced with a full spawn-based backend later.
+    """
+
+    def __init__(
+        self,
+        provider: Any,
+        tools: dict[str, Any] | None = None,
+        hooks: Any = None,
+        coordinator: Any = None,
+    ) -> None:
+        self._provider = provider
+        self._tools = tools or {}
+        self._hooks = hooks
+        self._coordinator = coordinator
+
+    async def run(
+        self,
+        node: Any,
+        prompt: str,
+        context: PipelineContext,
+        **kwargs: Any,
+    ) -> Outcome:
+        """Call the provider with a single-turn request for *node*.
+
+        Builds a ChatRequest from *prompt*, calls the provider, and
+        extracts text from the response content blocks.
+        """
+        from amplifier_core import ChatRequest, Message
+
+        messages = [Message(role="user", content=prompt)]
+
+        request = ChatRequest(
+            messages=messages,
+            reasoning_effort=node.attrs.get("reasoning_effort", "high"),
+        )
+
+        try:
+            response = await self._provider.complete(request)
+        except Exception as exc:
+            logger.warning("Provider call failed for node %s: %s", node.id, exc)
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=str(exc),
+            )
+
+        # Extract text from response content blocks
+        text = ""
+        content = getattr(response, "content", None)
+        if content:
+            for block in content:
+                if hasattr(block, "text"):
+                    text += block.text
+
+        return Outcome(
+            status=StageStatus.SUCCESS,
+            notes=f"Stage completed: {node.id}",
+            context_updates={
+                "last_stage": node.id,
+                "last_response": text[:200] if text else "",
+            },
+        )
+
+
+def _build_backend(
+    providers: dict[str, Any],
+    tools: dict[str, Any],
+    hooks: Any,
+    coordinator: Any | None,
+) -> Any | None:
+    """Auto-construct a backend from the available providers.
+
+    Resolution order:
+    1. If coordinator exposes ``session.spawn`` → use AmplifierBackend
+       (full "sessions all the way down").
+    2. Else if at least one provider is available → use
+       DirectProviderBackend (single-turn LLM call per node).
+    3. Otherwise → return None (codergen handler falls through to
+       simulation mode).
+    """
+    # Try the full spawn-based backend first
+    if coordinator is not None:
+        spawn_fn = None
+        if hasattr(coordinator, "get_capability"):
+            try:
+                spawn_fn = coordinator.get_capability("session.spawn")
+            except Exception:
+                pass
+        if spawn_fn is not None:
+            from .backend import AmplifierBackend
+
+            logger.info("Using AmplifierBackend (session.spawn available)")
+            return AmplifierBackend(coordinator, profiles={})
+
+    # Fall back to direct provider calls
+    if providers:
+        provider = next(iter(providers.values()))
+        logger.info("Using DirectProviderBackend (calling provider directly)")
+        return DirectProviderBackend(provider, tools, hooks, coordinator)
+
+    logger.warning(
+        "No providers available — codergen nodes will run in simulation mode"
+    )
+    return None
 
 
 async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
@@ -85,11 +200,16 @@ class PipelineOrchestrator:
         )
         os.makedirs(logs_root, exist_ok=True)
 
-        # 6. Register handlers
+        # 6. Resolve backend: explicit kwarg → auto-construct from providers
+        coordinator = kwargs.get("coordinator")
         backend = kwargs.get("backend")
+        if backend is None:
+            backend = _build_backend(providers, tools, hooks, coordinator)
+
+        # 7. Register handlers
         registry = HandlerRegistry(backend=backend)
 
-        # 7. Run the engine
+        # 8. Run the engine
         engine = PipelineEngine(
             graph=graph,
             context=pipeline_context,
@@ -99,7 +219,7 @@ class PipelineOrchestrator:
         )
         outcome = await engine.run(goal=prompt or None)
 
-        # 8. Return the final outcome as JSON
+        # 9. Return the final outcome as JSON
         result = {
             "status": outcome.status.value,
             "notes": outcome.notes,
