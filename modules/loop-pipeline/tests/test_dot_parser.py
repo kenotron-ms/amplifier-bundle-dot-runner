@@ -1,0 +1,375 @@
+"""Tests for the DOT parser.
+
+Covers spec Section 2 (DOT DSL Schema): grammar, value types,
+node/edge declarations, chained edges, defaults, subgraphs, comments,
+and graph-level attributes.
+"""
+
+import pytest
+
+from amplifier_module_loop_pipeline.dot_parser import parse_dot
+
+
+# --- Basic parsing ---
+
+
+def test_simple_graph():
+    """Parse a minimal digraph with nodes and edges."""
+    graph = parse_dot("""
+    digraph pipeline {
+        start [shape=Mdiamond]
+        plan [label="Plan the work"]
+        implement [label="Implement"]
+        done [shape=Msquare]
+        start -> plan -> implement -> done
+    }
+    """)
+    assert graph.name == "pipeline"
+    assert len(graph.nodes) == 4
+    assert len(graph.edges) == 3
+    assert graph.nodes["start"].shape == "Mdiamond"
+    assert graph.nodes["plan"].label == "Plan the work"
+    assert graph.nodes["done"].shape == "Msquare"
+
+
+def test_rejects_undirected_graph():
+    """Only digraph is allowed (DOT-001)."""
+    with pytest.raises(ValueError, match="digraph"):
+        parse_dot("graph { A -- B }")
+
+
+def test_rejects_strict_modifier():
+    """strict modifier is rejected (Section 2.3)."""
+    with pytest.raises(ValueError, match="strict"):
+        parse_dot("strict digraph { A -> B }")
+
+
+def test_rejects_undirected_edge():
+    """Undirected edges (--) are rejected (Section 2.3)."""
+    with pytest.raises(ValueError, match="--"):
+        parse_dot("digraph { A -- B }")
+
+
+# --- Chained edges ---
+
+
+def test_chained_edges_expanded():
+    """A -> B -> C expands to A->B and B->C (Section 2.9)."""
+    graph = parse_dot("digraph test { A -> B -> C }")
+    assert len(graph.edges) == 2
+    assert graph.edges[0].from_node == "A"
+    assert graph.edges[0].to_node == "B"
+    assert graph.edges[1].from_node == "B"
+    assert graph.edges[1].to_node == "C"
+
+
+def test_chained_edges_with_attributes():
+    """Chained edge attributes apply to all edges in the chain (Section 2.9)."""
+    graph = parse_dot('digraph test { A -> B -> C [label="next"] }')
+    assert len(graph.edges) == 2
+    assert graph.edges[0].label == "next"
+    assert graph.edges[1].label == "next"
+
+
+def test_four_node_chain():
+    """A -> B -> C -> D expands to 3 edges."""
+    graph = parse_dot("digraph test { A -> B -> C -> D }")
+    assert len(graph.edges) == 3
+
+
+# --- Node defaults ---
+
+
+def test_node_defaults():
+    """node [...] sets baseline attributes (Section 2.11)."""
+    graph = parse_dot("""
+    digraph test {
+        node [shape=box, max_retries=3]
+        A
+        B [shape=diamond]
+    }
+    """)
+    assert graph.nodes["A"].shape == "box"
+    assert graph.nodes["A"].attrs.get("max_retries") == 3
+    assert graph.nodes["B"].shape == "diamond"  # Override
+
+
+def test_edge_defaults():
+    """edge [...] sets baseline edge attributes (Section 2.11)."""
+    graph = parse_dot("""
+    digraph test {
+        edge [weight=5]
+        A -> B
+        C -> D [weight=10]
+    }
+    """)
+    assert graph.edges[0].weight == 5
+    assert graph.edges[1].weight == 10  # Override
+
+
+# --- Subgraph support ---
+
+
+def test_subgraph_support():
+    """Nodes inside subgraphs are added to the top-level graph."""
+    graph = parse_dot("""
+    digraph test {
+        subgraph cluster_impl {
+            label="Implementation"
+            code
+            test
+        }
+        code -> test
+    }
+    """)
+    assert "code" in graph.nodes
+    assert "test" in graph.nodes
+
+
+def test_subgraph_node_defaults():
+    """Subgraph node defaults apply to nodes within (Section 2.10)."""
+    graph = parse_dot("""
+    digraph test {
+        subgraph cluster_loop {
+            node [timeout="900s"]
+            Plan
+            Implement [timeout="1800s"]
+        }
+    }
+    """)
+    assert graph.nodes["Plan"].attrs.get("timeout") == 900000  # 900s -> ms
+    assert graph.nodes["Implement"].attrs.get("timeout") == 1800000  # override
+
+
+# --- Attribute value types (Section 2.4) ---
+
+
+def test_string_values():
+    """Quoted strings with escape sequences."""
+    graph = parse_dot(r"""
+    digraph test {
+        A [label="Hello \"world\"", prompt="line1\nline2"]
+    }
+    """)
+    assert graph.nodes["A"].label == 'Hello "world"'
+    assert graph.nodes["A"].prompt == "line1\nline2"
+
+
+def test_integer_values():
+    """Integer attributes."""
+    graph = parse_dot("""
+    digraph test {
+        A [max_retries=3, weight=-1]
+    }
+    """)
+    assert graph.nodes["A"].attrs.get("max_retries") == 3
+
+
+def test_boolean_values():
+    """Boolean true/false keywords."""
+    graph = parse_dot("""
+    digraph test {
+        A [goal_gate=true, auto_status=false]
+    }
+    """)
+    assert graph.nodes["A"].attrs.get("goal_gate") is True
+    assert graph.nodes["A"].attrs.get("auto_status") is False
+
+
+def test_duration_values():
+    """Duration values converted to milliseconds (Section 2.4)."""
+    graph = parse_dot("""
+    digraph test {
+        A [timeout="30s"]
+        B [timeout="15m"]
+        C [timeout="2h"]
+        D [timeout="250ms"]
+    }
+    """)
+    assert graph.nodes["A"].attrs.get("timeout") == 30_000
+    assert graph.nodes["B"].attrs.get("timeout") == 900_000
+    assert graph.nodes["C"].attrs.get("timeout") == 7_200_000
+    assert graph.nodes["D"].attrs.get("timeout") == 250
+
+
+# --- Comments (Section 2.3) ---
+
+
+def test_line_comments_stripped():
+    """// comments are removed before parsing."""
+    graph = parse_dot("""
+    digraph test {
+        // This is a comment
+        A -> B
+    }
+    """)
+    assert len(graph.nodes) == 2
+    assert len(graph.edges) == 1
+
+
+def test_block_comments_stripped():
+    """/* */ comments are removed before parsing."""
+    graph = parse_dot("""
+    digraph test {
+        A -> B /* inline comment */
+        /* multi
+           line
+           comment */
+        C -> D
+    }
+    """)
+    assert len(graph.edges) == 2
+
+
+# --- Graph-level attributes (Section 2.5) ---
+
+
+def test_graph_level_attributes_bare():
+    """Top-level key=value declarations."""
+    graph = parse_dot("""
+    digraph test {
+        goal="Build the feature"
+        default_max_retry=5
+        A [shape=Mdiamond]
+        B [shape=Msquare]
+        A -> B
+    }
+    """)
+    assert graph.goal == "Build the feature"
+    assert graph.default_max_retry == 5
+
+
+def test_graph_attr_block():
+    """graph [...] attribute block."""
+    graph = parse_dot("""
+    digraph test {
+        graph [goal="Run tests and report", label="Test Pipeline"]
+        A [shape=Mdiamond]
+        B [shape=Msquare]
+        A -> B
+    }
+    """)
+    assert graph.goal == "Run tests and report"
+    assert graph.graph_attrs.get("label") == "Test Pipeline"
+
+
+def test_rankdir_as_graph_attr():
+    """rankdir is a common graph attribute."""
+    graph = parse_dot("""
+    digraph test {
+        rankdir=LR
+        A -> B
+    }
+    """)
+    assert graph.graph_attrs.get("rankdir") == "LR"
+
+
+# --- Spec example graphs (Section 2.13) ---
+
+
+def test_spec_simple_linear_workflow():
+    """Example from spec Section 2.13: Simple linear workflow."""
+    graph = parse_dot("""
+    digraph Simple {
+        graph [goal="Run tests and report"]
+        rankdir=LR
+
+        start [shape=Mdiamond, label="Start"]
+        exit  [shape=Msquare, label="Exit"]
+
+        run_tests [label="Run Tests", prompt="Run the test suite and report results"]
+        report    [label="Report", prompt="Summarize the test results"]
+
+        start -> run_tests -> report -> exit
+    }
+    """)
+    assert graph.name == "Simple"
+    assert graph.goal == "Run tests and report"
+    assert len(graph.nodes) == 4
+    assert len(graph.edges) == 3
+    assert graph.nodes["start"].shape == "Mdiamond"
+    assert graph.nodes["exit"].shape == "Msquare"
+    assert graph.nodes["run_tests"].label == "Run Tests"
+    assert graph.nodes["run_tests"].prompt == "Run the test suite and report results"
+
+
+def test_spec_branching_workflow():
+    """Example from spec Section 2.13: Branching workflow with conditions."""
+    graph = parse_dot("""
+    digraph Branch {
+        graph [goal="Implement and validate a feature"]
+        rankdir=LR
+        node [shape=box, timeout="900s"]
+
+        start     [shape=Mdiamond, label="Start"]
+        exit      [shape=Msquare, label="Exit"]
+        plan      [label="Plan", prompt="Plan the implementation"]
+        implement [label="Implement", prompt="Implement the plan"]
+        validate  [label="Validate", prompt="Run tests"]
+        gate      [shape=diamond, label="Tests passing?"]
+
+        start -> plan -> implement -> validate -> gate
+        gate -> exit      [label="Yes", condition="outcome=success"]
+        gate -> implement [label="No", condition="outcome!=success"]
+    }
+    """)
+    assert graph.name == "Branch"
+    assert len(graph.nodes) == 6
+    # Chained: start -> plan -> implement -> validate -> gate = 4 edges
+    # Plus 2 from gate = 6 total
+    assert len(graph.edges) == 6
+    assert graph.nodes["gate"].shape == "diamond"
+    # Check condition edges
+    gate_edges = graph.outgoing_edges("gate")
+    assert len(gate_edges) == 2
+    yes_edge = [e for e in gate_edges if e.label == "Yes"][0]
+    assert yes_edge.condition == "outcome=success"
+    assert yes_edge.to_node == "exit"
+
+
+def test_implicit_node_from_edge():
+    """Nodes referenced only in edges should be auto-created."""
+    graph = parse_dot("""
+    digraph test {
+        A -> B -> C
+    }
+    """)
+    assert "A" in graph.nodes
+    assert "B" in graph.nodes
+    assert "C" in graph.nodes
+
+
+def test_semicolons_optional():
+    """Semicolons are accepted but not required (Section 2.3)."""
+    graph = parse_dot("""
+    digraph test {
+        A [shape=box];
+        B [shape=diamond];
+        A -> B;
+    }
+    """)
+    assert len(graph.nodes) == 2
+    assert len(graph.edges) == 1
+
+
+def test_edge_with_multiple_attributes():
+    """Edges can have multiple attributes."""
+    graph = parse_dot("""
+    digraph test {
+        A -> B [label="retry", condition="outcome=fail", weight=10]
+    }
+    """)
+    edge = graph.edges[0]
+    assert edge.label == "retry"
+    assert edge.condition == "outcome=fail"
+    assert edge.weight == 10
+
+
+def test_node_with_prompt_containing_dollar_goal():
+    """$goal in prompts is preserved (expansion happens in handler)."""
+    graph = parse_dot("""
+    digraph test {
+        A [prompt="Build the feature for $goal"]
+    }
+    """)
+    assert "$goal" in graph.nodes["A"].prompt

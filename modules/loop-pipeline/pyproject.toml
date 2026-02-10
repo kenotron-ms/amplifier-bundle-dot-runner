@@ -1,0 +1,41 @@
+[project]
+name = "amplifier-module-loop-pipeline"
+version = "0.1.0"
+description = "Attractor pipeline orchestrator - DOT graph-driven multi-stage AI workflows"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = []
+
+[project.entry-points."amplifier.modules"]
+loop-pipeline = "amplifier_module_loop_pipeline:mount"
+
+[build-system]
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "amplifier_module_loop_pipeline",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "strict"

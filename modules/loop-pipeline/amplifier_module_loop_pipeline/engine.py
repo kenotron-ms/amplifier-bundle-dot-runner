@@ -1,0 +1,492 @@
+"""Pipeline execution engine — the graph-walking core.
+
+Traverses a parsed DOT graph from the start node to an exit node,
+executing handlers for each node and selecting edges based on outcomes.
+This is the heart of the Attractor pipeline orchestrator.
+
+Spec coverage: EXEC-001–018, CHKP-004–006, EVT-001–008, DIR-001, STAT-001–004,
+               Sections 3.2, 5.6, 9.6.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+from .checkpoint import Checkpoint, load_checkpoint, save_checkpoint
+from .context import PipelineContext
+from .edge_selection import select_edge
+from .graph import Graph, Node
+from .handlers import HandlerRegistry
+from .outcome import Outcome, StageStatus
+from .pipeline_events import (
+    PIPELINE_CHECKPOINT,
+    PIPELINE_COMPLETE,
+    PIPELINE_EDGE_SELECTED,
+    PIPELINE_ERROR,
+    PIPELINE_GOAL_GATE_CHECK,
+    PIPELINE_NODE_COMPLETE,
+    PIPELINE_NODE_START,
+    PIPELINE_START,
+)
+from .retry import RetryPolicy, execute_with_retry
+from .transforms import apply_transforms
+
+logger = logging.getLogger(__name__)
+
+
+class PipelineEngine:
+    """Graph-walking execution engine.
+
+    Walks the graph from start to exit, executing node handlers and
+    selecting edges deterministically based on outcomes and context.
+
+    Saves a checkpoint after each node execution so the pipeline can
+    resume after crashes.
+    """
+
+    # Maximum number of goal-gate-driven retries before giving up.
+    # Prevents infinite loops when a gate's retry_target never satisfies.
+    _MAX_GOAL_GATE_RETRIES: int = 50
+
+    def __init__(
+        self,
+        graph: Graph,
+        context: PipelineContext,
+        handler_registry: HandlerRegistry,
+        logs_root: str,
+        hooks: Any | None = None,
+    ) -> None:
+        self.graph = graph
+        self.context = context
+        self.handler_registry = handler_registry
+        self.logs_root = logs_root
+        self.hooks = hooks
+        self.node_outcomes: dict[str, Outcome] = {}
+        self.completed_nodes: list[str] = []
+        self._checkpoint_path = os.path.join(logs_root, "checkpoint.json")
+
+    async def run(self, goal: str | None = None) -> Outcome:
+        """Execute the pipeline from start to exit.
+
+        If a checkpoint exists at ``{logs_root}/checkpoint.json``, the
+        engine resumes from it, skipping already-completed nodes and
+        restoring context state.
+
+        Args:
+            goal: Optional goal string to set in context. If not provided,
+                uses the graph-level goal attribute.
+
+        Returns:
+            The final Outcome of the pipeline run.
+        """
+        pipeline_start_time = time.monotonic()
+
+        # Initialize context with graph attributes
+        self._initialize_context(goal)
+
+        # Apply transforms (variable expansion, stylesheet) before execution
+        apply_transforms(self.graph, self.context)
+
+        # Create run directory structure (manifest, artifacts/)
+        self._write_manifest(goal)
+
+        # Emit pipeline:start
+        await self._emit(
+            PIPELINE_START,
+            {
+                "graph_name": self.graph.name,
+                "node_count": len(self.graph.nodes),
+                "edge_count": len(self.graph.edges),
+                "goal": self.graph.goal or goal or "",
+            },
+        )
+
+        # Check for existing checkpoint and restore state
+        resumed = self._try_resume_from_checkpoint()
+
+        # Find the start node
+        current_node = self._find_start_node()
+
+        # Bound goal-gate-driven retries to prevent infinite loops
+        goal_gate_retries = 0
+
+        while True:
+            # Step 1: Check for terminal node (exit)
+            if current_node.shape == "Msquare":
+                self._save_checkpoint(current_node.id)
+                await self._emit(
+                    PIPELINE_CHECKPOINT,
+                    {
+                        "node_id": current_node.id,
+                        "checkpoint_path": self._checkpoint_path,
+                    },
+                )
+                gate_result = await self._check_goal_gates()
+
+                # All gates satisfied — return final outcome
+                if gate_result.status != StageStatus.FAIL:
+                    await self._emit_complete(gate_result, pipeline_start_time)
+                    return gate_result
+
+                # Unsatisfied gate with retry target — jump there
+                if (
+                    gate_result.suggested_next_ids
+                    and goal_gate_retries < self._MAX_GOAL_GATE_RETRIES
+                ):
+                    retry_node_id = gate_result.suggested_next_ids[0]
+                    current_node = self.graph.nodes[retry_node_id]
+                    goal_gate_retries += 1
+                    logger.info(
+                        "Goal gate unsatisfied, retrying from '%s' (attempt %d)",
+                        retry_node_id,
+                        goal_gate_retries,
+                    )
+                    continue
+
+                # No retry target or retries exhausted — fail
+                await self._emit_complete(gate_result, pipeline_start_time)
+                return gate_result
+
+            # Step 1b: Skip already-completed nodes (resume path)
+            if resumed and current_node.id in {nid for nid in self.completed_nodes}:
+                # Re-select the edge this node used last time
+                edge = select_edge(
+                    current_node.id,
+                    self.node_outcomes.get(
+                        current_node.id, Outcome(status=StageStatus.SUCCESS)
+                    ),
+                    self.context,
+                    self.graph,
+                )
+                if edge is None:
+                    fail_outcome = Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason=f"No matching edge from resumed node '{current_node.id}'",
+                    )
+                    await self._emit(
+                        PIPELINE_ERROR,
+                        {
+                            "node_id": current_node.id,
+                            "error_type": "no_matching_edge",
+                            "message": fail_outcome.failure_reason or "",
+                        },
+                    )
+                    await self._emit_complete(fail_outcome, pipeline_start_time)
+                    return fail_outcome
+                current_node = self.graph.nodes[edge.to_node]
+                continue
+
+            # Step 2: Execute node handler with retry policy
+            handler = self.handler_registry.get(current_node)
+            handler_type = current_node.type or current_node.shape
+            await self._emit(
+                PIPELINE_NODE_START,
+                {
+                    "node_id": current_node.id,
+                    "handler_type": handler_type,
+                    "attempt": 1,
+                },
+            )
+
+            node_start_time = time.monotonic()
+            retry_policy = RetryPolicy.from_node(current_node, self.graph)
+            outcome = await execute_with_retry(
+                handler,
+                current_node,
+                self.context,
+                self.graph,
+                self.logs_root,
+                retry_policy,
+            )
+            node_duration_ms = (time.monotonic() - node_start_time) * 1000
+
+            # Step 3: Record completion
+            self.completed_nodes.append(current_node.id)
+            self.node_outcomes[current_node.id] = outcome
+            logger.debug("Node %s completed: %s", current_node.id, outcome.status.value)
+
+            await self._emit(
+                PIPELINE_NODE_COMPLETE,
+                {
+                    "node_id": current_node.id,
+                    "status": outcome.status.value,
+                    "duration_ms": node_duration_ms,
+                },
+            )
+
+            # Step 3b: Write per-node status.json
+            self._write_node_status(current_node.id, outcome, node_duration_ms)
+
+            # Step 4: Apply context updates from outcome
+            if outcome.context_updates:
+                self.context.update(outcome.context_updates)
+            self.context.set("outcome", outcome.status.value)
+            if outcome.preferred_label:
+                self.context.set("preferred_label", outcome.preferred_label)
+
+            # Step 4b: Save checkpoint after each node
+            self._save_checkpoint(current_node.id)
+            await self._emit(
+                PIPELINE_CHECKPOINT,
+                {
+                    "node_id": current_node.id,
+                    "checkpoint_path": self._checkpoint_path,
+                },
+            )
+
+            # Step 5: Select next edge
+            edge = select_edge(current_node.id, outcome, self.context, self.graph)
+            if edge is None:
+                fail_outcome = Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason=f"No matching edge from node '{current_node.id}'",
+                )
+                await self._emit(
+                    PIPELINE_ERROR,
+                    {
+                        "node_id": current_node.id,
+                        "error_type": "no_matching_edge",
+                        "message": fail_outcome.failure_reason or "",
+                    },
+                )
+                await self._emit_complete(fail_outcome, pipeline_start_time)
+                return fail_outcome
+
+            await self._emit(
+                PIPELINE_EDGE_SELECTED,
+                {
+                    "from_node": edge.from_node,
+                    "to_node": edge.to_node,
+                    "edge_label": edge.label,
+                },
+            )
+
+            # Step 6: Advance to next node
+            current_node = self.graph.nodes[edge.to_node]
+
+    def _initialize_context(self, goal: str | None) -> None:
+        """Mirror graph attributes into context.
+
+        Spec Section 3.1: Initialize phase.
+        """
+        # Set goal from argument or graph attribute
+        effective_goal = goal or self.graph.goal
+        if effective_goal:
+            self.context.set("graph.goal", effective_goal)
+
+        # Mirror graph-level attributes
+        for key, value in self.graph.graph_attrs.items():
+            self.context.set(f"graph.{key}", value)
+
+    def _find_start_node(self) -> Node:
+        """Find the start node (shape=Mdiamond).
+
+        Spec Section 3.2: find_start_node.
+        """
+        for node in self.graph.nodes.values():
+            if node.shape == "Mdiamond":
+                return node
+        raise ValueError("No start node found (shape=Mdiamond)")
+
+    async def _check_goal_gates(self) -> Outcome:
+        """Check goal gate satisfaction at exit.
+
+        Spec Section 3.4: Goal Gate Enforcement.
+
+        Returns:
+            SUCCESS/PARTIAL_SUCCESS if all goal gates passed.
+            FAIL with suggested_next_ids=[retry_target] if a gate is
+            unsatisfied and a retry target exists.
+            FAIL without suggested_next_ids if no retry target.
+        """
+        unsatisfied: list[tuple[str, Outcome]] = []
+        satisfied: list[str] = []
+        for node_id, outcome in self.node_outcomes.items():
+            node = self.graph.nodes.get(node_id)
+            if node is None:
+                continue
+            if node.attrs.get("goal_gate") is True:
+                if outcome.is_success:
+                    satisfied.append(node_id)
+                else:
+                    unsatisfied.append((node_id, outcome))
+
+        unsatisfied_ids = [nid for nid, _ in unsatisfied]
+        await self._emit(
+            PIPELINE_GOAL_GATE_CHECK,
+            {
+                "satisfied": satisfied,
+                "unsatisfied": unsatisfied_ids,
+            },
+        )
+
+        if not unsatisfied:
+            # All goal gates satisfied (or none exist)
+            if self.completed_nodes:
+                last_id = self.completed_nodes[-1]
+                last_outcome = self.node_outcomes.get(last_id)
+                if last_outcome:
+                    return last_outcome
+            return Outcome(status=StageStatus.SUCCESS, notes="Pipeline completed")
+
+        # Find the first unsatisfied gate and its retry target
+        gate_node_id, gate_outcome = unsatisfied[0]
+        gate_node = self.graph.nodes[gate_node_id]
+
+        # Retry target resolution: node > node fallback > graph > graph fallback
+        retry_target = (
+            gate_node.attrs.get("retry_target")
+            or gate_node.attrs.get("fallback_retry_target")
+            or self.graph.graph_attrs.get("retry_target")
+            or self.graph.graph_attrs.get("fallback_retry_target")
+        )
+
+        failure_reason = f"Unsatisfied goal gates: {unsatisfied_ids}"
+
+        if retry_target and retry_target in self.graph.nodes:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=failure_reason,
+                suggested_next_ids=[retry_target],
+            )
+
+        return Outcome(
+            status=StageStatus.FAIL,
+            failure_reason=failure_reason,
+        )
+
+    def _try_resume_from_checkpoint(self) -> bool:
+        """Try to load and restore state from an existing checkpoint.
+
+        Returns True if a checkpoint was loaded (resume mode), False otherwise.
+
+        Spec Section 5.3: Resume behavior.
+        """
+        if not os.path.exists(self._checkpoint_path):
+            return False
+
+        try:
+            cp = load_checkpoint(self._checkpoint_path)
+        except (FileNotFoundError, KeyError, ValueError):
+            logger.warning("Failed to load checkpoint, starting fresh")
+            return False
+
+        # Restore context from checkpoint
+        for key, value in cp.context_snapshot.items():
+            self.context.set(key, value)
+
+        # Restore completed nodes and outcomes
+        for node_id, status_str in cp.completed_nodes.items():
+            if node_id not in self.completed_nodes:
+                self.completed_nodes.append(node_id)
+            # Reconstruct a minimal Outcome from saved status
+            self.node_outcomes[node_id] = Outcome(
+                status=StageStatus(status_str),
+                notes=cp.node_outcomes.get(node_id, {}).get("notes"),
+                failure_reason=cp.node_outcomes.get(node_id, {}).get("failure_reason"),
+                preferred_label=cp.node_outcomes.get(node_id, {}).get(
+                    "preferred_label"
+                ),
+            )
+
+        logger.info(
+            "Resumed from checkpoint: %d nodes completed, current=%s",
+            len(self.completed_nodes),
+            cp.current_node,
+        )
+        return True
+
+    def _save_checkpoint(self, current_node_id: str) -> None:
+        """Save a checkpoint after a node execution.
+
+        Spec Section 5.3: Checkpoint.save.
+        """
+        os.makedirs(self.logs_root, exist_ok=True)
+
+        # Serialize node outcomes
+        serialized_outcomes: dict[str, dict[str, str | None]] = {}
+        for node_id, outcome in self.node_outcomes.items():
+            serialized_outcomes[node_id] = {
+                "status": outcome.status.value,
+                "notes": outcome.notes,
+                "failure_reason": outcome.failure_reason,
+                "preferred_label": outcome.preferred_label,
+            }
+
+        cp = Checkpoint(
+            current_node=current_node_id,
+            completed_nodes={
+                nid: self.node_outcomes[nid].status.value
+                for nid in self.completed_nodes
+                if nid in self.node_outcomes
+            },
+            context_snapshot=self.context.snapshot(),
+            node_outcomes=serialized_outcomes,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        save_checkpoint(cp, self._checkpoint_path)
+
+    # -- Run directory helpers -----------------------------------------------
+
+    def _write_manifest(self, goal: str | None) -> None:
+        """Write manifest.json and create the artifacts/ directory.
+
+        Spec Section 5.6: Run Directory Structure.
+        """
+        os.makedirs(self.logs_root, exist_ok=True)
+        os.makedirs(os.path.join(self.logs_root, "artifacts"), exist_ok=True)
+
+        manifest = {
+            "graph_name": self.graph.name,
+            "goal": self.graph.goal or goal or "",
+            "start_time": datetime.now(timezone.utc).isoformat(),
+            "node_count": len(self.graph.nodes),
+            "edge_count": len(self.graph.edges),
+        }
+        manifest_path = os.path.join(self.logs_root, "manifest.json")
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+    def _write_node_status(
+        self, node_id: str, outcome: Outcome, duration_ms: float
+    ) -> None:
+        """Write status.json for a node after execution.
+
+        Spec Section 5.6: Per-node status.json.
+        """
+        node_dir = os.path.join(self.logs_root, node_id)
+        os.makedirs(node_dir, exist_ok=True)
+        status = {
+            "node_id": node_id,
+            "status": outcome.status.value,
+            "duration_ms": duration_ms,
+            "notes": outcome.notes,
+            "failure_reason": outcome.failure_reason,
+        }
+        status_path = os.path.join(node_dir, "status.json")
+        with open(status_path, "w") as f:
+            json.dump(status, f, indent=2)
+
+    # -- Event helpers -------------------------------------------------------
+
+    async def _emit(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit an event via hooks, if provided."""
+        if self.hooks is not None:
+            await self.hooks.emit(event_name, data)
+
+    async def _emit_complete(self, outcome: Outcome, start_time: float) -> None:
+        """Emit the pipeline:complete event."""
+        duration_ms = (time.monotonic() - start_time) * 1000
+        await self._emit(
+            PIPELINE_COMPLETE,
+            {
+                "status": outcome.status.value,
+                "total_nodes_executed": len(self.completed_nodes),
+                "duration_ms": duration_ms,
+            },
+        )

@@ -1,0 +1,308 @@
+"""Tests for handler registry and core handlers.
+
+Spec coverage: HAND-001–007, HSTART-001–002, HEXIT-001–003,
+CODER-001–011, COND-001, TOOL-001–004.
+"""
+
+import json
+
+import pytest
+
+from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.graph import Graph, Node
+from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+from amplifier_module_loop_pipeline.handlers.codergen import CodergenHandler
+from amplifier_module_loop_pipeline.handlers.conditional import ConditionalHandler
+from amplifier_module_loop_pipeline.handlers.exit import ExitHandler
+from amplifier_module_loop_pipeline.handlers.start import StartHandler
+from amplifier_module_loop_pipeline.handlers.tool import ToolHandler
+from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+
+
+def _make_graph(**kwargs) -> Graph:
+    return Graph(
+        name="test",
+        nodes={"start": Node(id="start", shape="Mdiamond")},
+        edges=[],
+        **kwargs,
+    )
+
+
+def _make_context() -> PipelineContext:
+    return PipelineContext()
+
+
+# --- HandlerRegistry ---
+
+
+def test_registry_resolves_start_handler():
+    """Registry maps shape=Mdiamond to StartHandler."""
+    registry = HandlerRegistry()
+    node = Node(id="s", shape="Mdiamond")
+    handler = registry.get(node)
+    assert isinstance(handler, StartHandler)
+
+
+def test_registry_resolves_exit_handler():
+    """Registry maps shape=Msquare to ExitHandler."""
+    registry = HandlerRegistry()
+    node = Node(id="e", shape="Msquare")
+    handler = registry.get(node)
+    assert isinstance(handler, ExitHandler)
+
+
+def test_registry_resolves_codergen_handler():
+    """Registry maps shape=box to CodergenHandler."""
+    registry = HandlerRegistry()
+    node = Node(id="c", shape="box")
+    handler = registry.get(node)
+    assert isinstance(handler, CodergenHandler)
+
+
+def test_registry_resolves_conditional_handler():
+    """Registry maps shape=diamond to ConditionalHandler."""
+    registry = HandlerRegistry()
+    node = Node(id="d", shape="diamond")
+    handler = registry.get(node)
+    assert isinstance(handler, ConditionalHandler)
+
+
+def test_registry_explicit_type_overrides_shape():
+    """Node type attribute overrides shape-based resolution."""
+    registry = HandlerRegistry()
+    node = Node(id="x", shape="box", type="conditional")
+    handler = registry.get(node)
+    assert isinstance(handler, ConditionalHandler)
+
+
+# --- StartHandler ---
+
+
+@pytest.mark.asyncio
+async def test_start_handler_returns_success():
+    """Start handler returns SUCCESS immediately."""
+    handler = StartHandler()
+    node = Node(id="start", shape="Mdiamond")
+    outcome = await handler.execute(node, _make_context(), _make_graph(), "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+
+
+# --- ExitHandler ---
+
+
+@pytest.mark.asyncio
+async def test_exit_handler_returns_success():
+    """Exit handler returns SUCCESS immediately."""
+    handler = ExitHandler()
+    node = Node(id="exit", shape="Msquare")
+    outcome = await handler.execute(node, _make_context(), _make_graph(), "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+
+
+# --- ConditionalHandler ---
+
+
+@pytest.mark.asyncio
+async def test_conditional_handler_is_noop():
+    """Conditional handler returns SUCCESS (routing via edges)."""
+    handler = ConditionalHandler()
+    node = Node(id="check", shape="diamond")
+    outcome = await handler.execute(node, _make_context(), _make_graph(), "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+
+
+# --- CodergenHandler ---
+
+
+class MockBackend:
+    """Mock backend that returns a fixed string."""
+
+    def __init__(self, return_value: str = "done"):
+        self._return_value = return_value
+        self.last_prompt: str = ""
+        self.call_count = 0
+
+    async def run(
+        self, node: Node, prompt: str, context: PipelineContext
+    ) -> str | Outcome:
+        self.last_prompt = prompt
+        self.call_count += 1
+        return self._return_value
+
+
+@pytest.mark.asyncio
+async def test_codergen_handler_calls_backend(tmp_path):
+    """Codergen calls backend.run() and returns SUCCESS."""
+    backend = MockBackend("Implementation complete")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="implement", prompt="Build the feature for $goal")
+    graph = _make_graph(goal="user auth")
+    outcome = await handler.execute(node, _make_context(), graph, str(tmp_path))
+    assert outcome.status == StageStatus.SUCCESS
+    assert backend.call_count == 1
+    # Verify $goal was expanded in prompt
+    assert "user auth" in backend.last_prompt
+
+
+@pytest.mark.asyncio
+async def test_codergen_writes_stage_files(tmp_path):
+    """Codergen writes prompt.md, response.md, status.json."""
+    backend = MockBackend("done")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="step1", prompt="Do the thing")
+    outcome = await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.SUCCESS
+    assert (tmp_path / "step1" / "prompt.md").exists()
+    assert (tmp_path / "step1" / "response.md").exists()
+    assert (tmp_path / "step1" / "status.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_codergen_status_json_content(tmp_path):
+    """status.json contains the outcome fields."""
+    backend = MockBackend("all good")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="s1", prompt="test prompt")
+    await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
+    status_data = json.loads((tmp_path / "s1" / "status.json").read_text())
+    assert status_data["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_codergen_simulation_mode(tmp_path):
+    """No backend = simulation mode with simulated response."""
+    handler = CodergenHandler(backend=None)
+    node = Node(id="sim_step", prompt="Do it")
+    outcome = await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.SUCCESS
+    response = (tmp_path / "sim_step" / "response.md").read_text()
+    assert "Simulated" in response
+
+
+@pytest.mark.asyncio
+async def test_codergen_backend_returns_outcome(tmp_path):
+    """If backend returns an Outcome directly, use it."""
+
+    class OutcomeBackend:
+        async def run(self, node, prompt, context):
+            return Outcome(status=StageStatus.FAIL, failure_reason="tests failing")
+
+    handler = CodergenHandler(backend=OutcomeBackend())
+    node = Node(id="failing", prompt="test")
+    outcome = await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.FAIL
+    assert outcome.failure_reason == "tests failing"
+
+
+@pytest.mark.asyncio
+async def test_codergen_uses_label_when_no_prompt(tmp_path):
+    """Falls back to label if no prompt attribute."""
+    backend = MockBackend("ok")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="step", label="Plan the implementation")
+    await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
+    assert "Plan the implementation" in backend.last_prompt
+
+
+# --- ToolHandler ---
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_runs_command(tmp_path):
+    """ToolHandler runs tool_command and returns SUCCESS (TOOL-001)."""
+    node = Node(id="lint", attrs={"tool_command": "echo hello"})
+    handler = ToolHandler()
+    ctx = _make_context()
+    outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.SUCCESS
+    assert "hello" in ctx.get("tool.output", "")
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_no_command_returns_fail(tmp_path):
+    """ToolHandler with no tool_command returns FAIL (TOOL-002)."""
+    node = Node(id="lint", attrs={})
+    handler = ToolHandler()
+    ctx = _make_context()
+    outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.FAIL
+    assert "tool_command" in (outcome.failure_reason or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_failed_command(tmp_path):
+    """ToolHandler returns FAIL when command exits non-zero (TOOL-003)."""
+    node = Node(id="bad", attrs={"tool_command": "false"})
+    handler = ToolHandler()
+    ctx = _make_context()
+    outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.FAIL
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_captures_stdout(tmp_path):
+    """ToolHandler puts stdout into context as tool.output (TOOL-004)."""
+    node = Node(id="echo", attrs={"tool_command": "echo 'test output'"})
+    handler = ToolHandler()
+    ctx = _make_context()
+    await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert "test output" in ctx.get("tool.output", "")
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_writes_log_files(tmp_path):
+    """ToolHandler writes command.txt and output.txt to stage dir."""
+    node = Node(id="step", attrs={"tool_command": "echo logged"})
+    handler = ToolHandler()
+    ctx = _make_context()
+    await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert (tmp_path / "step" / "command.txt").exists()
+    assert (tmp_path / "step" / "output.txt").exists()
+
+
+# --- HandlerRegistry with ToolHandler ---
+
+
+def test_registry_resolves_tool_handler():
+    """Registry maps shape=parallelogram to ToolHandler."""
+    registry = HandlerRegistry()
+    node = Node(id="t", shape="parallelogram")
+    handler = registry.get(node)
+    assert isinstance(handler, ToolHandler)
+
+
+def test_registry_unknown_shape_defaults_to_codergen():
+    """Unknown shape falls back to codergen handler."""
+    registry = HandlerRegistry()
+    node = Node(id="u", shape="trapezoid")
+    handler = registry.get(node)
+    assert isinstance(handler, CodergenHandler)
+
+
+def test_registry_custom_handler_registration():
+    """Custom handlers can be registered and resolved (HAND-005)."""
+
+    class CustomHandler:
+        async def execute(self, node, context, graph, logs_root):
+            return Outcome(status=StageStatus.SUCCESS, notes="custom")
+
+    registry = HandlerRegistry()
+    registry.register("my_custom", CustomHandler())
+    node = Node(id="x", type="my_custom")
+    handler = registry.get(node)
+    assert isinstance(handler, CustomHandler)
+
+
+def test_registry_register_replaces_existing():
+    """Registering for an existing type replaces the handler (HAND-006)."""
+    registry = HandlerRegistry()
+    original = registry.get(Node(id="s", shape="Mdiamond"))
+    assert isinstance(original, StartHandler)
+
+    class NewStart:
+        async def execute(self, node, context, graph, logs_root):
+            return Outcome(status=StageStatus.SUCCESS, notes="new start")
+
+    registry.register("start", NewStart())
+    replaced = registry.get(Node(id="s", shape="Mdiamond"))
+    assert isinstance(replaced, NewStart)

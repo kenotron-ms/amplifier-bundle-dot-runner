@@ -1,0 +1,120 @@
+"""Codergen handler — the default handler for LLM task nodes.
+
+Reads the node's prompt, expands template variables, calls the LLM
+backend, writes prompt/response/status to the logs directory, and
+returns the outcome.
+
+Spec coverage: CODER-001–011, Section 4.5.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any, Protocol, runtime_checkable
+
+from ..context import PipelineContext
+from ..graph import Graph, Node
+from ..outcome import Outcome, StageStatus
+
+
+@runtime_checkable
+class CodergenBackend(Protocol):
+    """Interface for LLM execution backends.
+
+    Spec Section 4.5: CodergenBackend Interface.
+    """
+
+    async def run(
+        self, node: Node, prompt: str, context: PipelineContext
+    ) -> str | Outcome: ...
+
+
+class CodergenHandler:
+    """Handler for codergen (LLM task) nodes.
+
+    Spec Section 4.5: Codergen Handler.
+    """
+
+    def __init__(self, backend: Any | None = None) -> None:
+        self._backend = backend
+
+    async def execute(
+        self,
+        node: Node,
+        context: PipelineContext,
+        graph: Graph,
+        logs_root: str,
+    ) -> Outcome:
+        """Execute a codergen node.
+
+        1. Build prompt (expand $goal)
+        2. Write prompt to logs
+        3. Call backend (or simulate)
+        4. Write response and status to logs
+        5. Return outcome
+        """
+        # 1. Build prompt
+        prompt = node.prompt or node.label
+        prompt = _expand_variables(prompt, graph, context)
+
+        # 2. Write prompt to logs
+        stage_dir = os.path.join(logs_root, node.id)
+        os.makedirs(stage_dir, exist_ok=True)
+        _write_file(os.path.join(stage_dir, "prompt.md"), prompt)
+
+        # 3. Call LLM backend
+        if self._backend is not None:
+            try:
+                result = await self._backend.run(node, prompt, context)
+                if isinstance(result, Outcome):
+                    _write_status(stage_dir, result)
+                    return result
+                response_text = str(result)
+            except Exception as e:
+                outcome = Outcome(status=StageStatus.FAIL, failure_reason=str(e))
+                _write_status(stage_dir, outcome)
+                return outcome
+        else:
+            response_text = f"[Simulated] Response for stage: {node.id}"
+
+        # 4. Write response to logs
+        _write_file(os.path.join(stage_dir, "response.md"), response_text)
+
+        # 5. Build and write outcome
+        outcome = Outcome(
+            status=StageStatus.SUCCESS,
+            notes=f"Stage completed: {node.id}",
+            context_updates={
+                "last_stage": node.id,
+                "last_response": response_text[:200],
+            },
+        )
+        _write_status(stage_dir, outcome)
+        return outcome
+
+
+def _expand_variables(prompt: str, graph: Graph, context: PipelineContext) -> str:
+    """Expand template variables in a prompt string.
+
+    Only built-in variable: $goal resolves to graph.goal.
+    Spec Section 4.5: Variable expansion.
+    """
+    result = prompt.replace("$goal", graph.goal)
+    return result
+
+
+def _write_file(path: str, content: str) -> None:
+    """Write content to a file."""
+    with open(path, "w") as f:
+        f.write(content)
+
+
+def _write_status(stage_dir: str, outcome: Outcome) -> None:
+    """Write status.json for a stage outcome."""
+    data = {
+        "status": outcome.status.value,
+        "notes": outcome.notes,
+        "failure_reason": outcome.failure_reason,
+    }
+    _write_file(os.path.join(stage_dir, "status.json"), json.dumps(data, indent=2))

@@ -1,0 +1,309 @@
+"""Tests for graph validation (lint rules).
+
+Covers spec Section 7 (Validation and Linting): diagnostic model,
+built-in lint rules, and validate/validate_or_raise API.
+"""
+
+import pytest
+
+from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
+from amplifier_module_loop_pipeline.validation import (
+    Diagnostic,
+    ValidationError,
+    validate,
+    validate_or_raise,
+)
+
+
+# --- Test helpers ---
+
+
+def _mdiamond(node_id: str = "start") -> Node:
+    return Node(id=node_id, shape="Mdiamond", label="Start")
+
+
+def _msquare(node_id: str = "exit") -> Node:
+    return Node(id=node_id, shape="Msquare", label="Exit")
+
+
+def _box(node_id: str = "work", **kwargs) -> Node:
+    return Node(id=node_id, shape="box", **kwargs)
+
+
+def _diamond(node_id: str = "gate") -> Node:
+    return Node(id=node_id, shape="diamond", label="Gate")
+
+
+def _graph(
+    nodes: dict[str, Node] | None = None,
+    edges: list[Edge] | None = None,
+    **kwargs,
+) -> Graph:
+    return Graph(
+        name="test",
+        nodes=nodes or {},
+        edges=edges or [],
+        **kwargs,
+    )
+
+
+# --- start_node rule ---
+
+
+def test_missing_start_node():
+    """ERROR: no start node (LINT-003 / start_node)."""
+    g = _graph(
+        nodes={"a": _box("a"), "exit": _msquare()},
+        edges=[Edge(from_node="a", to_node="exit")],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "start_node" for d in diags)
+
+
+def test_multiple_start_nodes():
+    """ERROR: more than one start node."""
+    g = _graph(
+        nodes={
+            "s1": _mdiamond("s1"),
+            "s2": _mdiamond("s2"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="s1", to_node="exit"),
+            Edge(from_node="s2", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "start_node" for d in diags)
+
+
+# --- terminal_node rule ---
+
+
+def test_missing_exit_node():
+    """ERROR: no exit/terminal node (LINT-003 / terminal_node)."""
+    g = _graph(
+        nodes={"start": _mdiamond(), "a": _box("a")},
+        edges=[Edge(from_node="start", to_node="a")],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "terminal_node" for d in diags)
+
+
+# --- reachability rule ---
+
+
+def test_unreachable_node():
+    """ERROR: node not reachable from start (LINT-003 / reachability)."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "a": _box("a"),
+            "orphan": _box("orphan"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a"),
+            Edge(from_node="a", to_node="exit"),
+            # orphan not reachable
+        ],
+    )
+    diags = validate(g)
+    assert any(d.rule == "reachability" and "orphan" in d.message for d in diags)
+
+
+# --- edge_target_exists rule ---
+
+
+def test_edge_target_exists():
+    """ERROR: edge target references non-existent node."""
+    g = _graph(
+        nodes={"start": _mdiamond()},
+        edges=[Edge(from_node="start", to_node="nonexistent")],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "edge_target_exists" for d in diags)
+
+
+def test_edge_source_exists():
+    """ERROR: edge source references non-existent node."""
+    g = _graph(
+        nodes={"exit": _msquare()},
+        edges=[Edge(from_node="nonexistent", to_node="exit")],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "edge_target_exists" for d in diags)
+
+
+# --- start_no_incoming rule ---
+
+
+def test_start_no_incoming():
+    """ERROR: start node must have no incoming edges."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "a": _box("a"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a"),
+            Edge(from_node="a", to_node="start"),  # bad: incoming to start
+            Edge(from_node="a", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "start_no_incoming" for d in diags)
+
+
+# --- exit_no_outgoing rule ---
+
+
+def test_exit_no_outgoing():
+    """ERROR: exit node must have no outgoing edges."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "a": _box("a"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a"),
+            Edge(from_node="a", to_node="exit"),
+            Edge(from_node="exit", to_node="a"),  # bad: outgoing from exit
+        ],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "exit_no_outgoing" for d in diags)
+
+
+# --- Warning-level rules ---
+
+
+def test_goal_gate_without_retry_target():
+    """WARNING: goal_gate=true but no retry_target."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", attrs={"goal_gate": True}),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    assert any(
+        d.severity == "WARNING" and d.rule == "goal_gate_has_retry" for d in diags
+    )
+
+
+def test_prompt_on_llm_nodes():
+    """WARNING: codergen nodes should have prompt or label."""
+    # A box node with no prompt and default label (= id) triggers warning
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "step": Node(id="step", shape="box"),  # label defaults to id, no prompt
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="step"),
+            Edge(from_node="step", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    assert any(
+        d.severity == "WARNING" and d.rule == "prompt_on_llm_nodes" for d in diags
+    )
+
+
+def test_prompt_on_llm_nodes_ok_with_prompt():
+    """No warning when codergen node has a prompt."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "step": Node(id="step", shape="box", prompt="Do the work"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="step"),
+            Edge(from_node="step", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    assert not any(d.rule == "prompt_on_llm_nodes" for d in diags)
+
+
+# --- validate_or_raise ---
+
+
+def test_validate_or_raise_raises_on_errors():
+    """validate_or_raise should raise ValidationError on ERROR diagnostics."""
+    g = _graph(nodes={}, edges=[])  # Empty graph = missing start + exit
+    with pytest.raises(ValidationError):
+        validate_or_raise(g)
+
+
+def test_validate_or_raise_returns_warnings():
+    """validate_or_raise should return warnings (not raise)."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", attrs={"goal_gate": True}),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate_or_raise(g)
+    warnings = [d for d in diags if d.severity == "WARNING"]
+    assert len(warnings) >= 1
+
+
+# --- Valid graph passes cleanly ---
+
+
+def test_valid_graph_no_errors():
+    """A well-formed graph should produce zero ERROR diagnostics."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", prompt="Do the work"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    errors = [d for d in diags if d.severity == "ERROR"]
+    assert len(errors) == 0
+
+
+# --- Diagnostic model ---
+
+
+def test_diagnostic_has_fields():
+    """Diagnostic should expose rule, severity, message."""
+    d = Diagnostic(rule="start_node", severity="ERROR", message="No start node")
+    assert d.rule == "start_node"
+    assert d.severity == "ERROR"
+    assert d.message == "No start node"
+
+
+def test_diagnostic_optional_fields():
+    """Diagnostic should support optional node_id, edge, fix."""
+    d = Diagnostic(
+        rule="reachability",
+        severity="ERROR",
+        message="Node orphan is unreachable",
+        node_id="orphan",
+        fix="Add an edge from start to orphan",
+    )
+    assert d.node_id == "orphan"
+    assert d.fix == "Add an edge from start to orphan"

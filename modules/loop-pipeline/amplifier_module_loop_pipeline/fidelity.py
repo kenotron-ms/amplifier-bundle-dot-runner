@@ -1,0 +1,267 @@
+"""Context fidelity modes for controlling inter-node context carryover.
+
+Controls how much prior conversation and state is carried into each
+node's LLM session. This is the core mechanism for managing context
+window usage across multi-stage pipelines.
+
+Spec coverage: FID-001–010, Section 5.4.
+
+Modes:
+    full           – Reuse session (same thread), full history preserved.
+    truncate       – Fresh session, minimal: only graph goal and run ID.
+    compact        – Fresh session, structured bullet-point summary.
+    summary:low    – Fresh session, ~600 token text summary.
+    summary:medium – Fresh session, ~1500 token text summary.
+    summary:high   – Fresh session, ~3000 token text summary.
+
+Resolution precedence (highest to lowest):
+    1. Edge fidelity attribute
+    2. Target node fidelity attribute
+    3. Graph default_fidelity attribute
+    4. System default: "compact"
+
+Thread resolution (for full mode):
+    1. Target node thread_id
+    2. Edge thread_id
+    3. Graph-level default_thread_id
+    4. Previous node ID (fallback)
+"""
+
+from __future__ import annotations
+
+from .context import PipelineContext
+from .graph import Edge, Graph, Node
+from .outcome import Outcome
+
+# All valid fidelity mode strings
+VALID_FIDELITY_MODES: frozenset[str] = frozenset(
+    {
+        "full",
+        "truncate",
+        "compact",
+        "summary:low",
+        "summary:medium",
+        "summary:high",
+    }
+)
+
+_DEFAULT_FIDELITY = "compact"
+
+
+def resolve_fidelity(
+    node: Node,
+    incoming_edge: Edge | None,
+    graph: Graph,
+) -> str:
+    """Resolve the fidelity mode for a node.
+
+    Precedence: edge > node > graph default > system default ("compact").
+
+    Args:
+        node: The target node.
+        incoming_edge: The edge leading to this node (if any).
+        graph: The pipeline graph.
+
+    Returns:
+        A valid fidelity mode string.
+    """
+    # 1. Edge fidelity (highest priority)
+    if incoming_edge is not None:
+        edge_fidelity = incoming_edge.attrs.get("fidelity")
+        if edge_fidelity and edge_fidelity in VALID_FIDELITY_MODES:
+            return edge_fidelity
+
+    # 2. Node fidelity
+    node_fidelity = node.attrs.get("fidelity")
+    if node_fidelity and node_fidelity in VALID_FIDELITY_MODES:
+        return node_fidelity
+
+    # 3. Graph default_fidelity
+    graph_fidelity = graph.graph_attrs.get("default_fidelity")
+    if graph_fidelity and graph_fidelity in VALID_FIDELITY_MODES:
+        return graph_fidelity
+
+    # 4. System default
+    return _DEFAULT_FIDELITY
+
+
+def resolve_thread_key(
+    node: Node,
+    incoming_edge: Edge | None,
+    graph: Graph,
+    previous_node_id: str | None = None,
+) -> str:
+    """Resolve the thread key for session reuse (full fidelity).
+
+    Precedence: node thread_id > edge thread_id > graph default > previous node ID.
+
+    Args:
+        node: The target node.
+        incoming_edge: The edge leading to this node (if any).
+        graph: The pipeline graph.
+        previous_node_id: ID of the previously executed node.
+
+    Returns:
+        A thread key string.
+    """
+    # 1. Node thread_id (highest priority)
+    node_thread = node.attrs.get("thread_id")
+    if node_thread:
+        return str(node_thread)
+
+    # 2. Edge thread_id
+    if incoming_edge is not None:
+        edge_thread = incoming_edge.attrs.get("thread_id")
+        if edge_thread:
+            return str(edge_thread)
+
+    # 3. Graph-level default_thread_id
+    graph_thread = graph.graph_attrs.get("default_thread_id")
+    if graph_thread:
+        return str(graph_thread)
+
+    # 4. Fallback: previous node ID, or own node ID
+    return previous_node_id or node.id
+
+
+def build_preamble(
+    fidelity: str,
+    context: PipelineContext,
+    completed_nodes: dict[str, Outcome],
+) -> str:
+    """Build a context preamble string for a fresh session.
+
+    The preamble synthesizes prior execution state for nodes that
+    don't use full fidelity (which reuses sessions instead).
+
+    Args:
+        fidelity: The resolved fidelity mode.
+        context: The current pipeline context.
+        completed_nodes: Map of node_id -> Outcome for completed nodes.
+
+    Returns:
+        A preamble string. Empty for "full" mode.
+    """
+    if fidelity == "full":
+        return ""
+
+    if fidelity == "truncate":
+        return _build_truncate_preamble(context)
+
+    if fidelity == "compact":
+        return _build_compact_preamble(context, completed_nodes)
+
+    if fidelity.startswith("summary:"):
+        level = fidelity.split(":", 1)[1]
+        return _build_summary_preamble(level, context, completed_nodes)
+
+    # Fallback to compact for any unrecognized mode
+    return _build_compact_preamble(context, completed_nodes)
+
+
+def _build_truncate_preamble(context: PipelineContext) -> str:
+    """Minimal preamble: graph goal and run ID only."""
+    goal = context.get_string("graph.goal", "No goal set")
+    run_id = context.get_string("internal.run_id", "unknown")
+    return f"Goal: {goal}\nRun ID: {run_id}"
+
+
+def _build_compact_preamble(
+    context: PipelineContext,
+    completed_nodes: dict[str, Outcome],
+) -> str:
+    """Structured bullet-point summary of execution state."""
+    lines: list[str] = []
+
+    # Goal
+    goal = context.get_string("graph.goal", "No goal set")
+    lines.append(f"Goal: {goal}")
+    lines.append("")
+
+    # Completed stages
+    if completed_nodes:
+        lines.append("Completed stages:")
+        for node_id, outcome in completed_nodes.items():
+            status = outcome.status.value
+            note = f" - {outcome.notes}" if outcome.notes else ""
+            lines.append(f"  - {node_id}: {status}{note}")
+        lines.append("")
+
+    # Key context values (context.* namespace)
+    snapshot = context.snapshot()
+    ctx_values = {k: v for k, v in sorted(snapshot.items()) if k.startswith("context.")}
+    if ctx_values:
+        lines.append("Context values:")
+        for key, value in ctx_values.items():
+            lines.append(f"  - {key}: {value}")
+
+    return "\n".join(lines)
+
+
+def _build_summary_preamble(
+    level: str,
+    context: PipelineContext,
+    completed_nodes: dict[str, Outcome],
+) -> str:
+    """Text summary at varying detail levels."""
+    goal = context.get_string("graph.goal", "No goal set")
+    lines: list[str] = [f"Goal: {goal}", ""]
+
+    if level == "low":
+        # ~600 tokens: brief summary with minimal event counts
+        if completed_nodes:
+            success_count = sum(1 for o in completed_nodes.values() if o.is_success)
+            total = len(completed_nodes)
+            lines.append(
+                f"Progress: {success_count}/{total} stages completed successfully."
+            )
+            # List just the stage names
+            stage_names = ", ".join(completed_nodes.keys())
+            lines.append(f"Stages: {stage_names}")
+
+    elif level == "medium":
+        # ~1500 tokens: recent stage outcomes and active context
+        if completed_nodes:
+            lines.append("Stage outcomes:")
+            for node_id, outcome in completed_nodes.items():
+                lines.append(f"  - {node_id}: {outcome.status.value}")
+                if outcome.notes:
+                    lines.append(f"    Notes: {outcome.notes}")
+            lines.append("")
+
+        # Include context.* values
+        snapshot = context.snapshot()
+        ctx_values = {
+            k: v for k, v in sorted(snapshot.items()) if k.startswith("context.")
+        }
+        if ctx_values:
+            lines.append("Active context:")
+            for key, value in ctx_values.items():
+                lines.append(f"  - {key}: {value}")
+
+    elif level == "high":
+        # ~3000 tokens: comprehensive detail including failures
+        if completed_nodes:
+            lines.append("Detailed stage outcomes:")
+            for node_id, outcome in completed_nodes.items():
+                lines.append(f"  - {node_id}: {outcome.status.value}")
+                if outcome.notes:
+                    lines.append(f"    Notes: {outcome.notes}")
+                if outcome.failure_reason:
+                    lines.append(f"    Failure: {outcome.failure_reason}")
+                if outcome.context_updates:
+                    for k, v in outcome.context_updates.items():
+                        lines.append(f"    Update: {k} = {v}")
+            lines.append("")
+
+        # Include all context.* values
+        snapshot = context.snapshot()
+        ctx_values = {
+            k: v for k, v in sorted(snapshot.items()) if k.startswith("context.")
+        }
+        if ctx_values:
+            lines.append("Full context state:")
+            for key, value in ctx_values.items():
+                lines.append(f"  - {key}: {value}")
+
+    return "\n".join(lines)
