@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from .artifacts import ArtifactStore
 from .checkpoint import Checkpoint, load_checkpoint, save_checkpoint
 from .context import PipelineContext
 from .edge_selection import select_edge
@@ -69,6 +70,7 @@ class PipelineEngine:
         self.node_outcomes: dict[str, Outcome] = {}
         self.completed_nodes: list[str] = []
         self._checkpoint_path = os.path.join(logs_root, "checkpoint.json")
+        self.artifact_store = ArtifactStore(base_dir=logs_root)
 
     async def run(self, goal: str | None = None) -> Outcome:
         """Execute the pipeline from start to exit.
