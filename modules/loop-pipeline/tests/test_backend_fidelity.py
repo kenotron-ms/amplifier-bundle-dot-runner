@@ -18,6 +18,12 @@ from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 # ---------------------------------------------------------------------------
 
 
+class _MockSession:
+    """Minimal stand-in for AmplifierSession."""
+
+    config: dict = {}
+
+
 class MockCoordinator:
     """Mock coordinator that tracks spawn calls."""
 
@@ -29,6 +35,9 @@ class MockCoordinator:
         self.spawn_called = False
         self.spawn_call_count = 0
         self.last_spawn_kwargs: dict = {}
+        # Provide session and config like a real coordinator
+        self.session = _MockSession()
+        self.config: dict = {"agents": {}}
 
     def get_capability(self, name: str):
         if name == "session.spawn":
@@ -98,9 +107,7 @@ def _make_graph_with_fidelity(
 @pytest.mark.asyncio
 async def test_backend_prepends_compact_preamble():
     """Backend builds a preamble from compact fidelity and prepends to prompt."""
-    coordinator = MockCoordinator(
-        spawn_result={"output": "done", "session_id": "c-1"}
-    )
+    coordinator = MockCoordinator(spawn_result={"output": "done", "session_id": "c-1"})
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
@@ -127,9 +134,7 @@ async def test_backend_prepends_compact_preamble():
 @pytest.mark.asyncio
 async def test_backend_truncate_preamble_is_minimal():
     """Truncate fidelity produces a minimal preamble with just goal and run ID."""
-    coordinator = MockCoordinator(
-        spawn_result={"output": "done", "session_id": "c-1"}
-    )
+    coordinator = MockCoordinator(spawn_result={"output": "done", "session_id": "c-1"})
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
@@ -149,9 +154,7 @@ async def test_backend_truncate_preamble_is_minimal():
 @pytest.mark.asyncio
 async def test_backend_no_preamble_for_full_fidelity():
     """Full fidelity mode does not prepend a preamble (session is reused)."""
-    coordinator = MockCoordinator(
-        spawn_result={"output": "done", "session_id": "c-1"}
-    )
+    coordinator = MockCoordinator(spawn_result={"output": "done", "session_id": "c-1"})
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
@@ -171,9 +174,7 @@ async def test_backend_no_preamble_for_full_fidelity():
 @pytest.mark.asyncio
 async def test_backend_default_fidelity_is_compact():
     """Without explicit fidelity, default is compact (prepends preamble)."""
-    coordinator = MockCoordinator(
-        spawn_result={"output": "done", "session_id": "c-1"}
-    )
+    coordinator = MockCoordinator(spawn_result={"output": "done", "session_id": "c-1"})
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
@@ -231,9 +232,9 @@ async def test_backend_reuses_session_for_full_fidelity():
     await backend.run(node2, "Second task", context, incoming_edge=edge, graph=graph)
     second_call_kwargs = coordinator.last_spawn_kwargs
 
-    # The second call should include session_id for resumption
-    assert "session_id" in second_call_kwargs
-    assert second_call_kwargs["session_id"] == "sess-abc"
+    # The second call should include sub_session_id for resumption
+    assert "sub_session_id" in second_call_kwargs
+    assert second_call_kwargs["sub_session_id"] == "sess-abc"
 
 
 @pytest.mark.asyncio
@@ -272,16 +273,14 @@ async def test_backend_separate_sessions_for_different_threads():
     )
     await backend.run(node2, "Task B", context, incoming_edge=edge, graph=graph)
 
-    # Should NOT have session_id since thread-B is new
-    assert "session_id" not in coordinator.last_spawn_kwargs
+    # Should NOT have sub_session_id since thread-B is new
+    assert "sub_session_id" not in coordinator.last_spawn_kwargs
 
 
 @pytest.mark.asyncio
 async def test_backend_records_completed_node_outcomes():
     """Backend tracks completed node outcomes for preamble building."""
-    coordinator = MockCoordinator(
-        spawn_result={"output": "done", "session_id": "c-1"}
-    )
+    coordinator = MockCoordinator(spawn_result={"output": "done", "session_id": "c-1"})
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
