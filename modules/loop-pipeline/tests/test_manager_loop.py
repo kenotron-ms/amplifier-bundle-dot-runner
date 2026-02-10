@@ -1,123 +1,407 @@
-"""Tests for the manager loop handler (stub).
+"""Tests for the manager loop handler — supervisor pattern over a child subgraph.
 
-The manager loop (shape=house) is a supervisor pattern over a child
-pipeline. This tests the stub implementation that allows pipelines
-with manager nodes to parse and execute without crashing.
+The manager loop (shape=house) orchestrates observe/evaluate/act cycles
+over a child subgraph. It runs the child, checks a guard condition, and
+loops until the guard is satisfied or max cycles are exhausted.
 
-Spec coverage: MGR-001–010, COMP-001–002, Section 4.11.
+Spec coverage: MGR-001-010, COMP-001-002, Section 4.11.
 """
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
 
 import pytest
 
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers.manager_loop import ManagerLoopHandler
-from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
 
 
-def _make_graph_with_manager() -> Graph:
-    """Graph with a manager loop node."""
-    return Graph(
-        name="test",
-        nodes={
-            "start": Node(id="start", shape="Mdiamond"),
-            "manager": Node(
-                id="manager",
-                shape="house",
-                label="Supervise coding",
-                attrs={
-                    "manager.max_cycles": "5",
-                    "manager.poll_interval": "10s",
-                    "manager.stop_condition": "",
-                    "manager.actions": "observe,wait",
-                    "stack.child_dotfile": "child.dot",
-                },
-            ),
-            "exit": Node(id="exit", shape="Msquare"),
-        },
-        edges=[
-            Edge(from_node="start", to_node="manager"),
-            Edge(from_node="manager", to_node="exit"),
-        ],
-    )
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-def _make_context() -> PipelineContext:
-    return PipelineContext()
+def _make_graph(
+    *,
+    manager_attrs: dict | None = None,
+    has_child_edge: bool = True,
+) -> Graph:
+    """Build a minimal graph with a manager node and optional child target."""
+    nodes = {
+        "start": Node(id="start", shape="Mdiamond"),
+        "manager": Node(
+            id="manager",
+            shape="house",
+            label="Sprint Manager",
+            attrs=manager_attrs or {},
+        ),
+        "child_task": Node(id="child_task", shape="box", label="Do work"),
+        "exit": Node(id="exit", shape="Msquare"),
+    }
+    edges = [
+        Edge(from_node="start", to_node="manager"),
+    ]
+    if has_child_edge:
+        edges.append(Edge(from_node="manager", to_node="child_task"))
+    edges.append(Edge(from_node="child_task", to_node="exit"))
+    return Graph(name="test_manager", nodes=nodes, edges=edges)
 
 
-class TestManagerLoopHandler:
-    """MGR-001–010: Manager loop handler stub."""
+def _make_runner(outcomes: list[Outcome]) -> AsyncMock:
+    """Create a mock subgraph_runner that returns outcomes in sequence."""
+    runner = AsyncMock()
+    runner.side_effect = list(outcomes)
+    return runner
 
-    @pytest.mark.asyncio
-    async def test_returns_success(self):
-        """Stub handler completes successfully."""
-        graph = _make_graph_with_manager()
-        node = graph.nodes["manager"]
-        handler = ManagerLoopHandler()
-        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.status == StageStatus.SUCCESS
 
-    @pytest.mark.asyncio
-    async def test_notes_indicate_stub(self):
-        """Outcome notes indicate this is a stub implementation."""
-        graph = _make_graph_with_manager()
-        node = graph.nodes["manager"]
-        handler = ManagerLoopHandler()
-        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.notes is not None
-        assert "stub" in outcome.notes.lower()
+# ---------------------------------------------------------------------------
+# Core behavior tests
+# ---------------------------------------------------------------------------
+
+
+class TestManagerLoopExecution:
+    """Manager loop runs child subgraph and evaluates outcomes."""
 
     @pytest.mark.asyncio
-    async def test_reads_max_cycles_from_attrs(self):
-        """Handler reads manager.max_cycles from node attrs."""
-        graph = _make_graph_with_manager()
-        node = graph.nodes["manager"]
-        handler = ManagerLoopHandler()
-        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        # Stub succeeds regardless, but should have parsed config
-        assert outcome.status == StageStatus.SUCCESS
+    async def test_child_success_stops_loop(self):
+        """When the child succeeds, the manager returns SUCCESS after 1 cycle."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.SUCCESS, notes="child ok"),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(manager_attrs={"manager.max_cycles": "5"})
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.SUCCESS
+        assert runner.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_child_fail_retries_then_succeeds(self):
+        """Manager retries when child fails, stops when child succeeds."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.FAIL, failure_reason="broken"),
+                Outcome(status=StageStatus.FAIL, failure_reason="still broken"),
+                Outcome(status=StageStatus.SUCCESS, notes="fixed"),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "5",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.SUCCESS
+        assert runner.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_max_cycles_exhausted(self):
+        """When all cycles are used without success, returns FAIL."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.FAIL, failure_reason="nope"),
+                Outcome(status=StageStatus.FAIL, failure_reason="nope"),
+                Outcome(status=StageStatus.FAIL, failure_reason="nope"),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "3",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.FAIL
+        assert runner.call_count == 3
+        assert "3" in (result.failure_reason or "")
+
+    @pytest.mark.asyncio
+    async def test_partial_success_stops_loop(self):
+        """PARTIAL_SUCCESS from child also satisfies the default guard."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.PARTIAL_SUCCESS, notes="close enough"),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(manager_attrs={"manager.max_cycles": "5"})
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.is_success
+        assert runner.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Guard / stop condition tests
+# ---------------------------------------------------------------------------
+
+
+class TestManagerStopCondition:
+    """Stop condition (guard) controls when the manager exits the loop."""
+
+    @pytest.mark.asyncio
+    async def test_stop_condition_evaluated(self):
+        """Guard condition 'outcome=success' stops on first success."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.FAIL),
+                Outcome(status=StageStatus.SUCCESS),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "5",
+                "manager.stop_condition": "outcome=success",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.SUCCESS
+        assert runner.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_stop_condition_not_met_keeps_looping(self):
+        """If guard never satisfied, loop exhausts max_cycles."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.PARTIAL_SUCCESS),
+                Outcome(status=StageStatus.PARTIAL_SUCCESS),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "2",
+                "manager.stop_condition": "outcome=success",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        # Guard requires "success" exactly, partial_success doesn't match
+        assert result.status == StageStatus.FAIL
+        assert runner.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Context recording tests
+# ---------------------------------------------------------------------------
+
+
+class TestManagerContextRecording:
+    """Manager records cycle telemetry in the pipeline context."""
+
+    @pytest.mark.asyncio
+    async def test_records_cycle_status(self):
+        """Each cycle's child status is recorded in context."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.FAIL),
+                Outcome(status=StageStatus.SUCCESS),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "5",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert ctx.get("manager.cycle_1.status") == "fail"
+        assert ctx.get("manager.cycle_2.status") == "success"
+        assert ctx.get("manager.last_child_status") == "success"
+
+    @pytest.mark.asyncio
+    async def test_outcome_contains_context_updates(self):
+        """The returned outcome includes last_stage and cycle count."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.SUCCESS),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(manager_attrs={"manager.max_cycles": "3"})
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.context_updates is not None
+        assert result.context_updates["last_stage"] == "manager"
+        assert result.context_updates["manager.cycles"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Steer action tests
+# ---------------------------------------------------------------------------
+
+
+class TestManagerSteer:
+    """'steer' action injects steering context for child retries."""
+
+    @pytest.mark.asyncio
+    async def test_steer_injects_context(self):
+        """When 'steer' in actions, child context gets steering message."""
+        captured_contexts: list[PipelineContext] = []
+
+        async def capturing_runner(
+            node_id: str,
+            context: PipelineContext,
+            graph: Graph,
+            logs_root: str,
+        ) -> Outcome:
+            captured_contexts.append(context)
+            if len(captured_contexts) < 2:
+                return Outcome(status=StageStatus.FAIL)
+            return Outcome(status=StageStatus.SUCCESS)
+
+        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "5",
+                "manager.actions": "observe,steer,wait",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        # First cycle: no steering (no prior failure)
+        assert captured_contexts[0].get("manager.steering") is None
+        # Second cycle: steering injected from first failure
+        steering = captured_contexts[1].get("manager.steering")
+        assert steering is not None
+        assert "fail" in steering.lower()
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestManagerEdgeCases:
+    """Edge cases for the manager loop handler."""
+
+    @pytest.mark.asyncio
+    async def test_no_child_edges_returns_fail(self):
+        """Manager with no outgoing edges returns FAIL."""
+        handler = ManagerLoopHandler(subgraph_runner=AsyncMock())
+        graph = _make_graph(has_child_edge=False)
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.FAIL
+        assert "no child" in (result.failure_reason or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_no_runner_returns_fail(self):
+        """Manager without a subgraph_runner returns FAIL."""
+        handler = ManagerLoopHandler()  # no runner
+        graph = _make_graph(manager_attrs={"manager.max_cycles": "3"})
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.FAIL
 
     @pytest.mark.asyncio
     async def test_default_max_cycles(self):
-        """Default max_cycles is used when not specified."""
-        graph = Graph(
-            name="test",
-            nodes={
-                "start": Node(id="start", shape="Mdiamond"),
-                "mgr": Node(id="mgr", shape="house", label="Manager"),
-                "exit": Node(id="exit", shape="Msquare"),
-            },
-            edges=[
-                Edge(from_node="start", to_node="mgr"),
-                Edge(from_node="mgr", to_node="exit"),
-            ],
+        """Default max_cycles is 10 per spec when not specified."""
+        call_count = 0
+
+        async def failing_runner(node_id, context, graph, logs_root):
+            nonlocal call_count
+            call_count += 1
+            return Outcome(status=StageStatus.FAIL)
+
+        handler = ManagerLoopHandler(subgraph_runner=failing_runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.poll_interval": "0s",
+                # No max_cycles — should default to 10
+            }
         )
-        handler = ManagerLoopHandler()
-        outcome = await handler.execute(
-            graph.nodes["mgr"], _make_context(), graph, "/tmp"
-        )
-        assert outcome.status == StageStatus.SUCCESS
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        assert result.status == StageStatus.FAIL
+        assert call_count == 10
 
     @pytest.mark.asyncio
-    async def test_sets_context_updates(self):
-        """Handler sets context updates about the manager execution."""
-        graph = _make_graph_with_manager()
-        node = graph.nodes["manager"]
-        handler = ManagerLoopHandler()
-        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.context_updates is not None
-        assert "last_stage" in outcome.context_updates
+    async def test_child_exception_treated_as_fail(self):
+        """If the child runner raises, treat it as a FAIL outcome."""
+        runner = AsyncMock(
+            side_effect=[
+                RuntimeError("boom"),
+                Outcome(status=StageStatus.SUCCESS),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "5",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        # First call raises, second succeeds — manager should recover
+        assert result.status == StageStatus.SUCCESS
+        assert runner.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_no_backend_required(self):
-        """Manager loop stub doesn't need a backend to run."""
-        graph = _make_graph_with_manager()
-        node = graph.nodes["manager"]
-        handler = ManagerLoopHandler()
-        # Should not raise
-        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.status == StageStatus.SUCCESS
+    async def test_runner_receives_child_node_id(self):
+        """The subgraph_runner is called with the correct child start node ID."""
+        runner = _make_runner(
+            [
+                Outcome(status=StageStatus.SUCCESS),
+            ]
+        )
+        handler = ManagerLoopHandler(subgraph_runner=runner)
+        graph = _make_graph(manager_attrs={"manager.max_cycles": "1"})
+        ctx = PipelineContext()
+
+        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        call_args = runner.call_args
+        assert call_args[0][0] == "child_task"  # first positional arg
+
+
+# ---------------------------------------------------------------------------
+# Handler registration
+# ---------------------------------------------------------------------------
 
 
 class TestManagerHandlerRegistration:

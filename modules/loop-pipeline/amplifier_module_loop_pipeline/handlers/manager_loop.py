@@ -1,49 +1,81 @@
-"""Manager loop handler (stub) — supervisor pattern over a child pipeline.
+"""Manager loop handler — supervisor pattern over a child subgraph.
 
 The manager loop (shape=house) orchestrates sprint-based iteration by
-supervising a child pipeline. The manager observes the child's telemetry,
-evaluates progress via a guard function, and optionally steers the child
-through intervention.
+supervising a child subgraph. Each cycle the manager:
 
-This is a **stub implementation** that allows pipelines containing manager
-nodes to parse and execute without crashing. The stub runs a single cycle
-and returns SUCCESS.
+1. **Observes** — runs the child subgraph via a subgraph_runner callback.
+2. **Evaluates** — checks a guard condition (manager.stop_condition) to
+   decide whether to stop or continue.
+3. **Acts** — optionally injects steering context, then waits before the
+   next cycle.
 
-**Full implementation (future):**
-The complete manager loop would:
-1. Auto-start a child pipeline from ``stack.child_dotfile``.
-2. Enter an observation loop with ``manager.max_cycles`` iterations.
-3. Each cycle:
-   a. **Observe** — ingest child telemetry (active stage, outcomes,
-      retry counts, artifacts) into context.
-   b. **Guard** — evaluate ``manager.stop_condition`` to decide whether
-      to continue, intervene, or escalate.
-   c. **Steer** — if cooldown has elapsed, write intervention instructions
-      to the child's active stage directory.
-   d. **Wait** — sleep for ``manager.poll_interval``.
-4. Return SUCCESS if child completes, FAIL if max cycles exceeded.
+The loop terminates when the guard is satisfied, the child succeeds
+(default guard), or max_cycles is exhausted.
 
-Spec coverage: MGR-001–010, COMP-001–002, Section 4.11.
+Node attributes:
+    manager.max_cycles      — Maximum observation cycles (default 10).
+    manager.poll_interval   — Delay between cycles, e.g. "45s" (default "0s").
+    manager.stop_condition  — Condition expression for early exit (default "").
+    manager.actions         — Comma-separated: observe, steer, wait (default
+                              "observe,wait").
+
+Spec coverage: MGR-001-010, COMP-001-002, Section 4.11.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+from typing import Any, Callable, Coroutine
 
+from ..conditions import evaluate_condition
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
 
 logger = logging.getLogger(__name__)
 
+# Type alias matching the ParallelHandler's SubgraphRunner convention.
+SubgraphRunner = Callable[
+    [str, PipelineContext, Graph, str],
+    Coroutine[Any, Any, Outcome],
+]
+
+# Pattern for parsing duration strings like "45s", "2m", "500ms".
+_DURATION_RE = re.compile(
+    r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|s|m)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_duration(raw: str) -> float:
+    """Parse a duration string to seconds.
+
+    Supports: "45s", "2m", "500ms", or plain number (treated as seconds).
+    Returns 0.0 on parse failure.
+    """
+    m = _DURATION_RE.match(raw)
+    if not m:
+        return 0.0
+    value = float(m.group("value"))
+    unit = (m.group("unit") or "s").lower()
+    if unit == "ms":
+        return value / 1000.0
+    if unit == "m":
+        return value * 60.0
+    return value  # seconds
+
 
 class ManagerLoopHandler:
-    """Stub handler for manager loop nodes (shape=house).
+    """Handler for manager loop nodes (shape=house).
 
-    Allows pipelines with manager nodes to execute. Returns SUCCESS
-    after a single simulated cycle. See module docstring for the
-    full implementation design.
+    Runs an observe/evaluate/act cycle over a child subgraph,
+    delegating child execution to the provided subgraph_runner.
     """
+
+    def __init__(self, subgraph_runner: SubgraphRunner | None = None) -> None:
+        self._runner = subgraph_runner
 
     async def execute(
         self,
@@ -52,33 +84,115 @@ class ManagerLoopHandler:
         graph: Graph,
         logs_root: str,
     ) -> Outcome:
-        """Execute a manager loop node (stub).
+        """Execute a manager loop node.
 
-        Reads configuration from node attributes but does not actually
-        spawn or supervise a child pipeline.
+        Reads configuration from node attributes, then enters the
+        observe/evaluate/act cycle until a stop condition is met or
+        max_cycles is exhausted.
         """
-        # Read configuration (parsed but not used in stub)
+        # -- Parse configuration ------------------------------------------------
         max_cycles = int(node.attrs.get("manager.max_cycles", 10))
-        poll_interval = node.attrs.get("manager.poll_interval", "45s")
-        _stop_condition = node.attrs.get("manager.stop_condition", "")
-        _actions = node.attrs.get("manager.actions", "observe,wait")
-        child_dotfile = node.attrs.get("stack.child_dotfile", "")
+        poll_interval_s = _parse_duration(
+            str(node.attrs.get("manager.poll_interval", "0s"))
+        )
+        stop_condition = str(node.attrs.get("manager.stop_condition", ""))
+        actions_raw = str(node.attrs.get("manager.actions", "observe,wait"))
+        actions = [a.strip() for a in actions_raw.split(",")]
+
+        # -- Validate prerequisites ---------------------------------------------
+        child_edges = graph.outgoing_edges(node.id)
+        if not child_edges:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason="Manager loop has no child to supervise",
+            )
+
+        if self._runner is None:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason="Manager loop requires a subgraph_runner",
+            )
+
+        child_start_id = child_edges[0].to_node
 
         logger.info(
-            "Manager loop stub '%s': max_cycles=%d, poll=%s, child=%s",
+            "Manager '%s': max_cycles=%d, poll=%.1fs, actions=%s, child=%s",
             node.id,
             max_cycles,
-            poll_interval,
-            child_dotfile,
+            poll_interval_s,
+            actions,
+            child_start_id,
         )
 
+        # -- Observation loop ---------------------------------------------------
+        last_outcome: Outcome | None = None
+        for cycle in range(1, max_cycles + 1):
+            # 1. OBSERVE — build child context and run child subgraph
+            child_context = context.clone()
+            if "steer" in actions and last_outcome is not None:
+                child_context.set(
+                    "manager.steering",
+                    f"Previous attempt {cycle - 1} resulted in "
+                    f"{last_outcome.status.value}. Try a different approach.",
+                )
+
+            try:
+                child_outcome = await self._runner(
+                    child_start_id, child_context, graph, logs_root
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Manager '%s' cycle %d: child raised %s",
+                    node.id,
+                    cycle,
+                    exc,
+                )
+                child_outcome = Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason=str(exc),
+                )
+
+            last_outcome = child_outcome
+
+            # Record cycle telemetry in parent context
+            context.set(f"manager.cycle_{cycle}.status", child_outcome.status.value)
+            context.set("manager.last_child_status", child_outcome.status.value)
+            context.set("manager.cycles_completed", cycle)
+
+            # 2. EVALUATE — check stop / guard condition
+            if stop_condition:
+                if evaluate_condition(stop_condition, child_outcome, context):
+                    return Outcome(
+                        status=child_outcome.status,
+                        notes=f"Manager completed in {cycle} cycle(s) — stop condition satisfied",
+                        context_updates={
+                            "last_stage": node.id,
+                            "manager.cycles": cycle,
+                        },
+                    )
+            else:
+                # Default guard: stop on success or partial_success
+                if child_outcome.is_success:
+                    return Outcome(
+                        status=child_outcome.status,
+                        notes=f"Manager completed in {cycle} cycle(s)",
+                        context_updates={
+                            "last_stage": node.id,
+                            "manager.cycles": cycle,
+                        },
+                    )
+
+            # 3. ACT — wait before next cycle
+            if "wait" in actions and cycle < max_cycles and poll_interval_s > 0:
+                await asyncio.sleep(poll_interval_s)
+
+        # -- Max cycles exhausted -----------------------------------------------
         return Outcome(
-            status=StageStatus.SUCCESS,
-            notes=(
-                f"Manager loop stub — ran 1 simulated cycle "
-                f"(max_cycles={max_cycles}, child={child_dotfile!r})"
-            ),
+            status=StageStatus.FAIL,
+            failure_reason=f"Manager exhausted {max_cycles} cycle(s)",
+            notes=f"Last child status: {last_outcome.status.value if last_outcome else 'none'}",
             context_updates={
                 "last_stage": node.id,
+                "manager.cycles": max_cycles,
             },
         )

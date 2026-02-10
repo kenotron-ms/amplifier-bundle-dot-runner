@@ -65,7 +65,9 @@ class HandlerRegistry:
             "wait.human": HumanGateHandler(
                 interviewer=kwargs.get("interviewer"),
             ),
-            "stack.manager_loop": ManagerLoopHandler(),
+            "stack.manager_loop": ManagerLoopHandler(
+                subgraph_runner=kwargs.get("subgraph_runner"),
+            ),
             "parallel": ParallelHandler(
                 subgraph_runner=kwargs.get("subgraph_runner"),
             ),
