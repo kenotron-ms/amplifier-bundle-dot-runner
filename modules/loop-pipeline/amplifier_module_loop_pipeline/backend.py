@@ -142,6 +142,17 @@ class AmplifierBackend:
                 incoming_edge,
                 graph,
             )
+            # Fall back to direct tool loop if spawn failed and provider available
+            if outcome.status == StageStatus.FAIL and self._provider is not None:
+                logger.info(
+                    "Spawn failed for node %s, falling back to direct tool loop",
+                    node.id,
+                )
+                outcome = await self._run_with_tool_loop(
+                    node,
+                    instruction,
+                    reasoning_effort,
+                )
         elif self._provider is not None:
             outcome = await self._run_with_tool_loop(
                 node,
@@ -409,32 +420,63 @@ def _extract_tool_calls(response: Any, provider: Any) -> list[Any]:
 
 
 def _build_assistant_message(response: Any) -> Any:
-    """Build an assistant Message from a ChatResponse for the tool loop."""
-    from amplifier_core import Message
-    from amplifier_core.message_models import ToolCallBlock
+    """Build an assistant Message from a ChatResponse for the tool loop.
 
-    blocks: list[Any] = []
+    Separates text content into ``Message.content`` (string) and tool calls
+    into ``Message.tool_calls`` (list of dicts).  This avoids a type mismatch
+    when the provider later serializes the message — putting ToolCallBlock
+    objects directly in ``content`` caused serialization failures.
+    """
+    from amplifier_core import Message
+
+    text_parts: list[str] = []
+    tool_calls_list: list[dict[str, Any]] = []
+
+    # Collect text and tool-call blocks from response.content
     content = getattr(response, "content", None)
     if content:
         for block in content:
-            blocks.append(block)
-    # Ensure tool call blocks are present for providers that use
-    # response.tool_calls instead of inline ToolCallBlocks
-    tool_calls = getattr(response, "tool_calls", None)
-    if tool_calls:
-        existing_tc_ids = {
-            b.id
-            for b in blocks
-            if hasattr(b, "type") and getattr(b, "type", None) == "tool_call"
-        }
-        for tc in tool_calls:
-            if tc.id not in existing_tc_ids:
-                blocks.append(
-                    ToolCallBlock(
-                        id=tc.id,
-                        name=tc.name,
-                        input=tc.arguments,
-                    )
+            if hasattr(block, "text"):
+                text_parts.append(block.text)
+            elif hasattr(block, "tool_call_id") or hasattr(block, "id"):
+                # Tool-call block — extract into a plain dict
+                tc_id = getattr(block, "tool_call_id", None) or getattr(block, "id", "")
+                tc_name = getattr(block, "tool_name", None) or getattr(
+                    block, "name", ""
+                )
+                tc_args = getattr(block, "arguments", None) or getattr(
+                    block, "input", {}
+                )
+                tool_calls_list.append(
+                    {
+                        "id": tc_id,
+                        "tool": tc_name,
+                        "arguments": tc_args if isinstance(tc_args, dict) else {},
+                    }
                 )
 
-    return Message(role="assistant", content=blocks if blocks else "")
+    # Also pick up tool calls from response.tool_calls (some providers
+    # surface them there instead of inline in content)
+    resp_tool_calls = getattr(response, "tool_calls", None)
+    if resp_tool_calls:
+        existing_ids = {tc["id"] for tc in tool_calls_list}
+        for tc in resp_tool_calls:
+            tc_id = getattr(tc, "id", "")
+            if tc_id not in existing_ids:
+                tool_calls_list.append(
+                    {
+                        "id": tc_id,
+                        "tool": getattr(tc, "name", ""),
+                        "arguments": getattr(tc, "arguments", {}),
+                    }
+                )
+
+    text = "\n".join(text_parts) if text_parts else ""
+    msg = Message(role="assistant", content=text)
+
+    if tool_calls_list:
+        # Message uses extra="allow", so this dynamic attribute is accepted.
+        # The provider's _convert_messages() picks up msg.tool_calls.
+        msg.tool_calls = tool_calls_list  # type: ignore[attr-defined]
+
+    return msg
