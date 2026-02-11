@@ -225,15 +225,15 @@ class TestHumanGateHandler:
         assert outcome.suggested_next_ids == ["fix"]
 
     @pytest.mark.asyncio
-    async def test_skipped_answer_uses_default_choice(self):
-        """HUMAN-005: SKIPPED answer falls back to first choice."""
+    async def test_skipped_answer_returns_fail(self):
+        """M-13: SKIPPED answer returns FAIL per spec, not SUCCESS."""
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
         interviewer = QueueInterviewer([])  # Will return SKIPPED
         handler = HumanGateHandler(interviewer=interviewer)
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        # M-12: default choice "Approve" maps to "deploy" target node
-        assert outcome.suggested_next_ids == ["deploy"]
+        assert outcome.status == StageStatus.FAIL
+        assert "skipped" in (outcome.notes or outcome.failure_reason or "").lower()
 
     @pytest.mark.asyncio
     async def test_timeout_answer_uses_default_choice(self):

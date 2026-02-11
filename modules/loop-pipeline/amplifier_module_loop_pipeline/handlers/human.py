@@ -131,7 +131,21 @@ class HumanGateHandler:
                 },
             )
 
-        # 6. Determine the selected label and map to target node IDs (M-12)
+        # 6. M-13: SKIPPED answer returns FAIL per spec
+        if (
+            isinstance(answer.value, AnswerValue)
+            and answer.value == AnswerValue.SKIPPED
+        ):
+            return Outcome(
+                status=StageStatus.FAIL,
+                context_updates={
+                    "human.gate.selection": None,
+                    "human.gate.node_id": node.id,
+                },
+                notes=f"Human gate '{node.id}': interaction was skipped",
+            )
+
+        # 7. Determine the selected label and map to target node IDs (M-12)
         selected = self._resolve_selection(answer, choices)
         target_ids = label_to_targets.get(selected or "", []) if selected else []
 
