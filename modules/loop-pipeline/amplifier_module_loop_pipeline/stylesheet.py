@@ -165,12 +165,21 @@ def apply_stylesheet(graph: Graph, rules: list[StyleRule]) -> Graph:
 
 
 def _selector_matches(rule: StyleRule, node_id: str, node_class: str) -> bool:
-    """Check if a rule's selector matches a node."""
+    """Check if a rule's selector matches a node.
+
+    Class selectors support comma-separated multi-class values:
+    class="code,critical" matches both .code and .critical selectors.
+    """
     sel = rule.selector
     if sel == "*":
         return True
     if sel.startswith("#"):
         return sel[1:] == node_id
     if sel.startswith("."):
-        return sel[1:] == node_class
+        target_class = sel[1:]
+        # Split comma-separated classes and strip whitespace
+        node_classes = (
+            {c.strip() for c in node_class.split(",")} if node_class else set()
+        )
+        return target_class in node_classes
     return False

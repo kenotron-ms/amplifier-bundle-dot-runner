@@ -298,3 +298,79 @@ def test_partial_property_override():
     # llm_provider and reasoning_effort still come from *
     assert result.nodes["impl"].attrs.get("llm_provider") == "default-provider"
     assert result.nodes["impl"].attrs.get("reasoning_effort") == "low"
+
+
+# --- Multi-class matching (1b3) ---
+
+
+def test_class_selector_matches_comma_separated_classes():
+    """`.code` selector must match nodes with class="code,critical"."""
+    graph = _make_graph_with_stylesheet(
+        nodes={
+            "impl": Node(
+                id="impl", prompt="Build", attrs={"class": "code,critical"}
+            ),
+        },
+        stylesheet=".code { llm_model: claude-opus-4-6; }",
+    )
+    rules = parse_stylesheet(graph.model_stylesheet)
+    result = apply_stylesheet(graph, rules)
+    assert result.nodes["impl"].attrs.get("llm_model") == "claude-opus-4-6"
+
+
+def test_class_selector_matches_second_class_in_list():
+    """`.critical` selector must match nodes with class="code,critical"."""
+    graph = _make_graph_with_stylesheet(
+        nodes={
+            "impl": Node(
+                id="impl", prompt="Build", attrs={"class": "code,critical"}
+            ),
+        },
+        stylesheet=".critical { reasoning_effort: high; }",
+    )
+    rules = parse_stylesheet(graph.model_stylesheet)
+    result = apply_stylesheet(graph, rules)
+    assert result.nodes["impl"].attrs.get("reasoning_effort") == "high"
+
+
+def test_class_selector_no_match_on_multi_class():
+    """`.planning` selector must NOT match nodes with class="code,critical"."""
+    graph = _make_graph_with_stylesheet(
+        nodes={
+            "impl": Node(
+                id="impl", prompt="Build", attrs={"class": "code,critical"}
+            ),
+        },
+        stylesheet=".planning { llm_model: planning-model; }",
+    )
+    rules = parse_stylesheet(graph.model_stylesheet)
+    result = apply_stylesheet(graph, rules)
+    assert result.nodes["impl"].attrs.get("llm_model") is None
+
+
+def test_multi_class_with_spaces_around_commas():
+    """class="code, critical" (spaces) still matches .code and .critical."""
+    graph = _make_graph_with_stylesheet(
+        nodes={
+            "impl": Node(
+                id="impl", prompt="Build", attrs={"class": "code, critical"}
+            ),
+        },
+        stylesheet=".critical { reasoning_effort: high; }",
+    )
+    rules = parse_stylesheet(graph.model_stylesheet)
+    result = apply_stylesheet(graph, rules)
+    assert result.nodes["impl"].attrs.get("reasoning_effort") == "high"
+
+
+def test_single_class_still_works():
+    """Single class value still matches normally (regression check)."""
+    graph = _make_graph_with_stylesheet(
+        nodes={
+            "impl": Node(id="impl", prompt="Build", attrs={"class": "code"}),
+        },
+        stylesheet=".code { llm_model: code-model; }",
+    )
+    rules = parse_stylesheet(graph.model_stylesheet)
+    result = apply_stylesheet(graph, rules)
+    assert result.nodes["impl"].attrs.get("llm_model") == "code-model"
