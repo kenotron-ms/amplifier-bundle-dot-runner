@@ -15,7 +15,7 @@ Ties are broken by node ID (lexicographic ascending).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
@@ -33,11 +33,29 @@ _STATUS_RANK: dict[str, int] = {
 }
 
 
+@runtime_checkable
+class FanInBackend(Protocol):
+    """Protocol for LLM-based fan-in evaluation (M-17).
+
+    Implementations receive the node prompt, parallel results, and node,
+    and return the node_id of the best candidate.
+    """
+
+    async def evaluate(
+        self, prompt: str, results: list[dict[str, Any]], node: Node
+    ) -> str: ...
+
+
 class FanInHandler:
     """Handler for fan-in nodes (shape=tripleoctagon).
 
     Evaluates parallel results and selects the best candidate.
+    When a backend is provided and the node has a prompt, uses LLM-based
+    evaluation (M-17). Otherwise falls back to heuristic ranking.
     """
+
+    def __init__(self, backend: FanInBackend | None = None) -> None:
+        self._backend = backend
 
     async def execute(
         self,
@@ -49,9 +67,10 @@ class FanInHandler:
         """Evaluate parallel results and select the best candidate.
 
         1. Read parallel.results from context.
-        2. Rank candidates by status (heuristic).
-        3. Record winner in context.
-        4. Return SUCCESS if at least one candidate succeeded.
+        2. If node has prompt and backend, use LLM evaluation (M-17).
+        3. Otherwise rank candidates by status (heuristic).
+        4. Record winner in context.
+        5. Return SUCCESS if at least one candidate succeeded.
         """
         results: list[dict[str, Any]] | None = context.get("parallel.results")
 
@@ -61,8 +80,31 @@ class FanInHandler:
                 failure_reason="No parallel results to evaluate",
             )
 
-        # Heuristic selection: rank by status, then node_id for tiebreak
-        best = _heuristic_select(results)
+        # M-17: Use LLM-based evaluation when prompt and backend available
+        best: dict[str, Any] | None = None
+        if node.prompt and self._backend is not None:
+            try:
+                best_id = await self._backend.evaluate(node.prompt, results, node)
+                # Find the result dict matching the returned ID
+                for r in results:
+                    if r.get("node_id") == best_id:
+                        best = r
+                        break
+                if best is None:
+                    logger.warning(
+                        "Backend returned unknown node_id '%s', "
+                        "falling back to heuristic",
+                        best_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Fan-in backend evaluation failed: %s, falling back to heuristic",
+                    exc,
+                )
+
+        # Fallback: heuristic selection
+        if best is None:
+            best = _heuristic_select(results)
 
         if best is None:
             return Outcome(

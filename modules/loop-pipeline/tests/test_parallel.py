@@ -511,3 +511,100 @@ async def test_fan_in_tiebreak_by_node_id():
     await handler.execute(node, context, _make_graph(), "/tmp")
     # b1 comes first lexicographically
     assert context.get("parallel.fan_in.best_id") == "b1"
+
+
+# --- M-17: Fan-in LLM-based evaluation ---
+
+
+@pytest.mark.asyncio
+async def test_fan_in_uses_backend_when_prompt_and_backend_available():
+    """M-17: When node has prompt and backend, use LLM to evaluate results."""
+
+    class MockFanInBackend:
+        """Mock backend that returns the node_id of the 'best' candidate."""
+
+        def __init__(self, pick_id: str):
+            self._pick_id = pick_id
+            self.called = False
+            self.prompt_received = ""
+            self.results_received: list = []
+
+        async def evaluate(self, prompt: str, results: list[dict], node: Node) -> str:
+            self.called = True
+            self.prompt_received = prompt
+            self.results_received = results
+            return self._pick_id
+
+    backend = MockFanInBackend(pick_id="b2")
+    handler = FanInHandler(backend=backend)
+    node = Node(
+        id="fan_in",
+        shape="tripleoctagon",
+        prompt="Pick the best implementation based on code quality",
+    )
+    context = _make_context()
+    context.set(
+        "parallel.results",
+        [
+            {"node_id": "b1", "status": "success", "notes": "quick and dirty"},
+            {"node_id": "b2", "status": "partial_success", "notes": "clean code"},
+        ],
+    )
+
+    await handler.execute(node, context, _make_graph(), "/tmp")
+
+    # Backend should have been called
+    assert backend.called
+    assert "code quality" in backend.prompt_received
+    assert len(backend.results_received) == 2
+    # Backend picked b2 despite it being partial_success (heuristic would pick b1)
+    assert context.get("parallel.fan_in.best_id") == "b2"
+
+
+@pytest.mark.asyncio
+async def test_fan_in_falls_back_to_heuristic_without_backend():
+    """M-17: Without backend, fan-in uses heuristic even with prompt."""
+    handler = FanInHandler()  # no backend
+    node = Node(
+        id="fan_in",
+        shape="tripleoctagon",
+        prompt="Pick the best implementation",
+    )
+    context = _make_context()
+    context.set(
+        "parallel.results",
+        [
+            {"node_id": "b1", "status": "partial_success", "notes": "partial"},
+            {"node_id": "b2", "status": "success", "notes": "full"},
+        ],
+    )
+
+    outcome = await handler.execute(node, context, _make_graph(), "/tmp")
+
+    # Without backend, heuristic picks b2 (success > partial_success)
+    assert outcome.is_success
+    assert context.get("parallel.fan_in.best_id") == "b2"
+
+
+@pytest.mark.asyncio
+async def test_fan_in_falls_back_to_heuristic_without_prompt():
+    """M-17: Without prompt, fan-in uses heuristic even with backend."""
+
+    class MockFanInBackend:
+        async def evaluate(self, prompt, results, node):
+            raise AssertionError("Backend should not be called without prompt")
+
+    handler = FanInHandler(backend=MockFanInBackend())
+    node = Node(id="fan_in", shape="tripleoctagon")  # no prompt
+    context = _make_context()
+    context.set(
+        "parallel.results",
+        [
+            {"node_id": "b1", "status": "success", "notes": "good"},
+        ],
+    )
+
+    outcome = await handler.execute(node, context, _make_graph(), "/tmp")
+
+    assert outcome.is_success
+    assert context.get("parallel.fan_in.best_id") == "b1"
