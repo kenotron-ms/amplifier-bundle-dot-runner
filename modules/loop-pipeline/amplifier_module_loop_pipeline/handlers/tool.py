@@ -47,13 +47,29 @@ class ToolHandler:
         os.makedirs(stage_dir, exist_ok=True)
         _write_file(os.path.join(stage_dir, "command.txt"), command)
 
+        # M-16: Read timeout from node attribute (seconds)
+        timeout_s: float | None = None
+        if node.timeout is not None:
+            timeout_s = float(node.timeout)
+
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout_bytes, stderr_bytes = await proc.communicate()
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout_s
+                )
+            except asyncio.TimeoutError:
+                # Kill the process on timeout
+                proc.kill()
+                await proc.wait()
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason=f"Timeout after {timeout_s}s: {command}",
+                )
             stdout_text = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
             stderr_text = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
 

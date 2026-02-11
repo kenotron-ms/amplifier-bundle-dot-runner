@@ -260,6 +260,31 @@ async def test_tool_handler_writes_log_files(tmp_path):
     assert (tmp_path / "step" / "output.txt").exists()
 
 
+# --- M-16: ToolHandler timeout support ---
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_respects_node_timeout(tmp_path):
+    """M-16: ToolHandler enforces node timeout attribute."""
+    # sleep 10 should be killed by the 1-second timeout
+    node = Node(id="slow", attrs={"tool_command": "sleep 10"}, timeout=1)
+    handler = ToolHandler()
+    ctx = _make_context()
+    outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.FAIL
+    assert "timeout" in (outcome.failure_reason or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_no_timeout_runs_normally(tmp_path):
+    """M-16: When no timeout, command runs to completion."""
+    node = Node(id="fast", attrs={"tool_command": "echo done"})
+    handler = ToolHandler()
+    ctx = _make_context()
+    outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+    assert outcome.status == StageStatus.SUCCESS
+
+
 # --- HandlerRegistry with ToolHandler ---
 
 
