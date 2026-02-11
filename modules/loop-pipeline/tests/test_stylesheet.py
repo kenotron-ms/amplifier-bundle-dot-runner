@@ -23,22 +23,22 @@ def test_parse_universal_selector():
 
 
 def test_parse_class_selector():
-    """Class selector '.code' has specificity 1."""
+    """Class selector '.code' has specificity 2 (M-21: universal<shape<class<id)."""
     rules = parse_stylesheet(".code { llm_model: claude-opus-4-6; }")
     assert len(rules) == 1
     assert rules[0].selector == ".code"
-    assert rules[0].specificity == 1
+    assert rules[0].specificity == 2
     assert rules[0].properties == {"llm_model": "claude-opus-4-6"}
 
 
 def test_parse_id_selector():
-    """ID selector '#critical_review' has specificity 2."""
+    """ID selector '#critical_review' has specificity 3 (M-21: universal<shape<class<id)."""
     rules = parse_stylesheet(
         "#critical_review { llm_model: gpt-5.2; llm_provider: openai; }"
     )
     assert len(rules) == 1
     assert rules[0].selector == "#critical_review"
-    assert rules[0].specificity == 2
+    assert rules[0].specificity == 3
     assert rules[0].properties == {
         "llm_model": "gpt-5.2",
         "llm_provider": "openai",
@@ -164,7 +164,7 @@ def test_apply_id_selector():
 
 
 def test_specificity_id_overrides_class():
-    """ID selector (specificity 2) overrides class (specificity 1)."""
+    """ID selector (specificity 3) overrides class (specificity 2)."""
     graph = _make_graph_with_stylesheet(
         nodes={
             "critical_review": Node(
@@ -183,7 +183,7 @@ def test_specificity_id_overrides_class():
 
 
 def test_specificity_class_overrides_universal():
-    """Class selector (specificity 1) overrides universal (specificity 0)."""
+    """Class selector (specificity 2) overrides universal (specificity 0)."""
     graph = _make_graph_with_stylesheet(
         nodes={
             "impl": Node(id="impl", prompt="Build", attrs={"class": "code"}),

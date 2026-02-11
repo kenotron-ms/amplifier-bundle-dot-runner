@@ -110,6 +110,41 @@ class ArtifactStore:
         """Return the names of all stored artifacts."""
         return list(self._artifacts.keys())
 
+    def has(self, name: str) -> bool:
+        """Check whether an artifact with *name* exists.
+
+        L-10: Spec-required ``has(name)`` method.
+        """
+        return name in self._artifacts
+
+    def remove(self, name: str) -> None:
+        """Remove an artifact by name.
+
+        If the artifact is file-backed, the backing file is also deleted.
+        Removing a non-existent artifact is a no-op.
+
+        L-10: Spec-required ``remove(name)`` method.
+        """
+        artifact = self._artifacts.pop(name, None)
+        if artifact is not None and artifact.is_file_backed:
+            path = artifact.data  # .data holds the file path for file-backed
+            if isinstance(path, str) and os.path.exists(path):
+                os.remove(path)
+
+    def clear(self) -> None:
+        """Remove all artifacts.
+
+        File-backed artifacts have their backing files deleted.
+
+        L-10: Spec-required ``clear()`` method.
+        """
+        for artifact in self._artifacts.values():
+            if artifact.is_file_backed:
+                path = artifact.data
+                if isinstance(path, str) and os.path.exists(path):
+                    os.remove(path)
+        self._artifacts.clear()
+
     # -- internal helpers ----------------------------------------------------
 
     def _artifact_path(self, name: str) -> str:

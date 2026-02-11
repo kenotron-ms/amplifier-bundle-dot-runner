@@ -60,6 +60,36 @@ class RetryPolicy:
     backoff: BackoffConfig = field(default_factory=BackoffConfig)
 
     @classmethod
+    def from_preset(cls, name: str) -> RetryPolicy:
+        """Create a RetryPolicy from a named preset (L-15).
+
+        Presets:
+            none       — 1 attempt (no retries).
+            standard   — 3 attempts, exponential backoff.
+            aggressive — 5 attempts, exponential backoff.
+            linear     — 3 attempts, linear backoff (factor=1.0).
+            patient    — 10 attempts, exponential backoff.
+
+        Raises ValueError for unknown preset names.
+        """
+        presets: dict[str, RetryPolicy] = {
+            "none": cls(max_attempts=1),
+            "standard": cls(max_attempts=3),
+            "aggressive": cls(max_attempts=5),
+            "linear": cls(
+                max_attempts=3,
+                backoff=BackoffConfig(backoff_factor=1.0),
+            ),
+            "patient": cls(max_attempts=10),
+        }
+        if name not in presets:
+            raise ValueError(
+                f"Unknown retry preset '{name}'. "
+                f"Valid presets: {', '.join(sorted(presets))}"
+            )
+        return presets[name]
+
+    @classmethod
     def from_node(cls, node: Node, graph: Graph) -> RetryPolicy:
         """Build a RetryPolicy from node and graph attributes.
 

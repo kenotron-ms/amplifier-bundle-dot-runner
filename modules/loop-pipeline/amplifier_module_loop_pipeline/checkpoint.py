@@ -2,9 +2,10 @@
 
 After every node execution, the engine saves a JSON checkpoint so the
 pipeline can resume after crashes. The checkpoint captures the current
-node, completed nodes with outcomes, context snapshot, and retry counters.
+node, completed nodes with outcomes, context snapshot, retry counters,
+and execution logs.
 
-Spec coverage: CHKP-001–006, Section 5.3.
+Spec coverage: CHKP-001-006, Section 5.3
 """
 
 from __future__ import annotations
@@ -29,6 +30,17 @@ class Checkpoint:
     node_outcomes: dict[str, dict[str, Any]]  # node_id -> serialized Outcome
     timestamp: str
     node_retries: dict[str, int] = field(default_factory=dict)
+    logs: list[str] = field(default_factory=list)  # L-7: execution log entries
+
+    @property
+    def completed_node_list(self) -> list[str]:
+        """Return completed node IDs as a list (L-8: spec compliance).
+
+        The spec defines ``completed_nodes`` as ``List<String>``.
+        This property provides that view while keeping the internal
+        dict representation for backward compatibility.
+        """
+        return list(self.completed_nodes.keys())
 
 
 def save_checkpoint(checkpoint: Checkpoint, path: str) -> None:
@@ -45,6 +57,7 @@ def save_checkpoint(checkpoint: Checkpoint, path: str) -> None:
         "node_outcomes": checkpoint.node_outcomes,
         "timestamp": checkpoint.timestamp,
         "node_retries": checkpoint.node_retries,
+        "logs": checkpoint.logs,  # L-7
     }
     with open(path, "w") as f:
         json.dump(data, f, indent=2, default=str)
@@ -66,4 +79,5 @@ def load_checkpoint(path: str) -> Checkpoint:
         node_outcomes=data.get("node_outcomes", {}),
         timestamp=data.get("timestamp", ""),
         node_retries=data.get("node_retries", {}),
+        logs=data.get("logs", []),  # L-7
     )

@@ -4,23 +4,24 @@ Parses a mini-language where selectors target nodes and declarations
 set model-related properties. Applied as a transform during the
 INITIALIZE phase (before execution starts).
 
-Spec coverage: STYLE-001–007, Section 8.
+Spec coverage: STYLE-001-007, Section 8.6
 
 Grammar:
     Stylesheet    ::= Rule+
     Rule          ::= Selector '{' Declaration ( ';' Declaration )* ';'? '}'
-    Selector      ::= '*' | '#' Identifier | '.' ClassName
+    Selector      ::= '*' | ShapeName | '.' ClassName | '#' Identifier
     Declaration   ::= Property ':' PropertyValue
     Property      ::= 'llm_model' | 'llm_provider' | 'reasoning_effort'
 
-Specificity:
+Specificity (M-21: added shape-name level):
     *           -> 0 (universal)
-    .class      -> 1
-    #node_id    -> 2
+    shape_name  -> 1 (bare shape name, e.g. 'box', 'ellipse')
+    .class      -> 2
+    #node_id    -> 3
 
 Resolution order (highest wins):
     1. Explicit node attribute
-    2. Stylesheet rule by specificity (ID > class > universal)
+    2. Stylesheet rule by specificity (ID > class > shape > universal)
     3. Graph-level default
     4. System default
 """
@@ -32,13 +33,14 @@ from dataclasses import dataclass, field
 
 from .graph import Graph
 
-# Recognized stylesheet properties (spec Section 8.4)
+# Recognized stylesheet properties (spec Section 8.6)
 _RECOGNIZED_PROPERTIES = frozenset({"llm_model", "llm_provider", "reasoning_effort"})
 
 # Regex to match a single rule: selector { declarations }
+# M-21: Added bare identifier (shape name) alternative: [A-Za-z][A-Za-z0-9_]*
 _RULE_RE = re.compile(
     r"""
-    ([*]|[#][A-Za-z_][A-Za-z0-9_]*|[.][a-z0-9-]+)  # selector
+    ([*]|[#][A-Za-z_][A-Za-z0-9_]*|[.][a-z0-9-]+|[A-Za-z][A-Za-z0-9_]*)  # selector
     \s*\{                                              # opening brace
     ([^}]*)                                            # declarations
     \}                                                 # closing brace
@@ -63,7 +65,7 @@ class StyleRule:
     """A single parsed stylesheet rule.
 
     Attributes:
-        selector: The CSS-like selector string (e.g. '*', '.code', '#node_id').
+        selector: The CSS-like selector string (e.g. '*', 'box', '.code', '#node_id').
         specificity: Numeric specificity for precedence ordering.
         properties: Map of recognized property names to their values.
     """
@@ -79,6 +81,9 @@ def parse_stylesheet(css: str) -> list[StyleRule]:
     Unrecognized properties are silently ignored. Empty or whitespace-only
     input returns an empty list. Parsing is safe — no eval.
 
+    M-21: Bare identifiers (e.g. ``box``, ``ellipse``) are parsed as
+    shape-name selectors with specificity 1.
+
     Args:
         css: The stylesheet text to parse.
 
@@ -90,23 +95,25 @@ def parse_stylesheet(css: str) -> list[StyleRule]:
 
     rules: list[StyleRule] = []
     for match in _RULE_RE.finditer(css):
-        selector = match.group(1)
+        selector = match.group(1).strip()
         decl_block = match.group(2)
 
         # Determine specificity from selector type
+        # M-21: universal(0) < shape(1) < class(2) < id(3)
         if selector == "*":
             specificity = 0
         elif selector.startswith("."):
-            specificity = 1
-        elif selector.startswith("#"):
             specificity = 2
+        elif selector.startswith("#"):
+            specificity = 3
         else:
-            continue  # Unrecognized selector — skip
+            # Bare identifier = shape-name selector (M-21)
+            specificity = 1
 
         # Parse declarations
         properties: dict[str, str] = {}
         for decl_match in _DECL_RE.finditer(decl_block):
-            prop_name = decl_match.group(1)
+            prop_name = decl_match.group(1).strip()
             prop_value = decl_match.group(2).strip()
             if prop_name in _RECOGNIZED_PROPERTIES:
                 properties[prop_name] = prop_value
@@ -147,7 +154,9 @@ def apply_stylesheet(graph: Graph, rules: list[StyleRule]) -> Graph:
         resolved: dict[str, tuple[int, str]] = {}  # prop -> (specificity, value)
 
         for rule in rules:
-            if not _selector_matches(rule, node.id, node.attrs.get("class", "")):
+            if not _selector_matches(
+                rule, node.id, node.attrs.get("class", ""), node.shape
+            ):
                 continue
             for prop, value in rule.properties.items():
                 prev = resolved.get(prop)
@@ -164,11 +173,15 @@ def apply_stylesheet(graph: Graph, rules: list[StyleRule]) -> Graph:
     return graph
 
 
-def _selector_matches(rule: StyleRule, node_id: str, node_class: str) -> bool:
+def _selector_matches(
+    rule: StyleRule, node_id: str, node_class: str, node_shape: str
+) -> bool:
     """Check if a rule's selector matches a node.
 
     Class selectors support comma-separated multi-class values:
     class="code,critical" matches both .code and .critical selectors.
+
+    M-21: Bare identifiers match against the node's shape attribute.
     """
     sel = rule.selector
     if sel == "*":
@@ -182,4 +195,5 @@ def _selector_matches(rule: StyleRule, node_id: str, node_class: str) -> bool:
             {c.strip() for c in node_class.split(",")} if node_class else set()
         )
         return target_class in node_classes
-    return False
+    # M-21: bare identifier → shape-name selector
+    return sel == node_shape

@@ -4,7 +4,7 @@ Reads the node's prompt, expands template variables, calls the LLM
 backend, writes prompt/response/status to the logs directory, and
 returns the outcome.
 
-Spec coverage: CODER-001–011, Section 4.5.
+Spec coverage: CODER-001-011, Section 4.5
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
+from ..transforms import expand_goal_variable
 
 
 @runtime_checkable
@@ -97,11 +98,12 @@ class CodergenHandler:
 def _expand_variables(prompt: str, graph: Graph, context: PipelineContext) -> str:
     """Expand template variables in a prompt string.
 
+    L-17: Delegates to the shared expand_goal_variable utility.
     Only built-in variable: $goal resolves to graph.goal.
     Spec Section 4.5: Variable expansion.
     """
-    result = prompt.replace("$goal", graph.goal)
-    return result
+    context_goal = context.get("graph.goal") or ""
+    return expand_goal_variable(prompt, graph.goal, context_goal)
 
 
 def _write_file(path: str, content: str) -> None:
@@ -111,9 +113,17 @@ def _write_file(path: str, content: str) -> None:
 
 
 def _write_status(stage_dir: str, outcome: Outcome) -> None:
-    """Write status.json for a stage outcome."""
+    """Write status.json for a stage outcome.
+
+    M-19: Uses 'outcome' as the primary field name per spec Appendix C.
+    Keeps 'status' as backward-compat alias.
+    """
     data = {
-        "status": outcome.status.value,
+        "outcome": outcome.status.value,
+        "status": outcome.status.value,  # backward compat
+        "preferred_next_label": outcome.preferred_label,
+        "suggested_next_ids": outcome.suggested_next_ids,
+        "context_updates": outcome.context_updates,
         "notes": outcome.notes,
         "failure_reason": outcome.failure_reason,
     }

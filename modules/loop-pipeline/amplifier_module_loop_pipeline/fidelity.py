@@ -29,9 +29,13 @@ Thread resolution (for full mode):
 
 from __future__ import annotations
 
+import logging
+
 from .context import PipelineContext
 from .graph import Edge, Graph, Node
 from .outcome import Outcome
+
+logger = logging.getLogger(__name__)
 
 # All valid fidelity mode strings
 VALID_FIDELITY_MODES: frozenset[str] = frozenset(
@@ -68,18 +72,48 @@ def resolve_fidelity(
     # 1. Edge fidelity (highest priority)
     if incoming_edge is not None:
         edge_fidelity = incoming_edge.attrs.get("fidelity")
-        if edge_fidelity and edge_fidelity in VALID_FIDELITY_MODES:
-            return edge_fidelity
+        if edge_fidelity:
+            if edge_fidelity in VALID_FIDELITY_MODES:
+                return edge_fidelity
+            # M-22: warn on invalid fidelity instead of silent fallback
+            logger.warning(
+                "Invalid fidelity mode '%s' on edge %s->%s, "
+                "falling back to '%s'. Valid modes: %s",
+                edge_fidelity,
+                incoming_edge.from_node,
+                incoming_edge.to_node,
+                _DEFAULT_FIDELITY,
+                ", ".join(sorted(VALID_FIDELITY_MODES)),
+            )
 
     # 2. Node fidelity
     node_fidelity = node.attrs.get("fidelity")
-    if node_fidelity and node_fidelity in VALID_FIDELITY_MODES:
-        return node_fidelity
+    if node_fidelity:
+        if node_fidelity in VALID_FIDELITY_MODES:
+            return node_fidelity
+        # M-22: warn on invalid fidelity instead of silent fallback
+        logger.warning(
+            "Invalid fidelity mode '%s' on node '%s', "
+            "falling back to '%s'. Valid modes: %s",
+            node_fidelity,
+            node.id,
+            _DEFAULT_FIDELITY,
+            ", ".join(sorted(VALID_FIDELITY_MODES)),
+        )
 
     # 3. Graph default_fidelity
     graph_fidelity = graph.graph_attrs.get("default_fidelity")
-    if graph_fidelity and graph_fidelity in VALID_FIDELITY_MODES:
-        return graph_fidelity
+    if graph_fidelity:
+        if graph_fidelity in VALID_FIDELITY_MODES:
+            return graph_fidelity
+        # M-22: warn on invalid fidelity instead of silent fallback
+        logger.warning(
+            "Invalid graph default_fidelity '%s', "
+            "falling back to '%s'. Valid modes: %s",
+            graph_fidelity,
+            _DEFAULT_FIDELITY,
+            ", ".join(sorted(VALID_FIDELITY_MODES)),
+        )
 
     # 4. System default
     return _DEFAULT_FIDELITY
@@ -155,7 +189,13 @@ def build_preamble(
         level = fidelity.split(":", 1)[1]
         return _build_summary_preamble(level, context, completed_nodes)
 
-    # Fallback to compact for any unrecognized mode
+    # M-22: Warn on unrecognized mode in build_preamble, fall back to compact
+    logger.warning(
+        "Unrecognized fidelity mode '%s' in build_preamble, "
+        "falling back to compact. Valid modes: %s",
+        fidelity,
+        ", ".join(sorted(VALID_FIDELITY_MODES)),
+    )
     return _build_compact_preamble(context, completed_nodes)
 
 

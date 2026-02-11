@@ -489,6 +489,17 @@ class PipelineEngine:
         for key, value in cp.context_snapshot.items():
             self.context.set(key, value)
 
+        # M-23: Degrade fidelity from "full" to "summary:high" on resume.
+        # The full session context is lost after a crash, so full fidelity
+        # cannot be honoured.  Other modes pass through unchanged.
+        restored_fidelity = self.context.get("graph.default_fidelity")
+        if restored_fidelity == "full":
+            self.context.set("graph.default_fidelity", "summary:high")
+            logger.info(
+                "Checkpoint resume: degraded fidelity from 'full' to "
+                "'summary:high' (full session context unavailable)"
+            )
+
         # Restore completed nodes and outcomes
         for node_id, status_str in cp.completed_nodes.items():
             if node_id not in self.completed_nodes:
@@ -537,6 +548,7 @@ class PipelineEngine:
             context_snapshot=self.context.snapshot(),
             node_outcomes=serialized_outcomes,
             timestamp=datetime.now(timezone.utc).isoformat(),
+            logs=self.context.get_logs(),  # L-7: include logs in checkpoint
         )
         save_checkpoint(cp, self._checkpoint_path)
 
@@ -572,7 +584,11 @@ class PipelineEngine:
         os.makedirs(node_dir, exist_ok=True)
         status = {
             "node_id": node_id,
-            "status": outcome.status.value,
+            "outcome": outcome.status.value,
+            "status": outcome.status.value,  # backward compat (M-19)
+            "preferred_next_label": outcome.preferred_label,
+            "suggested_next_ids": outcome.suggested_next_ids,
+            "context_updates": outcome.context_updates,
             "duration_ms": duration_ms,
             "notes": outcome.notes,
             "failure_reason": outcome.failure_reason,
