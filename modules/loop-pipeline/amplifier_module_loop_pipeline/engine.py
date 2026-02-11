@@ -291,6 +291,93 @@ class PipelineEngine:
             # Step 6: Advance to next node
             current_node = self.graph.nodes[edge.to_node]
 
+    async def _run_from(
+        self,
+        start_node_id: str,
+        *,
+        context: PipelineContext | None = None,
+    ) -> Outcome:
+        """Execute a subgraph starting from the given node.
+
+        Walks from *start_node_id* until an exit node is reached, no
+        outgoing edges exist, or the node is not in the graph.
+
+        This is the subgraph runner used by ParallelHandler and
+        ManagerLoopHandler to execute branches and child subgraphs.
+
+        Args:
+            start_node_id: Node ID to begin execution from.
+            context: Optional isolated context for this subgraph run.
+                     If None, uses the engine's main context.
+
+        Returns:
+            The final Outcome of the subgraph execution.
+        """
+        ctx = context if context is not None else self.context
+
+        if start_node_id not in self.graph.nodes:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=f"Subgraph start node '{start_node_id}' not found in graph",
+            )
+
+        current_node = self.graph.nodes[start_node_id]
+        last_outcome: Outcome | None = None
+
+        # Safety bound to prevent infinite loops
+        max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
+
+        # Shapes that terminate a subgraph walk (exit, fan_in)
+        _TERMINAL_SHAPES = {"Msquare", "tripleoctagon"}
+
+        for _step in range(max_steps):
+            # Check for terminal node (exit or fan_in)
+            if current_node.shape in _TERMINAL_SHAPES:
+                return last_outcome or Outcome(
+                    status=StageStatus.SUCCESS,
+                    notes="Subgraph reached terminal node",
+                )
+
+            # Execute node handler (no retry policy in subgraph -- parent manages retries)
+            handler = self.handler_registry.get(current_node)
+
+            # Skip start nodes (no-op)
+            if current_node.shape == "Mdiamond":
+                outcome = Outcome(status=StageStatus.SUCCESS)
+            else:
+                try:
+                    outcome = await handler.execute(
+                        current_node, ctx, self.graph, self.logs_root
+                    )
+                except Exception as exc:
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason=f"Subgraph node '{current_node.id}' raised: {exc}",
+                    )
+
+            last_outcome = outcome
+
+            # Apply context updates
+            if outcome.context_updates:
+                ctx.update(outcome.context_updates)
+            ctx.set("outcome", outcome.status.value)
+            if outcome.preferred_label:
+                ctx.set("preferred_label", outcome.preferred_label)
+
+            # Select next edge
+            edge = select_edge(current_node.id, outcome, ctx, self.graph)
+            if edge is None:
+                # No outgoing edge -- subgraph is complete
+                return outcome
+
+            current_node = self.graph.nodes[edge.to_node]
+
+        # Safety bound exceeded
+        return Outcome(
+            status=StageStatus.FAIL,
+            failure_reason=f"Subgraph exceeded {max_steps} steps (safety bound)",
+        )
+
     def _initialize_context(self, goal: str | None) -> None:
         """Mirror graph attributes into context.
 
