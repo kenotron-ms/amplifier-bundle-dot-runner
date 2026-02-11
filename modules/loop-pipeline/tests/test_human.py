@@ -365,6 +365,70 @@ class TestHumanGateSuggestedNextIds:
         assert outcome.suggested_next_ids == ["next"]
 
 
+# --- L-11: Accelerator key parsing ---
+
+
+class TestAcceleratorKeyParsing:
+    """L-11: Edge labels like '[Y] Yes' should have accelerator keys extracted."""
+
+    def test_bracket_key_extracted(self):
+        from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+        assert _parse_accelerator_key("[Y] Yes") == "Y"
+
+    def test_bracket_multi_char_key(self):
+        from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+        assert _parse_accelerator_key("[OK] Okay") == "OK"
+
+    def test_number_paren_key_extracted(self):
+        from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+        assert _parse_accelerator_key("1) Option One") == "1"
+
+    def test_number_dot_key_extracted(self):
+        from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+        assert _parse_accelerator_key("2. Option Two") == "2"
+
+    def test_plain_label_returns_full_label(self):
+        from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+        assert _parse_accelerator_key("Approve") == "Approve"
+
+    def test_empty_label_returns_empty(self):
+        from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+        assert _parse_accelerator_key("") == ""
+
+    @pytest.mark.asyncio
+    async def test_accelerator_keys_used_in_options(self):
+        """Options should use accelerator keys when present in edge labels."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "gate": Node(id="gate", shape="hexagon", label="Pick one"),
+                "yes": Node(id="yes", shape="box"),
+                "no": Node(id="no", shape="box"),
+            },
+            edges=[
+                Edge(from_node="gate", to_node="yes", label="[Y] Yes"),
+                Edge(from_node="gate", to_node="no", label="[N] No"),
+            ],
+        )
+        captured_questions: list[Question] = []
+
+        def capture_callback(q: Question) -> Answer:
+            captured_questions.append(q)
+            # Select using the accelerator key "Y"
+            return Answer(value="Y", selected_option=Option(key="Y", label="[Y] Yes"))
+
+        handler = HumanGateHandler(interviewer=CallbackInterviewer(capture_callback))
+        outcome = await handler.execute(
+            graph.nodes["gate"], _make_context(), graph, "/tmp"
+        )
+        assert len(captured_questions) == 1
+        # Options should have accelerator key as the key
+        assert captured_questions[0].options[0].key == "Y"
+        assert captured_questions[0].options[1].key == "N"
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["yes"]
+
+
 # --- Handler registration ---
 
 
