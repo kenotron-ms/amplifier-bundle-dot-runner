@@ -195,17 +195,19 @@ class TestHumanGateHandler:
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         # AutoApprove picks the first choice; either way it should succeed
         assert outcome.status == StageStatus.SUCCESS
-        # preferred_label should match one of the edge labels
-        assert outcome.preferred_label in ("Approve", "Reject")
+        # M-12: suggested_next_ids should contain a valid target node
+        assert outcome.suggested_next_ids is not None
+        assert outcome.suggested_next_ids[0] in ("deploy", "fix")
 
     @pytest.mark.asyncio
     async def test_auto_approve_picks_first_choice(self):
-        """HUMAN-003: AutoApprove picks first edge label."""
+        """HUMAN-003: AutoApprove picks first edge label -> deploy node."""
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
         handler = HumanGateHandler(interviewer=AutoApproveInterviewer())
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.preferred_label == "Approve"
+        # M-12: maps "Approve" label to "deploy" target node
+        assert outcome.suggested_next_ids == ["deploy"]
 
     @pytest.mark.asyncio
     async def test_queue_interviewer_selects_specific_choice(self):
@@ -219,7 +221,8 @@ class TestHumanGateHandler:
         handler = HumanGateHandler(interviewer=interviewer)
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.status == StageStatus.SUCCESS
-        assert outcome.preferred_label == "Reject"
+        # M-12: "Reject" maps to "fix" target node
+        assert outcome.suggested_next_ids == ["fix"]
 
     @pytest.mark.asyncio
     async def test_skipped_answer_uses_default_choice(self):
@@ -229,8 +232,8 @@ class TestHumanGateHandler:
         interviewer = QueueInterviewer([])  # Will return SKIPPED
         handler = HumanGateHandler(interviewer=interviewer)
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.status == StageStatus.SUCCESS
-        assert outcome.preferred_label == "Approve"  # first edge label
+        # M-12: default choice "Approve" maps to "deploy" target node
+        assert outcome.suggested_next_ids == ["deploy"]
 
     @pytest.mark.asyncio
     async def test_timeout_answer_uses_default_choice(self):
@@ -241,7 +244,8 @@ class TestHumanGateHandler:
         handler = HumanGateHandler(interviewer=interviewer)
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.status == StageStatus.SUCCESS
-        assert outcome.preferred_label == "Approve"  # first = default
+        # M-12: default "Approve" maps to "deploy" target node
+        assert outcome.suggested_next_ids == ["deploy"]
 
     @pytest.mark.asyncio
     async def test_uses_prompt_attr_for_question_text(self):
@@ -288,7 +292,8 @@ class TestHumanGateHandler:
         handler = HumanGateHandler()  # No interviewer arg
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.status == StageStatus.SUCCESS
-        assert outcome.preferred_label == "Approve"
+        # M-12: "Approve" maps to "deploy" target node
+        assert outcome.suggested_next_ids == ["deploy"]
 
     @pytest.mark.asyncio
     async def test_sets_context_updates(self):
@@ -299,6 +304,60 @@ class TestHumanGateHandler:
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.context_updates is not None
         assert "human.gate.selection" in outcome.context_updates
+
+
+# --- M-12: suggested_next_ids instead of preferred_label ---
+
+
+class TestHumanGateSuggestedNextIds:
+    """M-12: Human handler returns suggested_next_ids for unambiguous routing."""
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_returns_suggested_next_ids(self):
+        """AutoApprove selects first edge; outcome has suggested_next_ids=[target node]."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+        handler = HumanGateHandler(interviewer=AutoApproveInterviewer())
+        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
+        assert outcome.status == StageStatus.SUCCESS
+        # "Approve" edge goes to "deploy"
+        assert outcome.suggested_next_ids == ["deploy"]
+        # preferred_label should NOT be set (suggested_next_ids takes precedence)
+        assert outcome.preferred_label is None
+
+    @pytest.mark.asyncio
+    async def test_reject_returns_suggested_next_ids_for_fix(self):
+        """Selecting 'Reject' maps to the fix node via suggested_next_ids."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+        interviewer = QueueInterviewer([
+            Answer(value="Reject", selected_option=Option(key="Reject", label="Reject")),
+        ])
+        handler = HumanGateHandler(interviewer=interviewer)
+        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["fix"]
+        assert outcome.preferred_label is None
+
+    @pytest.mark.asyncio
+    async def test_unlabeled_edge_uses_to_node_as_choice(self):
+        """Edges without labels use to_node as the choice key."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "gate": Node(id="gate", shape="hexagon", label="Wait"),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[
+                Edge(from_node="gate", to_node="next"),  # no label
+            ],
+        )
+        handler = HumanGateHandler(interviewer=AutoApproveInterviewer())
+        outcome = await handler.execute(
+            graph.nodes["gate"], _make_context(), graph, "/tmp"
+        )
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["next"]
 
 
 # --- Handler registration ---

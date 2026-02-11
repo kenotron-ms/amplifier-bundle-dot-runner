@@ -29,7 +29,7 @@ class HumanGateHandler:
 
     Derives choices from outgoing edge labels, presents a
     multiple-choice question to the interviewer, and returns
-    an Outcome with the selected label as preferred_label.
+    an Outcome with suggested_next_ids for unambiguous routing.
 
     Falls back to AutoApproveInterviewer when no interviewer
     is provided (e.g. in automated/CI environments).
@@ -60,15 +60,18 @@ class HumanGateHandler:
         1. Derive choices from outgoing edge labels.
         2. Build a Question with those choices.
         3. Ask the interviewer.
-        4. Map the answer to a preferred_label for edge selection.
+        4. Map the answer to suggested_next_ids for edge selection.
         """
-        # 1. Derive choices from outgoing edges
+        # 1. Derive choices from outgoing edges and build label-to-node mapping
         edges = graph.outgoing_edges(node.id)
         choices: list[str] = []
+        # Map each choice label to the list of target node IDs (M-12)
+        label_to_targets: dict[str, list[str]] = {}
         for edge in edges:
             label = edge.label or edge.to_node
             if label not in choices:
                 choices.append(label)
+            label_to_targets.setdefault(label, []).append(edge.to_node)
 
         # 2. Build the question
         prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
@@ -128,12 +131,13 @@ class HumanGateHandler:
                 },
             )
 
-        # 6. Determine the selected label
+        # 6. Determine the selected label and map to target node IDs (M-12)
         selected = self._resolve_selection(answer, choices)
+        target_ids = label_to_targets.get(selected or "", []) if selected else []
 
         return Outcome(
             status=StageStatus.SUCCESS,
-            preferred_label=selected,
+            suggested_next_ids=target_ids if target_ids else None,
             context_updates={
                 "human.gate.selection": selected,
                 "human.gate.node_id": node.id,
