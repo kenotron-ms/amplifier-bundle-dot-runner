@@ -33,8 +33,8 @@ class DirectProviderBackend:
     """Backend that calls a provider directly with a mini tool loop.
 
     This is the default backend when no session.spawn capability is
-    available.  It runs an agentic loop — call LLM, execute any tool
-    calls, feed results back, repeat — until the model returns a
+    available.  It runs an agentic loop \u2014 call LLM, execute any tool
+    calls, feed results back, repeat \u2014 until the model returns a
     text-only response or the max round limit is reached.
     """
 
@@ -49,20 +49,26 @@ class DirectProviderBackend:
         self._tools = tools or {}
         self._hooks = hooks
         self._coordinator = coordinator
+        # Fidelity state (H-9): track completed nodes and message history
+        self._completed_nodes: dict[str, Any] = {}
+        self._message_pools: dict[str, list] = {}  # thread_key -> message history
+        self._last_node_id: str | None = None
 
     async def run(
         self,
         node: Any,
         prompt: str,
         context: PipelineContext,
+        *,
+        incoming_edge: Any | None = None,
+        graph: Any | None = None,
         **kwargs: Any,
     ) -> Outcome:
         """Run a mini agentic tool loop for *node*.
 
-        Builds a ChatRequest from *prompt*, calls the provider, and if
-        the response contains tool calls, executes them and feeds the
-        results back.  Repeats until the model returns text only or the
-        round limit is hit.
+        Supports fidelity-aware context carryover (spec Section 5.4):
+        - full: reuse message history from previous calls with same thread key
+        - compact/truncate/summary: prepend preamble from completed node history
         """
         from amplifier_core import ChatRequest, Message
 
@@ -75,7 +81,33 @@ class DirectProviderBackend:
             _MAX_TOOL_LOOP_ROUNDS,
         )
 
-        messages: list[Message] = [Message(role="user", content=prompt)]
+        # Resolve fidelity mode (spec FID-001)
+        from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key
+
+        fidelity = "compact"  # default
+        thread_key = node.id
+        if graph is not None:
+            fidelity = resolve_fidelity(node, incoming_edge, graph)
+            thread_key = resolve_thread_key(
+                node, incoming_edge, graph, self._last_node_id
+            )
+
+        # Build messages based on fidelity mode
+        if fidelity == "full":
+            # Reuse accumulated message history for this thread key
+            messages: list[Any] = list(self._message_pools.get(thread_key, []))
+            messages.append(Message(role="user", content=prompt))
+        else:
+            # Fresh session with preamble
+            if graph is not None and self._completed_nodes:
+                preamble = build_preamble(fidelity, context, self._completed_nodes)
+                effective_prompt = (
+                    f"{preamble}\n\n---\n\n{prompt}" if preamble else prompt
+                )
+            else:
+                effective_prompt = prompt
+            messages = [Message(role="user", content=effective_prompt)]
+
         reasoning_effort = node.attrs.get("reasoning_effort")
         tool_specs = _build_tool_specs(self._tools)
 
@@ -86,7 +118,6 @@ class DirectProviderBackend:
                 tool_choice="auto" if tool_specs else None,
                 reasoning_effort=reasoning_effort,
             )
-
             try:
                 response = await self._provider.complete(request)
             except Exception as exc:
@@ -105,7 +136,7 @@ class DirectProviderBackend:
             tool_calls = _extract_tool_calls(response, self._provider)
 
             if not tool_calls:
-                # Model is done — parse the final text as an outcome
+                # Model is done \u2014 parse the final text as an outcome
                 if text:
                     outcome = _parse_outcome(text)
                 else:
@@ -117,6 +148,16 @@ class DirectProviderBackend:
                     "last_stage": node.id,
                     "last_response": text[:200] if text else "",
                 }
+
+                # Record fidelity state for future calls
+                self._completed_nodes[node.id] = outcome
+                self._last_node_id = node.id
+
+                # For full fidelity: save message history including response
+                if fidelity == "full":
+                    messages.append(Message(role="assistant", content=text or ""))
+                    self._message_pools[thread_key] = messages
+
                 return outcome
 
             # Append assistant message and execute tools
@@ -143,10 +184,13 @@ class DirectProviderBackend:
                     )
                 )
 
-        return Outcome(
+        outcome = Outcome(
             status=StageStatus.PARTIAL_SUCCESS,
             notes=f"Max tool loop rounds ({_MAX_TOOL_LOOP_ROUNDS}) reached",
         )
+        self._completed_nodes[node.id] = outcome
+        self._last_node_id = node.id
+        return outcome
 
 
 def _build_backend(
@@ -158,13 +202,13 @@ def _build_backend(
     """Auto-construct a backend from the available providers.
 
     Resolution order:
-    1. If coordinator exposes ``session.spawn`` → use AmplifierBackend
+    1. If coordinator exposes ``session.spawn`` \u2192 use AmplifierBackend
        (full "sessions all the way down").  A direct provider and tools
        are also passed so the backend can fall back to a mini tool loop
        if spawn becomes unavailable for a particular call.
-    2. Else if at least one provider is available → use
+    2. Else if at least one provider is available \u2192 use
        DirectProviderBackend (mini agentic tool loop per node).
-    3. Otherwise → return None (codergen handler falls through to
+    3. Otherwise \u2192 return None (codergen handler falls through to
        simulation mode).
     """
     first_provider = next(iter(providers.values()), None) if providers else None
@@ -194,7 +238,7 @@ def _build_backend(
         return DirectProviderBackend(first_provider, tools, hooks, coordinator)
 
     logger.warning(
-        "No providers available — codergen nodes will run in simulation mode"
+        "No providers available \u2014 codergen nodes will run in simulation mode"
     )
     return None
 
@@ -260,26 +304,44 @@ class PipelineOrchestrator:
         )
         os.makedirs(logs_root, exist_ok=True)
 
-        # 7. Resolve backend: explicit kwarg → auto-construct from providers
+        # 7. Resolve backend: explicit kwarg \u2192 auto-construct from providers
         coordinator = kwargs.get("coordinator")
         backend = kwargs.get("backend")
         if backend is None:
             backend = _build_backend(providers, tools, hooks, coordinator)
 
-        # 8. Register handlers
-        registry = HandlerRegistry(backend=backend)
-
-        # 9. Run the engine
+        # 8. Create engine first (handlers need its _run_from method)
+        # Use a placeholder registry, then replace after wiring
         engine = PipelineEngine(
             graph=graph,
             context=pipeline_context,
-            handler_registry=registry,
+            handler_registry=HandlerRegistry(backend=backend),  # temp
             logs_root=logs_root,
             hooks=hooks,
         )
+
+        # 9. Create subgraph runner closure that delegates to engine._run_from
+        async def subgraph_runner(
+            node_id: str,
+            branch_context: PipelineContext,
+            _graph: Any,
+            _logs_root: str,
+        ) -> Outcome:
+            """Execute a subgraph branch via the engine."""
+            return await engine._run_from(node_id, context=branch_context)
+
+        # 10. Register handlers with the subgraph runner wired in
+        registry = HandlerRegistry(
+            backend=backend,
+            subgraph_runner=subgraph_runner,
+            hooks=hooks,
+        )
+        engine.handler_registry = registry
+
+        # 11. Run the engine
         outcome = await engine.run(goal=prompt or None)
 
-        # 10. Return the final outcome as JSON
+        # 12. Return the final outcome as JSON
         result = {
             "status": outcome.status.value,
             "notes": outcome.notes,

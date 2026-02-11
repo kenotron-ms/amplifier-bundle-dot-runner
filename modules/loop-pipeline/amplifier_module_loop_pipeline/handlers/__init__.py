@@ -56,10 +56,12 @@ class HandlerRegistry:
         from .start import StartHandler
         from .tool import ToolHandler
 
+        self._hooks = kwargs.get("hooks")
+
         self._handlers: dict[str, NodeHandler] = {
             "start": StartHandler(),
             "exit": ExitHandler(),
-            "codergen": CodergenHandler(**kwargs),
+            "codergen": CodergenHandler(backend=kwargs.get("backend")),
             "conditional": ConditionalHandler(),
             "tool": ToolHandler(),
             "wait.human": HumanGateHandler(
