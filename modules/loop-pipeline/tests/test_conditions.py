@@ -206,3 +206,46 @@ def test_not_equals_with_missing_key_empty_value():
     outcome = Outcome(status=StageStatus.SUCCESS)
     ctx = PipelineContext()
     assert evaluate_condition("context.missing!=", outcome, ctx) is False
+
+
+# --- Bare key truthiness (L-20, Spec Section 10.5) ---
+
+
+def test_bare_key_truthy_context_value():
+    """Bare key evaluates to truthy when context value is non-empty (L-20)."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("approved", "true")
+    assert evaluate_condition("approved", outcome, ctx) is True
+
+
+def test_bare_key_falsy_missing():
+    """Bare key evaluates to falsy when context key is missing (L-20)."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    assert evaluate_condition("nonexistent_key", outcome, ctx) is False
+
+
+def test_bare_key_falsy_empty_string():
+    """Bare key evaluates to falsy when context value is empty string (L-20)."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("flag", "")
+    assert evaluate_condition("flag", outcome, ctx) is False
+
+
+def test_bare_key_in_conjunction():
+    """Bare key works alongside = clauses in && expressions (L-20)."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("ready", "yes")
+    assert evaluate_condition("outcome=success && ready", outcome, ctx) is True
+    ctx.set("ready", "")
+    assert evaluate_condition("outcome=success && ready", outcome, ctx) is False
+
+
+def test_bare_key_outcome():
+    """Bare 'outcome' key is truthy (resolves to status string) (L-20)."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    assert evaluate_condition("outcome", outcome, ctx) is True

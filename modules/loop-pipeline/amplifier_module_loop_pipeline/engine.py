@@ -210,6 +210,21 @@ class PipelineEngine:
             )
             node_duration_ms = (time.monotonic() - node_start_time) * 1000
 
+            # L-9: auto_status — override non-success to SUCCESS when enabled
+            if current_node.auto_status is True and not outcome.is_success:
+                logger.debug(
+                    "Node '%s' has auto_status=true; overriding %s to SUCCESS",
+                    current_node.id,
+                    outcome.status.value,
+                )
+                outcome = Outcome(
+                    status=StageStatus.SUCCESS,
+                    notes=f"auto_status override (was {outcome.status.value})",
+                    context_updates=outcome.context_updates,
+                    preferred_label=outcome.preferred_label,
+                    suggested_next_ids=outcome.suggested_next_ids,
+                )
+
             # Step 3: Record completion
             self.completed_nodes.append(current_node.id)
             self.node_outcomes[current_node.id] = outcome
@@ -393,14 +408,31 @@ class PipelineEngine:
             self.context.set(f"graph.{key}", value)
 
     def _find_start_node(self) -> Node:
-        """Find the start node (shape=Mdiamond).
+        """Find the start node.
 
-        Spec Section 3.2: find_start_node.
+        Resolution order (L-21, Spec Section 3.2):
+          1. shape=Mdiamond
+          2. id="start" or id="Start"
+
+        Raises ValueError if no start node can be resolved.
         """
+        # Priority 1: shape=Mdiamond
         for node in self.graph.nodes.values():
             if node.shape == "Mdiamond":
                 return node
-        raise ValueError("No start node found (shape=Mdiamond)")
+
+        # Priority 2: id="start" or "Start" (L-21)
+        for candidate_id in ("start", "Start"):
+            if candidate_id in self.graph.nodes:
+                logger.debug(
+                    "No Mdiamond node found; using id='%s' as start node",
+                    candidate_id,
+                )
+                return self.graph.nodes[candidate_id]
+
+        raise ValueError(
+            "No start node found (no shape=Mdiamond and no id='start'/'Start')"
+        )
 
     async def _check_goal_gates(self) -> Outcome:
         """Check goal gate satisfaction at exit.

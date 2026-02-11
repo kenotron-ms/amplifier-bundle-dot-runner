@@ -212,7 +212,9 @@ async def test_no_matching_edge_returns_fail(tmp_path):
     context = PipelineContext()
     registry = HandlerRegistry(backend=MockBackend("ok"))
     engine = PipelineEngine(
-        graph=graph, context=context, handler_registry=registry,
+        graph=graph,
+        context=context,
+        handler_registry=registry,
         logs_root=str(tmp_path),
     )
     outcome = await engine.run()
@@ -268,6 +270,160 @@ async def test_deterministic_execution(tmp_path):
     await engine1.run()
     await engine2.run()
     assert backend1.calls == backend2.calls
+
+
+@pytest.mark.asyncio
+async def test_start_node_fallback_to_id_start(tmp_path):
+    """Engine falls back to id='start' when no Mdiamond node exists (L-21)."""
+    # Build graph manually — no Mdiamond, but a node with id="start"
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="box", prompt="Begin"),
+            "work": Node(id="work", shape="box", prompt="Do work"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=MockBackend("ok"))
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+    # Should succeed — engine found the start node via id fallback
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    assert "start" in engine.completed_nodes
+
+
+@pytest.mark.asyncio
+async def test_start_node_fallback_to_id_Start(tmp_path):
+    """Engine falls back to id='Start' (capitalized) when no Mdiamond (L-21)."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "Start": Node(id="Start", shape="box", prompt="Begin"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=MockBackend("ok"))
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+
+
+@pytest.mark.asyncio
+async def test_start_node_shape_takes_priority(tmp_path):
+    """Mdiamond shape is preferred over id='start' fallback (L-21)."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "begin": Node(id="begin", shape="Mdiamond"),
+            "start": Node(id="start", shape="box", prompt="Not the start"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="begin", to_node="exit"),
+            Edge(from_node="start", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=MockBackend("ok"))
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # "start" (the box node) should NOT have been visited as the entry point
+    assert "start" not in engine.completed_nodes
+
+
+@pytest.mark.asyncio
+async def test_auto_status_overrides_fail_to_success(tmp_path):
+    """auto_status=true overrides non-success outcome to SUCCESS (L-9)."""
+
+    class FailingBackend:
+        async def run(self, node, prompt, context):
+            if node.id == "auto_node":
+                return Outcome(status=StageStatus.FAIL, failure_reason="oops")
+            return "ok"
+
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "auto_node": Node(
+                id="auto_node", shape="box", prompt="work",
+                auto_status=True,
+            ),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="auto_node"),
+            Edge(from_node="auto_node", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=FailingBackend())
+    engine = PipelineEngine(
+        graph=graph, context=context, handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+    # auto_status=true should have overridden the FAIL to SUCCESS
+    assert engine.node_outcomes["auto_node"].status == StageStatus.SUCCESS
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+
+
+@pytest.mark.asyncio
+async def test_auto_status_false_preserves_fail(tmp_path):
+    """Without auto_status, FAIL outcome is preserved (L-9)."""
+
+    class FailingBackend:
+        async def run(self, node, prompt, context):
+            if node.id == "fail_node":
+                return Outcome(status=StageStatus.FAIL, failure_reason="oops")
+            return "ok"
+
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "fail_node": Node(id="fail_node", shape="box", prompt="work"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="fail_node"),
+            Edge(from_node="fail_node", to_node="exit", condition="outcome=fail"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=FailingBackend())
+    engine = PipelineEngine(
+        graph=graph, context=context, handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    await engine.run()
+    # Without auto_status, FAIL is preserved
+    assert engine.node_outcomes["fail_node"].status == StageStatus.FAIL
 
 
 @pytest.mark.asyncio

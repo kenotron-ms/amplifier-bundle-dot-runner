@@ -10,6 +10,7 @@ Spec coverage: LINT-001–018
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .conditions import evaluate_condition
@@ -60,11 +61,20 @@ class ValidationError(Exception):
         super().__init__(f"Validation failed: {'; '.join(messages)}")
 
 
-def validate(graph: Graph) -> list[Diagnostic]:
+def validate(
+    graph: Graph,
+    extra_rules: list[Callable[[Graph], list[Diagnostic]]] | None = None,
+) -> list[Diagnostic]:
     """Run all built-in lint rules against a graph.
 
     Returns a list of Diagnostic objects. ERROR-severity diagnostics
     indicate the pipeline will not execute.
+
+    Args:
+        graph: The graph to validate.
+        extra_rules: Optional list of additional validation functions.
+            Each function receives a Graph and returns a list of Diagnostics.
+            L-19: Spec Section 7.3 ``validate(graph, extra_rules=NONE)``.
 
     Spec Section 7.3: validate API.
     """
@@ -82,6 +92,11 @@ def validate(graph: Graph) -> list[Diagnostic]:
     _check_type_known(graph, diags)
     _check_fidelity_valid(graph, diags)
     _check_retry_target_exists(graph, diags)
+
+    # L-19: Run user-supplied extra rules
+    for rule in extra_rules or []:
+        diags.extend(rule(graph))
+
     return diags
 
 

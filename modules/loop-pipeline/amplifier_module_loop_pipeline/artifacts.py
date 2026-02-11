@@ -9,6 +9,7 @@ Spec coverage: ART-001–004, Section 5.5.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass
@@ -47,19 +48,31 @@ class ArtifactStore:
     def __init__(self, base_dir: str) -> None:
         self._base_dir = base_dir
         self._artifacts: dict[str, Artifact] = {}
+        self._lock = asyncio.Lock()  # L-12: thread safety for parallel handlers
 
     # -- public API ----------------------------------------------------------
 
     def store(
         self,
-        name: str,
-        data: Any,
+        name: str | None = None,
+        data: Any = None,
         artifact_type: str = "text",
+        *,
+        artifact_id: str | None = None,
     ) -> Artifact:
         """Store an artifact, file-backing if over the size threshold.
 
+        Args:
+            name: Artifact identifier (positional, backward-compat).
+            data: The data to store.
+            artifact_type: Type label (default ``"text"``).
+            artifact_id: Spec-preferred identifier (L-13). Alias for *name*.
+
         Returns the ``Artifact`` metadata object.
         """
+        name = artifact_id or name
+        if name is None:
+            raise TypeError("store() requires 'name' or 'artifact_id'")
         size = _byte_size(data)
         is_file_backed = size > FILE_BACKING_THRESHOLD
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -83,11 +96,20 @@ class ArtifactStore:
         self._artifacts[name] = artifact
         return artifact
 
-    def get(self, name: str) -> Artifact | None:
+    def get(
+        self, name: str | None = None, *, artifact_id: str | None = None
+    ) -> Artifact | None:
         """Retrieve an artifact by name, reading from disk if file-backed.
+
+        Args:
+            name: Artifact identifier (positional, backward-compat).
+            artifact_id: Spec-preferred identifier (L-13). Alias for *name*.
 
         Returns ``None`` if the artifact does not exist.
         """
+        name = artifact_id or name
+        if name is None:
+            raise TypeError("get() requires 'name' or 'artifact_id'")
         artifact = self._artifacts.get(name)
         if artifact is None:
             return None
@@ -110,21 +132,37 @@ class ArtifactStore:
         """Return the names of all stored artifacts."""
         return list(self._artifacts.keys())
 
-    def has(self, name: str) -> bool:
+    def has(self, name: str | None = None, *, artifact_id: str | None = None) -> bool:
         """Check whether an artifact with *name* exists.
+
+        Args:
+            name: Artifact identifier (positional, backward-compat).
+            artifact_id: Spec-preferred identifier (L-13). Alias for *name*.
 
         L-10: Spec-required ``has(name)`` method.
         """
+        name = artifact_id or name
+        if name is None:
+            raise TypeError("has() requires 'name' or 'artifact_id'")
         return name in self._artifacts
 
-    def remove(self, name: str) -> None:
+    def remove(
+        self, name: str | None = None, *, artifact_id: str | None = None
+    ) -> None:
         """Remove an artifact by name.
+
+        Args:
+            name: Artifact identifier (positional, backward-compat).
+            artifact_id: Spec-preferred identifier (L-13). Alias for *name*.
 
         If the artifact is file-backed, the backing file is also deleted.
         Removing a non-existent artifact is a no-op.
 
         L-10: Spec-required ``remove(name)`` method.
         """
+        name = artifact_id or name
+        if name is None:
+            raise TypeError("remove() requires 'name' or 'artifact_id'")
         artifact = self._artifacts.pop(name, None)
         if artifact is not None and artifact.is_file_backed:
             path = artifact.data  # .data holds the file path for file-backed
@@ -144,6 +182,33 @@ class ArtifactStore:
                 if isinstance(path, str) and os.path.exists(path):
                     os.remove(path)
         self._artifacts.clear()
+
+    # -- L-12: async wrappers with lock for parallel handler safety ----------
+
+    async def async_store(
+        self,
+        name: str,
+        data: Any,
+        artifact_type: str = "text",
+    ) -> Artifact:
+        """Thread-safe async version of :meth:`store`."""
+        async with self._lock:
+            return self.store(name, data, artifact_type)
+
+    async def async_get(self, name: str) -> Artifact | None:
+        """Thread-safe async version of :meth:`get`."""
+        async with self._lock:
+            return self.get(name)
+
+    async def async_remove(self, name: str) -> None:
+        """Thread-safe async version of :meth:`remove`."""
+        async with self._lock:
+            self.remove(name)
+
+    async def async_clear(self) -> None:
+        """Thread-safe async version of :meth:`clear`."""
+        async with self._lock:
+            self.clear()
 
     # -- internal helpers ----------------------------------------------------
 

@@ -3,6 +3,10 @@
 Spec coverage: ART-001–004, Section 5.5.
 """
 
+import asyncio
+
+import pytest
+
 from amplifier_module_loop_pipeline.artifacts import Artifact, ArtifactStore
 
 
@@ -196,3 +200,91 @@ class TestArtifactStoreFileBacking:
         retrieved = store.get("binary")
         assert retrieved is not None
         assert retrieved.data == data
+
+
+# --- Thread safety (L-12) ---
+
+
+# --- artifact_id parameter (L-13) ---
+
+
+class TestArtifactIdParameter:
+    """Tests for artifact_id as the primary parameter name (L-13)."""
+
+    def test_store_accepts_artifact_id_kwarg(self, tmp_path):
+        """store() accepts artifact_id as keyword argument (L-13)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        artifact = store.store(artifact_id="my_artifact", data="hello")
+        assert artifact.name == "my_artifact"
+
+    def test_get_accepts_artifact_id_kwarg(self, tmp_path):
+        """get() accepts artifact_id as keyword argument (L-13)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        store.store("item", "data")
+        retrieved = store.get(artifact_id="item")
+        assert retrieved is not None
+        assert retrieved.data == "data"
+
+    def test_has_accepts_artifact_id_kwarg(self, tmp_path):
+        """has() accepts artifact_id as keyword argument (L-13)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        store.store("x", "data")
+        assert store.has(artifact_id="x") is True
+        assert store.has(artifact_id="missing") is False
+
+    def test_remove_accepts_artifact_id_kwarg(self, tmp_path):
+        """remove() accepts artifact_id as keyword argument (L-13)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        store.store("y", "data")
+        store.remove(artifact_id="y")
+        assert store.has("y") is False
+
+    def test_name_still_works_as_positional(self, tmp_path):
+        """Existing positional name arg still works for backward compat (L-13)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        artifact = store.store("old_style", "data")
+        assert artifact.name == "old_style"
+        retrieved = store.get("old_style")
+        assert retrieved is not None
+
+
+class TestArtifactStoreThreadSafety:
+    """Tests for artifact store asyncio.Lock protection (L-12)."""
+
+    def test_store_has_lock(self, tmp_path):
+        """ArtifactStore must have an asyncio.Lock for thread safety (L-12)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        assert hasattr(store, "_lock")
+        assert isinstance(store._lock, asyncio.Lock)
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_concurrent_stores_are_safe(tmp_path):
+        """Concurrent async stores should not lose data (L-12)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+
+        async def store_item(name: str) -> None:
+            await store.async_store(name, f"data-{name}")
+
+        tasks = [store_item(f"item-{i}") for i in range(20)]
+        await asyncio.gather(*tasks)
+        assert len(store.list()) == 20
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_concurrent_remove_and_store(tmp_path):
+        """Concurrent store + clear should not raise (L-12)."""
+        store = ArtifactStore(base_dir=str(tmp_path))
+        for i in range(5):
+            store.store(f"pre-{i}", "data")
+
+        async def do_store():
+            for i in range(10):
+                await store.async_store(f"new-{i}", "data")
+
+        async def do_clear():
+            await asyncio.sleep(0)  # yield
+            await store.async_clear()
+
+        # Should not raise regardless of interleaving
+        await asyncio.gather(do_store(), do_clear())

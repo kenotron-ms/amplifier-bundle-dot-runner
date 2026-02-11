@@ -581,3 +581,45 @@ def test_retry_target_exists_graph_level():
     diags = validate(graph)
     rt_diags = [d for d in diags if d.rule == "retry_target_exists"]
     assert len(rt_diags) >= 1
+
+
+# --- extra_rules parameter (L-19) ---
+
+
+def test_extra_rules_are_invoked():
+    """validate() runs user-supplied extra_rules alongside built-in rules (L-19)."""
+    graph = _make_graph()
+
+    def my_rule(g: Graph) -> list[Diagnostic]:
+        return [
+            Diagnostic(rule="custom_rule", severity="WARNING", message="custom check")
+        ]
+
+    diags = validate(graph, extra_rules=[my_rule])
+    custom = [d for d in diags if d.rule == "custom_rule"]
+    assert len(custom) == 1
+    assert custom[0].message == "custom check"
+
+
+def test_extra_rules_default_empty():
+    """validate() with no extra_rules works as before (L-19)."""
+    graph = _make_graph()
+    diags_default = validate(graph)
+    diags_explicit = validate(graph, extra_rules=[])
+    # Same number of diagnostics either way
+    assert len(diags_default) == len(diags_explicit)
+
+
+def test_extra_rules_multiple():
+    """validate() runs all provided extra rules (L-19)."""
+    graph = _make_graph()
+
+    def rule_a(g: Graph) -> list[Diagnostic]:
+        return [Diagnostic(rule="rule_a", severity="INFO", message="a")]
+
+    def rule_b(g: Graph) -> list[Diagnostic]:
+        return [Diagnostic(rule="rule_b", severity="INFO", message="b")]
+
+    diags = validate(graph, extra_rules=[rule_a, rule_b])
+    custom_rules = {d.rule for d in diags if d.rule in ("rule_a", "rule_b")}
+    assert custom_rules == {"rule_a", "rule_b"}
