@@ -32,7 +32,10 @@ class MockHandler:
 
 
 class RaisingHandler:
-    """Handler that raises an exception on the first N calls."""
+    """Handler that raises a retryable exception on the first N calls.
+
+    Uses TimeoutError (retryable per M-18) to test transient failure retry.
+    """
 
     def __init__(self, fail_count: int, then: Outcome):
         self._fail_count = fail_count
@@ -44,7 +47,7 @@ class RaisingHandler:
     ) -> Outcome:
         self.call_count += 1
         if self.call_count <= self._fail_count:
-            raise RuntimeError(f"Transient error #{self.call_count}")
+            raise TimeoutError(f"Transient error #{self.call_count}")
         return self._then
 
 
@@ -80,11 +83,13 @@ async def test_success_on_first_try():
 @pytest.mark.asyncio
 async def test_retry_on_retry_outcome():
     """RETRY outcome triggers additional attempts."""
-    handler = MockHandler([
-        Outcome(status=StageStatus.RETRY),
-        Outcome(status=StageStatus.RETRY),
-        Outcome(status=StageStatus.SUCCESS),
-    ])
+    handler = MockHandler(
+        [
+            Outcome(status=StageStatus.RETRY),
+            Outcome(status=StageStatus.RETRY),
+            Outcome(status=StageStatus.SUCCESS),
+        ]
+    )
     policy = RetryPolicy(max_attempts=3, backoff=BackoffConfig(initial_delay_ms=0))
     result = await execute_with_retry(
         handler, _make_node(), PipelineContext(), _make_graph(), "/tmp", policy
@@ -96,9 +101,9 @@ async def test_retry_on_retry_outcome():
 @pytest.mark.asyncio
 async def test_fail_not_retried():
     """FAIL outcome returns immediately — no retries (RETRY-006)."""
-    handler = MockHandler([
-        Outcome(status=StageStatus.FAIL, failure_reason="bad input")
-    ])
+    handler = MockHandler(
+        [Outcome(status=StageStatus.FAIL, failure_reason="bad input")]
+    )
     policy = RetryPolicy(max_attempts=3, backoff=BackoffConfig(initial_delay_ms=0))
     result = await execute_with_retry(
         handler, _make_node(), PipelineContext(), _make_graph(), "/tmp", policy
@@ -272,9 +277,7 @@ def test_backoff_delay_capped():
 
 def test_backoff_linear():
     """Linear backoff (factor=1.0) has fixed delay."""
-    config = BackoffConfig(
-        initial_delay_ms=500, backoff_factor=1.0, jitter=False
-    )
+    config = BackoffConfig(initial_delay_ms=500, backoff_factor=1.0, jitter=False)
     assert config.delay_for_attempt(1) == 500.0
     assert config.delay_for_attempt(2) == 500.0
     assert config.delay_for_attempt(3) == 500.0
@@ -371,3 +374,117 @@ async def test_retry_emits_stage_failed_on_exhaustion():
 
     event_names = [e[0] for e in emitted]
     assert PIPELINE_STAGE_FAILED in event_names
+
+
+# --- M-18: Error classification ---
+
+
+class TestShouldRetry:
+    """M-18: should_retry classifies exceptions as retryable or terminal."""
+
+    def test_timeout_error_is_retryable(self):
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(TimeoutError("timed out")) is True
+
+    def test_connection_error_is_retryable(self):
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(ConnectionError("reset")) is True
+
+    def test_oserror_is_retryable(self):
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(OSError("network down")) is True
+
+    def test_rate_limit_like_error_is_retryable(self):
+        """Exceptions with 429 or 'rate limit' in message are retryable."""
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(Exception("rate limit exceeded")) is True
+        assert should_retry(Exception("HTTP 429 Too Many Requests")) is True
+
+    def test_server_error_like_is_retryable(self):
+        """Exceptions mentioning 5xx status codes are retryable."""
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(Exception("HTTP 500 Internal Server Error")) is True
+        assert should_retry(Exception("HTTP 502 Bad Gateway")) is True
+        assert should_retry(Exception("HTTP 503 Service Unavailable")) is True
+
+    def test_value_error_is_terminal(self):
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(ValueError("bad input")) is False
+
+    def test_type_error_is_terminal(self):
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(TypeError("wrong type")) is False
+
+    def test_key_error_is_terminal(self):
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(KeyError("missing")) is False
+
+    def test_auth_error_like_is_terminal(self):
+        """Exceptions mentioning 401 or 403 are terminal."""
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(Exception("HTTP 401 Unauthorized")) is False
+        assert should_retry(Exception("HTTP 403 Forbidden")) is False
+
+    def test_bad_request_is_terminal(self):
+        """Exceptions mentioning 400 are terminal."""
+        from amplifier_module_loop_pipeline.retry import should_retry
+
+        assert should_retry(Exception("HTTP 400 Bad Request")) is False
+
+
+@pytest.mark.asyncio
+async def test_terminal_exception_not_retried():
+    """M-18: Terminal exceptions (ValueError etc.) propagate immediately."""
+
+    class TerminalThenSuccessHandler:
+        def __init__(self):
+            self.call_count = 0
+
+        async def execute(self, node, context, graph, logs_root):
+            self.call_count += 1
+            if self.call_count == 1:
+                raise ValueError("invalid config")
+            return Outcome(status=StageStatus.SUCCESS)
+
+    handler = TerminalThenSuccessHandler()
+    policy = RetryPolicy(max_attempts=3, backoff=BackoffConfig(initial_delay_ms=0))
+    result = await execute_with_retry(
+        handler, _make_node(), PipelineContext(), _make_graph(), "/tmp", policy
+    )
+    # ValueError is terminal — should NOT retry, should fail immediately
+    assert result.status == StageStatus.FAIL
+    assert handler.call_count == 1
+    assert "invalid config" in (result.failure_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_retryable_exception_is_retried():
+    """M-18: Retryable exceptions (TimeoutError etc.) are retried."""
+
+    class TimeoutThenSuccessHandler:
+        def __init__(self):
+            self.call_count = 0
+
+        async def execute(self, node, context, graph, logs_root):
+            self.call_count += 1
+            if self.call_count == 1:
+                raise TimeoutError("connection timed out")
+            return Outcome(status=StageStatus.SUCCESS)
+
+    handler = TimeoutThenSuccessHandler()
+    policy = RetryPolicy(max_attempts=3, backoff=BackoffConfig(initial_delay_ms=0))
+    result = await execute_with_retry(
+        handler, _make_node(), PipelineContext(), _make_graph(), "/tmp", policy
+    )
+    # TimeoutError is retryable — should retry and eventually succeed
+    assert result.status == StageStatus.SUCCESS
+    assert handler.call_count == 2

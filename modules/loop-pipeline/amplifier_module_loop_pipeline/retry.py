@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,6 +21,58 @@ from .graph import Graph, Node
 from .outcome import Outcome, StageStatus
 
 logger = logging.getLogger(__name__)
+
+# M-18: Exception types that are inherently retryable (transient failures)
+_RETRYABLE_TYPES: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    ConnectionError,
+    OSError,
+)
+
+# M-18: HTTP status codes that are retryable
+_RETRYABLE_HTTP_CODES = re.compile(r"\b(429|5\d{2})\b")
+
+# M-18: HTTP status codes that are terminal
+_TERMINAL_HTTP_CODES = re.compile(r"\b(400|401|403|404|405|422)\b")
+
+# M-18: Keywords in exception messages that indicate retryable errors
+_RETRYABLE_KEYWORDS = re.compile(
+    r"rate.?limit|throttl|too many requests", re.IGNORECASE
+)
+
+
+def should_retry(exc: BaseException) -> bool:
+    """Classify an exception as retryable or terminal (M-18).
+
+    Retryable: TimeoutError, ConnectionError, OSError, rate-limit errors,
+    HTTP 429/5xx errors.
+
+    Terminal: ValueError, TypeError, KeyError, HTTP 400/401/403/404 errors,
+    and anything else not classified as retryable.
+
+    Spec Section 3.5: error classification.
+    """
+    # Check exception type first
+    if isinstance(exc, _RETRYABLE_TYPES):
+        return True
+
+    # Check message for HTTP status codes and keywords
+    msg = str(exc)
+
+    # Terminal HTTP codes take precedence
+    if _TERMINAL_HTTP_CODES.search(msg):
+        return False
+
+    # Retryable HTTP codes
+    if _RETRYABLE_HTTP_CODES.search(msg):
+        return True
+
+    # Retryable keywords
+    if _RETRYABLE_KEYWORDS.search(msg):
+        return True
+
+    # Default: terminal (don't retry unknown errors)
+    return False
 
 
 @dataclass
@@ -142,6 +195,17 @@ async def execute_with_retry(
                 policy.max_attempts,
                 e,
             )
+            # M-18: Classify exception — terminal errors fail immediately
+            if not should_retry(e):
+                logger.info(
+                    "Node %s: terminal error (not retryable): %s",
+                    node.id,
+                    type(e).__name__,
+                )
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason=str(e),
+                )
             if attempt < policy.max_attempts:
                 await _sleep_backoff(policy.backoff, attempt)
                 continue
