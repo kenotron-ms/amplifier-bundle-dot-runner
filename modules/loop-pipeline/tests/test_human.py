@@ -296,14 +296,19 @@ class TestHumanGateHandler:
         assert outcome.suggested_next_ids == ["deploy"]
 
     @pytest.mark.asyncio
-    async def test_sets_context_updates(self):
-        """Handler sets human.gate.* context keys."""
+    async def test_sets_context_updates_with_spec_keys(self):
+        """L-16: Handler sets human.gate.selected and human.gate.label per spec."""
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
         handler = HumanGateHandler(interviewer=AutoApproveInterviewer())
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.context_updates is not None
-        assert "human.gate.selection" in outcome.context_updates
+        # L-16: spec says human.gate.selected (not human.gate.selection)
+        assert "human.gate.selected" in outcome.context_updates
+        assert outcome.context_updates["human.gate.selected"] == "Approve"
+        # L-16: spec says human.gate.label (not human.gate.node_id)
+        assert "human.gate.label" in outcome.context_updates
+        assert outcome.context_updates["human.gate.label"] == "Approve changes?"
 
 
 # --- M-12: suggested_next_ids instead of preferred_label ---

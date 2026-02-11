@@ -139,8 +139,8 @@ class HumanGateHandler:
             return Outcome(
                 status=StageStatus.FAIL,
                 context_updates={
-                    "human.gate.selection": None,
-                    "human.gate.node_id": node.id,
+                    "human.gate.selected": None,
+                    "human.gate.label": node.label,
                 },
                 notes=f"Human gate '{node.id}': interaction was skipped",
             )
@@ -153,8 +153,8 @@ class HumanGateHandler:
             status=StageStatus.SUCCESS,
             suggested_next_ids=target_ids if target_ids else None,
             context_updates={
-                "human.gate.selection": selected,
-                "human.gate.node_id": node.id,
+                "human.gate.selected": selected,
+                "human.gate.label": node.label,
             },
             notes=f"Human gate '{node.id}': selected '{selected}'",
         )
