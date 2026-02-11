@@ -124,3 +124,73 @@ def test_node_explicit_label_overrides_default():
     """An explicit label should be used instead of the ID."""
     node = Node(id="my_step", label="My Step")
     assert node.label == "My Step"
+
+
+# --- M-10: Node first-class fields ---
+
+
+def test_node_first_class_fields_defaults():
+    """All 12 promoted node attributes should have sensible defaults (M-10)."""
+    node = Node(id="step")
+    assert node.max_retries is None
+    assert node.goal_gate is None
+    assert node.retry_target is None
+    assert node.fallback_retry_target is None
+    assert node.fidelity is None
+    assert node.thread_id is None
+    assert node.timeout is None
+    assert node.llm_model is None
+    assert node.llm_provider is None
+    assert node.reasoning_effort is None
+    assert node.auto_status is None
+    assert node.allow_partial is None
+
+
+def test_node_first_class_fields_set():
+    """Promoted fields should be settable via constructor (M-10)."""
+    node = Node(
+        id="step",
+        max_retries=3,
+        goal_gate=True,
+        retry_target="plan",
+        fallback_retry_target="start",
+        fidelity="full",
+        thread_id="t1",
+        timeout=30000,
+        llm_model="gpt-4",
+        llm_provider="openai",
+        reasoning_effort="high",
+        auto_status=True,
+        allow_partial=False,
+    )
+    assert node.max_retries == 3
+    assert node.goal_gate is True
+    assert node.retry_target == "plan"
+    assert node.fallback_retry_target == "start"
+    assert node.fidelity == "full"
+    assert node.thread_id == "t1"
+    assert node.timeout == 30000
+    assert node.llm_model == "gpt-4"
+    assert node.llm_provider == "openai"
+    assert node.reasoning_effort == "high"
+    assert node.auto_status is True
+    assert node.allow_partial is False
+
+
+def test_node_attrs_dict_backward_compat():
+    """Accessing promoted fields via attrs dict should still work (M-10)."""
+    node = Node(id="step", goal_gate=True, max_retries=3, fidelity="full")
+    # Backward compat: node.attrs.get("goal_gate") should return the value
+    assert node.attrs.get("goal_gate") is True
+    assert node.attrs.get("max_retries") == 3
+    assert node.attrs.get("fidelity") == "full"
+    # Non-existent keys still return None
+    assert node.attrs.get("nonexistent") is None
+
+
+def test_node_attrs_dict_set_promotes_to_field():
+    """Setting a promoted key on attrs should be reflected in the field (M-10)."""
+    node = Node(id="step")
+    node.attrs["goal_gate"] = True
+    # The field should reflect the value
+    assert node.goal_gate is True

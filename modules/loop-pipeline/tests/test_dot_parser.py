@@ -373,3 +373,57 @@ def test_node_with_prompt_containing_dollar_goal():
     }
     """)
     assert "$goal" in graph.nodes["A"].prompt
+
+
+# --- M-9: Comma enforcement in attribute blocks ---
+
+
+def test_space_separated_attrs_warns(recwarn):
+    """Space-separated attributes without commas should emit a warning (M-9)."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        graph = parse_dot("""
+        digraph test {
+            A [shape=box label="Hello" max_retries=3]
+        }
+        """)
+    # Should still parse (backward compatible)
+    assert graph.nodes["A"].shape == "box"
+    assert graph.nodes["A"].label == "Hello"
+    # But should have emitted a warning
+    comma_warnings = [x for x in w if "comma" in str(x.message).lower()]
+    assert len(comma_warnings) >= 1, "Expected warning about missing commas"
+
+
+def test_comma_separated_attrs_no_warning(recwarn):
+    """Properly comma-separated attributes should NOT emit a warning (M-9)."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        graph = parse_dot("""
+        digraph test {
+            A [shape=box, label="Hello", max_retries=3]
+        }
+        """)
+    assert graph.nodes["A"].shape == "box"
+    assert graph.nodes["A"].label == "Hello"
+    comma_warnings = [x for x in w if "comma" in str(x.message).lower()]
+    assert len(comma_warnings) == 0, "No warning expected for comma-separated attrs"
+
+
+def test_single_attr_no_warning():
+    """A single attribute needs no comma and should not warn (M-9)."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        parse_dot("""
+        digraph test {
+            A [shape=box]
+        }
+        """)
+    comma_warnings = [x for x in w if "comma" in str(x.message).lower()]
+    assert len(comma_warnings) == 0

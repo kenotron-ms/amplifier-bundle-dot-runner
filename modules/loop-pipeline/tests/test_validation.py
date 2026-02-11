@@ -90,6 +90,46 @@ def test_missing_exit_node():
     assert any(d.severity == "ERROR" and d.rule == "terminal_node" for d in diags)
 
 
+def test_multiple_exit_nodes_error():
+    """ERROR: spec says exactly one exit node; multiple exits are invalid (M-11)."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "a": _box("a", prompt="work"),
+            "exit1": _msquare("exit1"),
+            "exit2": _msquare("exit2"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a"),
+            Edge(from_node="a", to_node="exit1"),
+            Edge(from_node="a", to_node="exit2"),
+        ],
+    )
+    diags = validate(g)
+    terminal_diags = [d for d in diags if d.rule == "terminal_node"]
+    assert len(terminal_diags) == 1
+    assert terminal_diags[0].severity == "ERROR"
+    assert "exactly one" in terminal_diags[0].message.lower()
+
+
+def test_single_exit_node_ok():
+    """A single exit node should produce no terminal_node diagnostic (M-11)."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", prompt="do it"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    terminal_diags = [d for d in diags if d.rule == "terminal_node"]
+    assert len(terminal_diags) == 0
+
+
 # --- reachability rule ---
 
 

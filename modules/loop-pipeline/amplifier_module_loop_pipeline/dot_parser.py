@@ -10,6 +10,7 @@ Spec coverage: DOT-001–017
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any
 
 from .graph import Edge, Graph, Node
@@ -443,23 +444,40 @@ def _tokenize(body: str) -> list[str]:
 
 
 def _parse_attr_block(tokens: list[str], pos: int) -> dict[str, Any]:
-    """Parse [key=val, key=val, ...] starting at the '[' token."""
+    """Parse [key=val, key=val, ...] starting at the '[' token.
+
+    Warns when consecutive key=value pairs are separated by whitespace
+    only (no comma or semicolon), since the spec requires commas.
+    """
     assert tokens[pos] == "["
     end = _find_closing_bracket(tokens, pos)
     attrs: dict[str, Any] = {}
+    found_missing_comma = False
     i = pos + 1
+    prev_was_value = False
     while i < end:
         if tokens[i] in (",", ";"):
+            prev_was_value = False
             i += 1
             continue
         # key = value
         if i + 2 <= end and tokens[i + 1] == "=":
+            if prev_was_value:
+                found_missing_comma = True
             key = tokens[i]
             raw_val = tokens[i + 2]
             attrs[key] = _parse_value(raw_val)
+            prev_was_value = True
             i += 3
         else:
+            prev_was_value = False
             i += 1
+    if found_missing_comma:
+        warnings.warn(
+            "DOT attribute block has space-separated attributes without commas; "
+            "the spec requires comma-separated key=value pairs",
+            stacklevel=2,
+        )
     return attrs
 
 

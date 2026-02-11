@@ -127,15 +127,28 @@ def _check_start_node(graph: Graph, diags: list[Diagnostic]) -> None:
 
 
 def _check_terminal_node(graph: Graph, diags: list[Diagnostic]) -> None:
-    """LINT: terminal_node — at least one exit node (shape=Msquare)."""
+    """LINT: terminal_node — exactly one exit node (shape=Msquare) (M-11)."""
     exit_nodes = [n for n in graph.nodes.values() if n.shape == "Msquare"]
     if len(exit_nodes) == 0:
         diags.append(
             Diagnostic(
                 rule="terminal_node",
                 severity="ERROR",
-                message="Pipeline must have at least one exit node (shape=Msquare)",
+                message="Pipeline must have exactly one exit node (shape=Msquare)",
                 fix="Add a node with shape=Msquare",
+            )
+        )
+    elif len(exit_nodes) > 1:
+        ids = ", ".join(n.id for n in exit_nodes)
+        diags.append(
+            Diagnostic(
+                rule="terminal_node",
+                severity="ERROR",
+                message=(
+                    f"Pipeline has {len(exit_nodes)} exit nodes ({ids}); "
+                    f"exactly one is required"
+                ),
+                fix="Remove extra exit nodes so only one has shape=Msquare",
             )
         )
 
