@@ -93,6 +93,7 @@ class HumanGateHandler:
         from ..pipeline_events import (
             PIPELINE_INTERVIEW_COMPLETED,
             PIPELINE_INTERVIEW_STARTED,
+            PIPELINE_INTERVIEW_TIMEOUT,
         )
 
         await self._emit(
@@ -113,7 +114,21 @@ class HumanGateHandler:
             },
         )
 
-        # 5. Determine the selected label
+        # 5. Emit timeout event if the interviewer timed out
+        if (
+            isinstance(answer.value, AnswerValue)
+            and answer.value == AnswerValue.TIMEOUT
+        ):
+            await self._emit(
+                PIPELINE_INTERVIEW_TIMEOUT,
+                {
+                    "node_id": node.id,
+                    "prompt": prompt,
+                    "timeout": True,
+                },
+            )
+
+        # 6. Determine the selected label
         selected = self._resolve_selection(answer, choices)
 
         return Outcome(
