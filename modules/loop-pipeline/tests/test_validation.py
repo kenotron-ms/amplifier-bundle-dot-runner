@@ -307,3 +307,237 @@ def test_diagnostic_optional_fields():
     )
     assert d.node_id == "orphan"
     assert d.fix == "Add an edge from start to orphan"
+
+
+# --- Helper for new validation rules ---
+
+
+def _make_graph(edges_extra=None, nodes_extra=None, graph_attrs=None):
+    """Helper to build a minimal valid graph with optional extras."""
+    nodes = {
+        "start": Node(id="start", shape="Mdiamond"),
+        "work": Node(id="work", shape="box", prompt="do work"),
+        "done": Node(id="done", shape="Msquare"),
+    }
+    if nodes_extra:
+        for n in nodes_extra:
+            nodes[n.id] = n
+
+    edges = [
+        Edge(from_node="start", to_node="work"),
+        Edge(from_node="work", to_node="done"),
+    ]
+    if edges_extra:
+        edges.extend(edges_extra)
+
+    return Graph(
+        name="test",
+        nodes=nodes,
+        edges=edges,
+        graph_attrs=graph_attrs or {},
+    )
+
+
+# --- condition_syntax rule ---
+
+
+def test_condition_syntax_valid_conditions():
+    """condition_syntax: valid conditions produce no diagnostics."""
+    graph = _make_graph(
+        edges_extra=[
+            Edge(from_node="work", to_node="done", condition="outcome=success"),
+        ]
+    )
+    diags = validate(graph)
+    condition_diags = [d for d in diags if d.rule == "condition_syntax"]
+    assert len(condition_diags) == 0
+
+
+def test_condition_syntax_invalid_condition_is_error():
+    """condition_syntax: malformed condition expression produces ERROR."""
+    graph = _make_graph(
+        edges_extra=[
+            Edge(from_node="work", to_node="done", condition="===broken"),
+        ]
+    )
+    diags = validate(graph)
+    condition_diags = [d for d in diags if d.rule == "condition_syntax"]
+    assert len(condition_diags) == 1
+    assert condition_diags[0].severity == "ERROR"
+
+
+def test_condition_syntax_empty_condition_ok():
+    """condition_syntax: empty condition is always valid (means unconditional)."""
+    graph = _make_graph(
+        edges_extra=[
+            Edge(from_node="work", to_node="done", condition=""),
+        ]
+    )
+    diags = validate(graph)
+    condition_diags = [d for d in diags if d.rule == "condition_syntax"]
+    assert len(condition_diags) == 0
+
+
+# --- stylesheet_syntax rule ---
+
+
+def test_stylesheet_syntax_valid():
+    """stylesheet_syntax: valid stylesheet produces no diagnostics."""
+    graph = _make_graph(graph_attrs={"model_stylesheet": "* { llm_model: test; }"})
+    graph.model_stylesheet = "* { llm_model: test; }"
+    diags = validate(graph)
+    style_diags = [d for d in diags if d.rule == "stylesheet_syntax"]
+    assert len(style_diags) == 0
+
+
+def test_stylesheet_syntax_empty_ok():
+    """stylesheet_syntax: empty stylesheet is valid."""
+    graph = _make_graph()
+    graph.model_stylesheet = ""
+    diags = validate(graph)
+    style_diags = [d for d in diags if d.rule == "stylesheet_syntax"]
+    assert len(style_diags) == 0
+
+
+def test_stylesheet_syntax_invalid_is_error():
+    """stylesheet_syntax: unparseable stylesheet produces ERROR."""
+    graph = _make_graph()
+    # Completely broken syntax -- no valid rules extractable
+    graph.model_stylesheet = "{{{{not valid css at all"
+    diags = validate(graph)
+    style_diags = [d for d in diags if d.rule == "stylesheet_syntax"]
+    assert len(style_diags) == 1
+    assert style_diags[0].severity == "ERROR"
+
+
+# --- type_known rule ---
+
+
+def test_type_known_valid_type():
+    """type_known: recognized type produces no warning."""
+    graph = _make_graph(
+        nodes_extra=[
+            Node(id="gate", shape="box", type="conditional", prompt="decide"),
+        ],
+        edges_extra=[
+            Edge(from_node="work", to_node="gate"),
+            Edge(from_node="gate", to_node="done"),
+        ],
+    )
+    diags = validate(graph)
+    type_diags = [d for d in diags if d.rule == "type_known"]
+    assert len(type_diags) == 0
+
+
+def test_type_known_unknown_type_warns():
+    """type_known: unrecognized type produces WARNING."""
+    graph = _make_graph(
+        nodes_extra=[
+            Node(id="custom", shape="box", type="nonexistent_handler", prompt="x"),
+        ],
+        edges_extra=[
+            Edge(from_node="work", to_node="custom"),
+            Edge(from_node="custom", to_node="done"),
+        ],
+    )
+    diags = validate(graph)
+    type_diags = [d for d in diags if d.rule == "type_known"]
+    assert len(type_diags) == 1
+    assert type_diags[0].severity == "WARNING"
+    assert "nonexistent_handler" in type_diags[0].message
+
+
+def test_type_known_empty_type_ok():
+    """type_known: empty type (shape-based resolution) is always valid."""
+    graph = _make_graph()  # work node has type="" (default)
+    diags = validate(graph)
+    type_diags = [d for d in diags if d.rule == "type_known"]
+    assert len(type_diags) == 0
+
+
+# --- fidelity_valid rule ---
+
+
+def test_fidelity_valid_recognized_mode():
+    """fidelity_valid: recognized fidelity mode produces no warning."""
+    graph = _make_graph()
+    graph.nodes["work"].attrs["fidelity"] = "full"
+    diags = validate(graph)
+    fid_diags = [d for d in diags if d.rule == "fidelity_valid"]
+    assert len(fid_diags) == 0
+
+
+def test_fidelity_valid_invalid_mode_warns():
+    """fidelity_valid: unrecognized fidelity mode produces WARNING."""
+    graph = _make_graph()
+    graph.nodes["work"].attrs["fidelity"] = "typo_fidelity"
+    diags = validate(graph)
+    fid_diags = [d for d in diags if d.rule == "fidelity_valid"]
+    assert len(fid_diags) == 1
+    assert fid_diags[0].severity == "WARNING"
+    assert "typo_fidelity" in fid_diags[0].message
+
+
+def test_fidelity_valid_graph_default():
+    """fidelity_valid: invalid graph default_fidelity produces WARNING."""
+    graph = _make_graph(graph_attrs={"default_fidelity": "invalid_mode"})
+    diags = validate(graph)
+    fid_diags = [d for d in diags if d.rule == "fidelity_valid"]
+    assert len(fid_diags) >= 1
+    assert any("invalid_mode" in d.message for d in fid_diags)
+
+
+def test_fidelity_valid_edge_fidelity():
+    """fidelity_valid: invalid edge fidelity produces WARNING."""
+    graph = _make_graph(
+        edges_extra=[
+            Edge(
+                from_node="work",
+                to_node="done",
+                attrs={"fidelity": "bogus"},
+            ),
+        ]
+    )
+    diags = validate(graph)
+    fid_diags = [d for d in diags if d.rule == "fidelity_valid"]
+    assert len(fid_diags) >= 1
+
+
+# --- retry_target_exists rule ---
+
+
+def test_retry_target_exists_valid():
+    """retry_target_exists: target pointing to real node is ok."""
+    graph = _make_graph()
+    graph.nodes["work"].attrs["retry_target"] = "work"  # points to itself
+    diags = validate(graph)
+    rt_diags = [d for d in diags if d.rule == "retry_target_exists"]
+    assert len(rt_diags) == 0
+
+
+def test_retry_target_exists_missing_target_warns():
+    """retry_target_exists: target pointing to nonexistent node produces WARNING."""
+    graph = _make_graph()
+    graph.nodes["work"].attrs["retry_target"] = "nonexistent_node"
+    diags = validate(graph)
+    rt_diags = [d for d in diags if d.rule == "retry_target_exists"]
+    assert len(rt_diags) == 1
+    assert rt_diags[0].severity == "WARNING"
+    assert "nonexistent_node" in rt_diags[0].message
+
+
+def test_retry_target_exists_fallback_missing_warns():
+    """retry_target_exists: fallback_retry_target with bad reference warns."""
+    graph = _make_graph()
+    graph.nodes["work"].attrs["fallback_retry_target"] = "ghost"
+    diags = validate(graph)
+    rt_diags = [d for d in diags if d.rule == "retry_target_exists"]
+    assert len(rt_diags) == 1
+
+
+def test_retry_target_exists_graph_level():
+    """retry_target_exists: graph-level retry_target with bad reference warns."""
+    graph = _make_graph(graph_attrs={"retry_target": "nonexistent"})
+    diags = validate(graph)
+    rt_diags = [d for d in diags if d.rule == "retry_target_exists"]
+    assert len(rt_diags) >= 1

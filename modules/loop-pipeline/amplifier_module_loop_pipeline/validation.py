@@ -12,7 +12,12 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
+from .conditions import evaluate_condition
+from .context import PipelineContext
+from .fidelity import VALID_FIDELITY_MODES
 from .graph import Graph
+from .outcome import Outcome, StageStatus
+from .stylesheet import parse_stylesheet
 
 # Shape-to-handler-type mapping (spec Section 2.8)
 SHAPE_TO_HANDLER: dict[str, str] = {
@@ -72,6 +77,11 @@ def validate(graph: Graph) -> list[Diagnostic]:
     _check_reachability(graph, diags)
     _check_goal_gate_has_retry(graph, diags)
     _check_prompt_on_llm_nodes(graph, diags)
+    _check_condition_syntax(graph, diags)
+    _check_stylesheet_syntax(graph, diags)
+    _check_type_known(graph, diags)
+    _check_fidelity_valid(graph, diags)
+    _check_retry_target_exists(graph, diags)
     return diags
 
 
@@ -265,5 +275,223 @@ def _check_prompt_on_llm_nodes(graph: Graph, diags: list[Diagnostic]) -> None:
                     message=f"LLM node '{node.id}' has no prompt and no explicit label",
                     node_id=node.id,
                     fix="Add a prompt attribute or a descriptive label",
+                )
+            )
+
+
+# All known handler types (values from SHAPE_TO_HANDLER mapping)
+_KNOWN_HANDLER_TYPES: frozenset[str] = frozenset(SHAPE_TO_HANDLER.values())
+
+
+def _check_condition_syntax(graph: Graph, diags: list[Diagnostic]) -> None:
+    """LINT: condition_syntax -- edge condition expressions must parse correctly.
+
+    Validates each non-empty condition by checking clause structure and
+    attempting evaluation with dummy values. Catches both exceptions and
+    structurally invalid clauses (e.g. empty keys).
+    """
+    dummy_outcome = Outcome(status=StageStatus.SUCCESS)
+    dummy_context = PipelineContext()
+
+    for edge in graph.edges:
+        if not edge.condition or not edge.condition.strip():
+            continue
+
+        # Structural check: each clause must have a non-empty key
+        error_msg = _validate_condition_structure(edge.condition)
+        if error_msg:
+            diags.append(
+                Diagnostic(
+                    rule="condition_syntax",
+                    severity="ERROR",
+                    message=(
+                        f"Edge {edge.from_node} -> {edge.to_node}: "
+                        f"invalid condition expression '{edge.condition}': {error_msg}"
+                    ),
+                    edge=(edge.from_node, edge.to_node),
+                    fix="Fix the condition expression syntax (supported: key=value, key!=value, &&)",
+                )
+            )
+            continue
+
+        # Runtime check: attempt evaluation
+        try:
+            evaluate_condition(edge.condition, dummy_outcome, dummy_context)
+        except Exception as exc:
+            diags.append(
+                Diagnostic(
+                    rule="condition_syntax",
+                    severity="ERROR",
+                    message=(
+                        f"Edge {edge.from_node} -> {edge.to_node}: "
+                        f"invalid condition expression '{edge.condition}': {exc}"
+                    ),
+                    edge=(edge.from_node, edge.to_node),
+                    fix="Fix the condition expression syntax (supported: key=value, key!=value, &&)",
+                )
+            )
+
+
+def _validate_condition_structure(condition: str) -> str | None:
+    """Check condition clause structure. Returns error message or None if valid."""
+    clauses = condition.split("&&")
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        if "!=" in clause:
+            key, _ = clause.split("!=", maxsplit=1)
+            if not key.strip():
+                return f"empty key in clause '{clause}'"
+        elif "=" in clause:
+            key, _ = clause.split("=", maxsplit=1)
+            if not key.strip():
+                return f"empty key in clause '{clause}'"
+    return None
+
+
+def _check_stylesheet_syntax(graph: Graph, diags: list[Diagnostic]) -> None:
+    """LINT: stylesheet_syntax -- model_stylesheet must parse as valid rules.
+
+    Attempts to parse the stylesheet. If parsing produces no rules from
+    non-empty input, the stylesheet has invalid syntax.
+    """
+    css = graph.model_stylesheet
+    if not css or not css.strip():
+        return
+
+    try:
+        rules = parse_stylesheet(css)
+    except Exception as exc:
+        diags.append(
+            Diagnostic(
+                rule="stylesheet_syntax",
+                severity="ERROR",
+                message=f"model_stylesheet failed to parse: {exc}",
+                fix="Fix the stylesheet syntax. Format: selector { property: value; }",
+            )
+        )
+        return
+
+    # If there was non-trivial content but no rules extracted, it's invalid
+    if not rules and len(css.strip()) > 5:
+        diags.append(
+            Diagnostic(
+                rule="stylesheet_syntax",
+                severity="ERROR",
+                message="model_stylesheet contains content but no valid rules were parsed",
+                fix="Fix the stylesheet syntax. Format: selector { property: value; }",
+            )
+        )
+
+
+def _check_type_known(graph: Graph, diags: list[Diagnostic]) -> None:
+    """LINT: type_known -- node type values should be recognized handler types."""
+    for node in graph.nodes.values():
+        if not node.type:
+            continue  # empty type uses shape-based resolution, always valid
+        if node.type not in _KNOWN_HANDLER_TYPES:
+            diags.append(
+                Diagnostic(
+                    rule="type_known",
+                    severity="WARNING",
+                    message=(
+                        f"Node '{node.id}' has unknown type '{node.type}'. "
+                        f"Known types: {', '.join(sorted(_KNOWN_HANDLER_TYPES))}"
+                    ),
+                    node_id=node.id,
+                    fix=f"Use a recognized type or register a custom handler for '{node.type}'",
+                )
+            )
+
+
+def _check_fidelity_valid(graph: Graph, diags: list[Diagnostic]) -> None:
+    """LINT: fidelity_valid -- fidelity mode values must be recognized."""
+    # Check node-level fidelity
+    for node in graph.nodes.values():
+        fidelity = node.attrs.get("fidelity")
+        if fidelity and fidelity not in VALID_FIDELITY_MODES:
+            diags.append(
+                Diagnostic(
+                    rule="fidelity_valid",
+                    severity="WARNING",
+                    message=(
+                        f"Node '{node.id}' has unrecognized fidelity mode '{fidelity}'. "
+                        f"Valid modes: {', '.join(sorted(VALID_FIDELITY_MODES))}"
+                    ),
+                    node_id=node.id,
+                    fix=f"Use one of: {', '.join(sorted(VALID_FIDELITY_MODES))}",
+                )
+            )
+
+    # Check graph-level default_fidelity
+    graph_fidelity = graph.graph_attrs.get("default_fidelity")
+    if graph_fidelity and graph_fidelity not in VALID_FIDELITY_MODES:
+        diags.append(
+            Diagnostic(
+                rule="fidelity_valid",
+                severity="WARNING",
+                message=(
+                    f"Graph attribute default_fidelity has unrecognized value '{graph_fidelity}'. "
+                    f"Valid modes: {', '.join(sorted(VALID_FIDELITY_MODES))}"
+                ),
+                fix=f"Use one of: {', '.join(sorted(VALID_FIDELITY_MODES))}",
+            )
+        )
+
+    # Check edge-level fidelity
+    for edge in graph.edges:
+        edge_fidelity = edge.attrs.get("fidelity")
+        if edge_fidelity and edge_fidelity not in VALID_FIDELITY_MODES:
+            diags.append(
+                Diagnostic(
+                    rule="fidelity_valid",
+                    severity="WARNING",
+                    message=(
+                        f"Edge {edge.from_node} -> {edge.to_node} has unrecognized "
+                        f"fidelity mode '{edge_fidelity}'. "
+                        f"Valid modes: {', '.join(sorted(VALID_FIDELITY_MODES))}"
+                    ),
+                    edge=(edge.from_node, edge.to_node),
+                    fix=f"Use one of: {', '.join(sorted(VALID_FIDELITY_MODES))}",
+                )
+            )
+
+
+def _check_retry_target_exists(graph: Graph, diags: list[Diagnostic]) -> None:
+    """LINT: retry_target_exists -- retry targets must reference existing nodes."""
+    node_ids = set(graph.nodes.keys())
+
+    # Check node-level retry targets
+    for node in graph.nodes.values():
+        for attr_name in ("retry_target", "fallback_retry_target"):
+            target = node.attrs.get(attr_name)
+            if target and target not in node_ids:
+                diags.append(
+                    Diagnostic(
+                        rule="retry_target_exists",
+                        severity="WARNING",
+                        message=(
+                            f"Node '{node.id}' has {attr_name}='{target}' "
+                            f"but no node with ID '{target}' exists"
+                        ),
+                        node_id=node.id,
+                        fix=f"Set {attr_name} to a valid node ID or remove it",
+                    )
+                )
+
+    # Check graph-level retry targets
+    for attr_name in ("retry_target", "fallback_retry_target"):
+        target = graph.graph_attrs.get(attr_name)
+        if target and target not in node_ids:
+            diags.append(
+                Diagnostic(
+                    rule="retry_target_exists",
+                    severity="WARNING",
+                    message=(
+                        f"Graph attribute {attr_name}='{target}' "
+                        f"references nonexistent node '{target}'"
+                    ),
+                    fix=f"Set graph {attr_name} to a valid node ID or remove it",
                 )
             )
