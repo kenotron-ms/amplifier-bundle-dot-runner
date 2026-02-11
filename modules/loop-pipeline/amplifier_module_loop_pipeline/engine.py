@@ -116,6 +116,8 @@ class PipelineEngine:
 
         # Bound goal-gate-driven retries to prevent infinite loops
         goal_gate_retries = 0
+        # Bound failure-routing retries (no-matching-edge fallback chain)
+        failure_routing_retries = 0
 
         while True:
             # Step 1: Check for terminal node (exit)
@@ -244,6 +246,23 @@ class PipelineEngine:
             # Step 5: Select next edge
             edge = select_edge(current_node.id, outcome, self.context, self.graph)
             if edge is None:
+                # Try failure routing: node/graph retry targets
+                retry_node = self._resolve_failure_retry_target(current_node)
+                if (
+                    retry_node is not None
+                    and failure_routing_retries < self._MAX_GOAL_GATE_RETRIES
+                ):
+                    failure_routing_retries += 1
+                    logger.info(
+                        "No matching edge from '%s', failure-routing to '%s' "
+                        "(attempt %d)",
+                        current_node.id,
+                        retry_node.id,
+                        failure_routing_retries,
+                    )
+                    current_node = retry_node
+                    continue
+
                 fail_outcome = Outcome(
                     status=StageStatus.FAIL,
                     failure_reason=f"No matching edge from node '{current_node.id}'",
@@ -473,6 +492,29 @@ class PipelineEngine:
         status_path = os.path.join(node_dir, "status.json")
         with open(status_path, "w") as f:
             json.dump(status, f, indent=2)
+
+    # -- Failure routing helpers ----------------------------------------------
+
+    def _resolve_failure_retry_target(self, node: Node) -> Node | None:
+        """Resolve a retry target when no edge matches after node execution.
+
+        Fallback chain (first match wins):
+        1. node.retry_target
+        2. node.fallback_retry_target
+        3. graph.retry_target
+        4. graph.fallback_retry_target
+
+        Returns the target Node or None if no valid target exists.
+        """
+        target_id = (
+            node.attrs.get("retry_target")
+            or node.attrs.get("fallback_retry_target")
+            or self.graph.graph_attrs.get("retry_target")
+            or self.graph.graph_attrs.get("fallback_retry_target")
+        )
+        if target_id and target_id in self.graph.nodes:
+            return self.graph.nodes[target_id]
+        return None
 
     # -- Event helpers -------------------------------------------------------
 
