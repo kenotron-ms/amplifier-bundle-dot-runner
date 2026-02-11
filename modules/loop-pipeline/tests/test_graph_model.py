@@ -194,3 +194,98 @@ def test_node_attrs_dict_set_promotes_to_field():
     node.attrs["goal_gate"] = True
     # The field should reflect the value
     assert node.goal_gate is True
+
+
+# --- L-5: Edge first-class fields ---
+
+
+def test_edge_first_class_fields_defaults():
+    """All promoted edge attributes should have sensible defaults (L-5)."""
+    edge = Edge(from_node="A", to_node="B")
+    assert edge.fidelity is None
+    assert edge.thread_id is None
+    assert edge.loop_restart is None
+
+
+def test_edge_first_class_fields_set():
+    """Promoted edge fields should be settable via constructor (L-5)."""
+    edge = Edge(
+        from_node="A",
+        to_node="B",
+        fidelity="full",
+        thread_id="t1",
+        loop_restart=True,
+    )
+    assert edge.fidelity == "full"
+    assert edge.thread_id == "t1"
+    assert edge.loop_restart is True
+
+
+def test_edge_attrs_dict_backward_compat():
+    """Accessing promoted fields via attrs dict should still work (L-5)."""
+    edge = Edge(from_node="A", to_node="B", fidelity="full", thread_id="t1")
+    assert edge.attrs.get("fidelity") == "full"
+    assert edge.attrs.get("thread_id") == "t1"
+    assert edge.attrs.get("nonexistent") is None
+
+
+def test_edge_attrs_from_dict_promotes():
+    """Promoted keys passed in attrs dict should be promoted to fields (L-5)."""
+    edge = Edge(from_node="A", to_node="B", attrs={"fidelity": "compact", "custom": 42})
+    assert edge.fidelity == "compact"
+    assert edge.attrs.get("custom") == 42
+
+
+# --- L-6: Graph first-class fields ---
+
+
+def test_graph_first_class_fields_defaults():
+    """All promoted graph attributes should have sensible defaults (L-6)."""
+    graph = Graph(name="test", nodes={}, edges=[])
+    assert graph.retry_target is None
+    assert graph.fallback_retry_target is None
+    assert graph.default_fidelity is None
+    assert graph.label is None
+
+
+def test_graph_first_class_fields_set():
+    """Promoted graph fields should be settable via constructor (L-6)."""
+    graph = Graph(
+        name="test",
+        nodes={},
+        edges=[],
+        retry_target="plan",
+        fallback_retry_target="start",
+        default_fidelity="full",
+        label="My Pipeline",
+    )
+    assert graph.retry_target == "plan"
+    assert graph.fallback_retry_target == "start"
+    assert graph.default_fidelity == "full"
+    assert graph.label == "My Pipeline"
+
+
+def test_graph_attrs_dict_backward_compat():
+    """Accessing promoted fields via graph_attrs dict should still work (L-6)."""
+    graph = Graph(
+        name="test",
+        nodes={},
+        edges=[],
+        retry_target="plan",
+        default_fidelity="full",
+    )
+    assert graph.graph_attrs.get("retry_target") == "plan"
+    assert graph.graph_attrs.get("default_fidelity") == "full"
+    assert graph.graph_attrs.get("nonexistent") is None
+
+
+def test_graph_attrs_from_dict_promotes():
+    """Promoted keys passed in graph_attrs dict should promote to fields (L-6)."""
+    graph = Graph(
+        name="test",
+        nodes={},
+        edges=[],
+        graph_attrs={"retry_target": "plan", "rankdir": "LR"},
+    )
+    assert graph.retry_target == "plan"
+    assert graph.graph_attrs.get("rankdir") == "LR"

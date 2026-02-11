@@ -88,6 +88,14 @@ def parse_dot(source: str) -> Graph:
             "Undirected edges (--) are not supported; use directed edges (->)"
         )
 
+    # Reject multiple digraphs in one source (L-2)
+    digraph_matches = re.findall(r"\bdigraph\b", cleaned, re.IGNORECASE)
+    if len(digraph_matches) > 1:
+        raise ValueError(
+            f"Multiple digraph definitions found ({len(digraph_matches)}); "
+            f"only a single digraph per source is supported"
+        )
+
     # Extract digraph name and body
     m = re.match(r"\s*digraph\s+(\w+)\s*\{(.*)\}\s*$", cleaned, re.DOTALL)
     if not m:
@@ -222,15 +230,37 @@ def _parse_subgraph(tokens: list[str], pos: int, ctx: _ParseContext) -> int:
     if pos < len(tokens) and tokens[pos] == "{":
         # Save parent defaults and create scoped copy
         saved_defaults = dict(ctx.node_defaults)
+        nodes_before = set(ctx.nodes.keys())
         end = _find_matching_brace(tokens, pos)
         sub_body_tokens = tokens[pos + 1 : end]
         # Parse sub-body using same context but with scoped defaults
         _parse_token_list(sub_body_tokens, ctx)
+        # Derive class from subgraph label and apply to new nodes (L-3)
+        subgraph_label = ctx.graph_attrs.pop("label", None)
+        if subgraph_label:
+            derived_class = _derive_class(subgraph_label)
+            if derived_class:
+                new_nodes = set(ctx.nodes.keys()) - nodes_before
+                for nid in new_nodes:
+                    node = ctx.nodes[nid]
+                    if not node.attrs.get("class"):
+                        node.attrs["class"] = derived_class
         # Restore parent defaults
         ctx.node_defaults = saved_defaults
         return end + 1
 
     return pos
+
+
+def _derive_class(label: str) -> str:
+    """Derive a CSS-like class name from a subgraph label (L-3).
+
+    Lowercase, replace spaces with hyphens, strip non-alphanumeric chars.
+    """
+    result = label.lower().replace(" ", "-")
+    result = re.sub(r"[^a-z0-9-]", "", result)
+    # Strip leading/trailing hyphens
+    return result.strip("-")
 
 
 def _parse_token_list(tokens: list[str], ctx: _ParseContext) -> None:
@@ -414,7 +444,7 @@ _TOKEN_RE = re.compile(
     | (?P<arrow>->)                    # Directed edge
     | (?P<punct>[{}\[\]=,;])           # Punctuation
     | (?P<ident>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)  # Identifier (possibly qualified)
-    | (?P<number>-?[0-9]+\.?[0-9]*)   # Number (integer or float)
+    | (?P<number>-?(?:[0-9]+\.?[0-9]*|\.[0-9]+))  # Number (int, float, or .5-style)
     | (?P<ws>\s+)                      # Whitespace (skip)
     """,
     re.VERBOSE,

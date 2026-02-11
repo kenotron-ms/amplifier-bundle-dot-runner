@@ -126,6 +126,49 @@ def test_subgraph_support():
     assert "test" in graph.nodes
 
 
+def test_subgraph_class_derivation():
+    """Subgraph label should derive a CSS-like class for nodes within (L-3)."""
+    graph = parse_dot("""
+    digraph test {
+        subgraph cluster_impl {
+            label="Implementation Phase"
+            code
+            test
+        }
+        code -> test
+    }
+    """)
+    # Class derived from label: lowercase, spaces->hyphens, strip non-alphanum
+    assert graph.nodes["code"].attrs.get("class") == "implementation-phase"
+    assert graph.nodes["test"].attrs.get("class") == "implementation-phase"
+
+
+def test_subgraph_class_not_overridden():
+    """Explicit class attr on a node should not be overridden by subgraph (L-3)."""
+    graph = parse_dot("""
+    digraph test {
+        subgraph cluster_x {
+            label="My Group"
+            A [class="custom"]
+        }
+    }
+    """)
+    # Explicit class should be preserved
+    assert graph.nodes["A"].attrs.get("class") == "custom"
+
+
+def test_subgraph_no_label_no_class():
+    """Subgraph without label should not set class (L-3)."""
+    graph = parse_dot("""
+    digraph test {
+        subgraph cluster_x {
+            A
+        }
+    }
+    """)
+    assert graph.nodes["A"].attrs.get("class") is None
+
+
 def test_subgraph_node_defaults():
     """Subgraph node defaults apply to nodes within (Section 2.10)."""
     graph = parse_dot("""
@@ -163,6 +206,17 @@ def test_integer_values():
     }
     """)
     assert graph.nodes["A"].attrs.get("max_retries") == 3
+
+
+def test_leading_dot_float_values():
+    """Leading-dot floats like .5 should be parsed as 0.5 (L-1)."""
+    graph = parse_dot("""
+    digraph test {
+        A [weight=.5, threshold=.75]
+    }
+    """)
+    assert graph.nodes["A"].attrs.get("weight") == 0.5
+    assert graph.nodes["A"].attrs.get("threshold") == 0.75
 
 
 def test_boolean_values():
@@ -412,6 +466,15 @@ def test_comma_separated_attrs_no_warning(recwarn):
     assert graph.nodes["A"].label == "Hello"
     comma_warnings = [x for x in w if "comma" in str(x.message).lower()]
     assert len(comma_warnings) == 0, "No warning expected for comma-separated attrs"
+
+
+def test_multiple_digraphs_rejected():
+    """Multiple digraphs in one file should produce a clear error (L-2)."""
+    with pytest.raises(ValueError, match="[Mm]ultiple.*digraph"):
+        parse_dot("""
+        digraph first { A -> B }
+        digraph second { C -> D }
+        """)
 
 
 def test_single_attr_no_warning():
