@@ -88,6 +88,20 @@ class Interviewer(Protocol):
 
     def ask(self, question: Question) -> Answer: ...
 
+    def ask_multiple(self, questions: list[Question]) -> list[Answer]:
+        """Ask multiple questions in batch (L-18).
+
+        Default: delegates to ask() for each question sequentially.
+        """
+        ...
+
+    def inform(self, message: str) -> None:
+        """One-way notification to the human (L-18).
+
+        Default: no-op (logged).
+        """
+        ...
+
 
 class AutoApproveInterviewer:
     """Always approves — used for automated testing and CI/CD.
@@ -102,6 +116,13 @@ class AutoApproveInterviewer:
             first = question.options[0]
             return Answer(value=first.key, selected_option=first)
         return Answer(value="auto-approved", text="auto-approved")
+
+    def ask_multiple(self, questions: list[Question]) -> list[Answer]:
+        """L-18: Delegate to ask() for each question."""
+        return [self.ask(q) for q in questions]
+
+    def inform(self, message: str) -> None:
+        """L-18: No-op for auto-approve."""
 
 
 class QueueInterviewer:
@@ -118,6 +139,13 @@ class QueueInterviewer:
             return self._answers.popleft()
         return Answer(value=AnswerValue.SKIPPED)
 
+    def ask_multiple(self, questions: list[Question]) -> list[Answer]:
+        """L-18: Delegate to ask() for each question."""
+        return [self.ask(q) for q in questions]
+
+    def inform(self, message: str) -> None:
+        """L-18: No-op for queue interviewer."""
+
 
 class CallbackInterviewer:
     """Delegates to a provided callback function.
@@ -130,6 +158,13 @@ class CallbackInterviewer:
 
     def ask(self, question: Question) -> Answer:
         return self._callback(question)
+
+    def ask_multiple(self, questions: list[Question]) -> list[Answer]:
+        """L-18: Delegate to ask() for each question."""
+        return [self.ask(q) for q in questions]
+
+    def inform(self, message: str) -> None:
+        """L-18: No-op for callback interviewer."""
 
 
 class ConsoleInterviewer:
@@ -184,6 +219,14 @@ class ConsoleInterviewer:
         raw = sys.stdin.readline().strip()
         return Answer(value=raw, text=raw)
 
+    def ask_multiple(self, questions: list[Question]) -> list[Answer]:
+        """L-18: Delegate to ask() for each question sequentially."""
+        return [self.ask(q) for q in questions]
+
+    def inform(self, message: str) -> None:
+        """L-18: Print notification to stdout."""
+        print(f"\n[Pipeline Info] {message}")
+
 
 class RecordingInterviewer:
     """Records all interactions for replay.
@@ -207,6 +250,19 @@ class RecordingInterviewer:
             answer = Answer(value=AnswerValue.SKIPPED)
         self._recordings.append((question, answer))
         return answer
+
+    def ask_multiple(self, questions: list[Question]) -> list[Answer]:
+        """L-18: Delegate to ask() for each question (all recorded)."""
+        return [self.ask(q) for q in questions]
+
+    def inform(self, message: str) -> None:
+        """L-18: Record inform as a notification entry."""
+        self._recordings.append(
+            (
+                Question(text=message, type=QuestionType.CONFIRMATION),
+                Answer(value="informed"),
+            )
+        )
 
     def get_recordings(self) -> list[tuple[Question, Answer]]:
         """Return all recorded (question, answer) pairs."""

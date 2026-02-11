@@ -180,6 +180,67 @@ class TestCallbackInterviewer:
         assert answer.value == AnswerValue.NO
 
 
+# --- L-18: ask_multiple and inform on Interviewer ---
+
+
+class TestInterviewerAskMultiple:
+    """L-18: Interviewer implementations support ask_multiple."""
+
+    def test_auto_approve_ask_multiple(self):
+        interviewer = AutoApproveInterviewer()
+        questions = [
+            Question(text="Q1", type=QuestionType.YES_NO),
+            Question(text="Q2", type=QuestionType.CONFIRMATION),
+        ]
+        answers = interviewer.ask_multiple(questions)
+        assert len(answers) == 2
+        assert answers[0].value == AnswerValue.YES
+        assert answers[1].value == AnswerValue.YES
+
+    def test_queue_ask_multiple(self):
+        interviewer = QueueInterviewer([
+            Answer(value=AnswerValue.YES),
+            Answer(value=AnswerValue.NO),
+        ])
+        questions = [
+            Question(text="Q1", type=QuestionType.YES_NO),
+            Question(text="Q2", type=QuestionType.YES_NO),
+        ]
+        answers = interviewer.ask_multiple(questions)
+        assert len(answers) == 2
+        assert answers[0].value == AnswerValue.YES
+        assert answers[1].value == AnswerValue.NO
+
+    def test_callback_ask_multiple(self):
+        def my_cb(q: Question) -> Answer:
+            return Answer(value=AnswerValue.YES)
+
+        interviewer = CallbackInterviewer(my_cb)
+        questions = [
+            Question(text="Q1", type=QuestionType.YES_NO),
+            Question(text="Q2", type=QuestionType.YES_NO),
+        ]
+        answers = interviewer.ask_multiple(questions)
+        assert len(answers) == 2
+
+
+class TestInterviewerInform:
+    """L-18: Interviewer implementations support inform."""
+
+    def test_auto_approve_inform_does_not_raise(self):
+        interviewer = AutoApproveInterviewer()
+        # inform is fire-and-forget; should not raise
+        interviewer.inform("Pipeline completed successfully")
+
+    def test_queue_inform_does_not_raise(self):
+        interviewer = QueueInterviewer([])
+        interviewer.inform("Status update")
+
+    def test_callback_inform_does_not_raise(self):
+        interviewer = CallbackInterviewer(lambda q: Answer(value=AnswerValue.YES))
+        interviewer.inform("Notification")
+
+
 # --- HumanGateHandler ---
 
 
