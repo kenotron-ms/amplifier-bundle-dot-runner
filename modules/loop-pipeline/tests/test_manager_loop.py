@@ -334,20 +334,51 @@ class TestManagerEdgeCases:
         assert result.status == StageStatus.FAIL
 
     @pytest.mark.asyncio
-    async def test_default_max_cycles(self):
-        """Default max_cycles is 10 per spec when not specified."""
+    async def test_default_max_cycles_is_1000(self):
+        """M-14: Default max_cycles is 1000 per spec when not specified."""
+        # Instead of running 1000 cycles, succeed on cycle 11 to prove
+        # the default is > 10 (the old wrong default).
         call_count = 0
 
-        async def failing_runner(node_id, context, graph, logs_root):
+        async def runner_succeeds_on_11(node_id, context, graph, logs_root):
             nonlocal call_count
             call_count += 1
+            if call_count >= 11:
+                return Outcome(status=StageStatus.SUCCESS)
             return Outcome(status=StageStatus.FAIL)
 
-        handler = ManagerLoopHandler(subgraph_runner=failing_runner)
+        handler = ManagerLoopHandler(subgraph_runner=runner_succeeds_on_11)
         graph = _make_graph(
             manager_attrs={
                 "manager.poll_interval": "0s",
-                # No max_cycles — should default to 10
+                # No max_cycles — should default to 1000
+            }
+        )
+        ctx = PipelineContext()
+
+        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        # With old default of 10, this would FAIL. With 1000, it succeeds.
+        assert result.status == StageStatus.SUCCESS
+        assert call_count == 11
+
+    @pytest.mark.asyncio
+    async def test_default_max_cycles_exhaustion_message(self):
+        """M-14: When default max_cycles exhausted, failure mentions 1000."""
+        call_count = 0
+
+        async def always_fails(node_id, context, graph, logs_root):
+            nonlocal call_count
+            call_count += 1
+            # Succeed on 1001 (never reached if default is 1000)
+            if call_count > 1000:
+                return Outcome(status=StageStatus.SUCCESS)
+            return Outcome(status=StageStatus.FAIL)
+
+        handler = ManagerLoopHandler(subgraph_runner=always_fails)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.poll_interval": "0s",
             }
         )
         ctx = PipelineContext()
@@ -355,7 +386,8 @@ class TestManagerEdgeCases:
         result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
 
         assert result.status == StageStatus.FAIL
-        assert call_count == 10
+        assert "1000" in (result.failure_reason or "")
+        assert call_count == 1000
 
     @pytest.mark.asyncio
     async def test_child_exception_treated_as_fail(self):

@@ -91,7 +91,7 @@ class ManagerLoopHandler:
         max_cycles is exhausted.
         """
         # -- Parse configuration ------------------------------------------------
-        max_cycles = int(node.attrs.get("manager.max_cycles", 10))
+        max_cycles = int(node.attrs.get("manager.max_cycles", 1000))  # spec default
         poll_interval_s = _parse_duration(
             str(node.attrs.get("manager.poll_interval", "0s"))
         )
