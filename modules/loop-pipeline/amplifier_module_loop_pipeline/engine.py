@@ -35,7 +35,6 @@ from .pipeline_events import (
     PIPELINE_START,
 )
 from .retry import RetryPolicy, execute_with_retry
-from .transforms import apply_transforms
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +90,9 @@ class PipelineEngine:
         # Initialize context with graph attributes
         self._initialize_context(goal)
 
-        # Apply transforms (variable expansion, stylesheet) before execution
-        apply_transforms(self.graph, self.context)
+        # Note: transforms (variable expansion, stylesheet) are applied by
+        # PipelineOrchestrator.execute() between parse and validate, before
+        # the engine is constructed.  Do NOT re-apply here.
 
         # Create run directory structure (manifest, artifacts/)
         self._write_manifest(goal)

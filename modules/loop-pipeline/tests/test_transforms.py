@@ -258,14 +258,18 @@ def _make_engine(
 
 
 class TestEngineTransformIntegration:
-    """Engine applies transforms before execution loop."""
+    """Transforms are applied before engine execution.
+
+    Since transforms are now applied by the orchestrator (not the engine),
+    these tests pre-apply transforms before constructing the engine.
+    """
 
     @pytest.mark.asyncio
-    async def test_engine_expands_goal_in_prompts(self, tmp_path):
+    async def test_pre_transformed_goal_seen_by_handlers(self, tmp_path):
         """$goal in node prompts is expanded before handlers see them."""
         backend = MockBackend()
-        engine = _make_engine(
-            dot_source="""
+        graph = parse_dot(
+            """
             digraph {
                 goal = "build auth"
                 start [shape=Mdiamond]
@@ -273,8 +277,17 @@ class TestEngineTransformIntegration:
                 exit [shape=Msquare]
                 start -> plan -> exit
             }
-            """,
-            backend=backend,
+            """
+        )
+        context = PipelineContext()
+        context.set("graph.goal", "build auth")
+        apply_transforms(graph, context)
+        validate_or_raise(graph)
+        registry = HandlerRegistry(backend=backend)
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=registry,
             logs_root=str(tmp_path),
         )
         outcome = await engine.run()
@@ -283,11 +296,11 @@ class TestEngineTransformIntegration:
         assert backend.seen_prompts.get("plan") == "Plan build auth"
 
     @pytest.mark.asyncio
-    async def test_engine_applies_stylesheet(self, tmp_path):
+    async def test_pre_transformed_stylesheet_applied(self, tmp_path):
         """Stylesheet rules are applied to nodes before execution."""
         backend = MockBackend()
-        engine = _make_engine(
-            dot_source="""
+        graph = parse_dot(
+            """
             digraph {
                 model_stylesheet = "* { llm_model: gpt-4o; }"
                 start [shape=Mdiamond]
@@ -295,10 +308,62 @@ class TestEngineTransformIntegration:
                 exit [shape=Msquare]
                 start -> step -> exit
             }
-            """,
-            backend=backend,
+            """
+        )
+        context = PipelineContext()
+        apply_transforms(graph, context)
+        validate_or_raise(graph)
+        registry = HandlerRegistry(backend=backend)
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=registry,
             logs_root=str(tmp_path),
         )
         await engine.run()
         # After transforms, node should have llm_model set
         assert engine.graph.nodes["step"].attrs.get("llm_model") == "gpt-4o"
+
+
+# --- Orchestrator-level transform ordering (1b1) ---
+
+
+class TestTransformOrdering:
+    """Transforms must run at orchestrator level, NOT inside engine.run().
+
+    The fix: move apply_transforms from engine.run() to
+    PipelineOrchestrator.execute() between parse and validate.
+    """
+
+    @pytest.mark.asyncio
+    async def test_engine_run_does_not_call_transforms(self, tmp_path):
+        """engine.run() should NOT expand $goal — that's the orchestrator's job.
+
+        When an engine is built directly (without orchestrator), and
+        apply_transforms is NOT called beforehand, $goal should remain
+        unexpanded in node prompts.
+        """
+        backend = MockBackend()
+        graph = parse_dot(
+            """
+            digraph {
+                goal = "build auth"
+                start [shape=Mdiamond]
+                plan [prompt="Plan $goal"]
+                exit [shape=Msquare]
+                start -> plan -> exit
+            }
+            """
+        )
+        validate_or_raise(graph)
+        context = PipelineContext()
+        registry = HandlerRegistry(backend=backend)
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=registry,
+            logs_root=str(tmp_path),
+        )
+        await engine.run()
+        # After the fix: engine should NOT expand $goal
+        assert backend.seen_prompts.get("plan") == "Plan $goal"

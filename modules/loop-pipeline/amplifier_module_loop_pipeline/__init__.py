@@ -23,6 +23,7 @@ from .dot_parser import parse_dot
 from .engine import PipelineEngine
 from .handlers import HandlerRegistry
 from .outcome import Outcome, StageStatus
+from .transforms import apply_transforms
 from .validation import validate_or_raise
 
 logger = logging.getLogger(__name__)
@@ -242,30 +243,33 @@ class PipelineOrchestrator:
         # 2. Parse the DOT graph
         graph = parse_dot(dot_source)
 
-        # 3. Validate the graph
-        validate_or_raise(graph)
-
-        # 4. Create pipeline context with goal from the prompt
+        # 3. Create pipeline context with goal from the prompt
         pipeline_context = PipelineContext()
         if prompt:
             pipeline_context.set("graph.goal", prompt)
 
-        # 5. Set up logs directory
+        # 4. Apply transforms (variable expansion, stylesheet) before validation
+        apply_transforms(graph, pipeline_context)
+
+        # 5. Validate the (transformed) graph
+        validate_or_raise(graph)
+
+        # 6. Set up logs directory
         logs_root = self.config.get(
             "logs_root", os.path.join(tempfile.gettempdir(), "attractor-pipeline")
         )
         os.makedirs(logs_root, exist_ok=True)
 
-        # 6. Resolve backend: explicit kwarg → auto-construct from providers
+        # 7. Resolve backend: explicit kwarg → auto-construct from providers
         coordinator = kwargs.get("coordinator")
         backend = kwargs.get("backend")
         if backend is None:
             backend = _build_backend(providers, tools, hooks, coordinator)
 
-        # 7. Register handlers
+        # 8. Register handlers
         registry = HandlerRegistry(backend=backend)
 
-        # 8. Run the engine
+        # 9. Run the engine
         engine = PipelineEngine(
             graph=graph,
             context=pipeline_context,
@@ -275,7 +279,7 @@ class PipelineOrchestrator:
         )
         outcome = await engine.run(goal=prompt or None)
 
-        # 9. Return the final outcome as JSON
+        # 10. Return the final outcome as JSON
         result = {
             "status": outcome.status.value,
             "notes": outcome.notes,
