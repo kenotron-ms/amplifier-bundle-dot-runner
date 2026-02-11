@@ -198,14 +198,15 @@ def _build_backend(
     tools: dict[str, Any],
     hooks: Any,
     coordinator: Any | None,
+    orchestrator_config: dict[str, Any] | None = None,
 ) -> Any | None:
     """Auto-construct a backend from the available providers.
 
     Resolution order:
     1. If coordinator exposes ``session.spawn`` \u2192 use AmplifierBackend
-       (full "sessions all the way down").  A direct provider and tools
-       are also passed so the backend can fall back to a mini tool loop
-       if spawn becomes unavailable for a particular call.
+       (full "sessions all the way down").  Profiles are resolved from
+       ``orchestrator_config["profiles"]`` or auto-discovered from
+       ``coordinator.config["agents"]``.
     2. Else if at least one provider is available \u2192 use
        DirectProviderBackend (mini agentic tool loop per node).
     3. Otherwise \u2192 return None (codergen handler falls through to
@@ -224,10 +225,41 @@ def _build_backend(
         if spawn_fn is not None:
             from .backend import AmplifierBackend
 
-            logger.info("Using AmplifierBackend (session.spawn available)")
+            # Resolve profiles: explicit config > auto-discovery from agents
+            cfg = orchestrator_config or {}
+            profiles: dict[str, str] = {}
+
+            # Source 1: Explicit profiles mapping in orchestrator config
+            # e.g. config.profiles = {"anthropic": "attractor-anthropic"}
+            explicit_profiles = cfg.get("profiles")
+            if isinstance(explicit_profiles, dict):
+                profiles.update(explicit_profiles)
+
+            # Source 2: Auto-discover from coordinator.config["agents"]
+            # Each agent entry is mapped as agent_name -> agent_name.
+            if not profiles:
+                coordinator_config = getattr(coordinator, "config", None) or {}
+                agents = coordinator_config.get("agents", {})
+                for agent_name, agent_cfg in agents.items():
+                    if isinstance(agent_cfg, dict):
+                        profiles[agent_name] = agent_name
+
+            if profiles:
+                logger.info(
+                    "Using AmplifierBackend (session.spawn available, profiles=%s)",
+                    list(profiles.keys()),
+                )
+            else:
+                logger.warning(
+                    "Using AmplifierBackend but profiles dict is empty. "
+                    "Pipeline nodes may fail to resolve agent profiles. "
+                    "Add 'profiles' to orchestrator config or 'agents' "
+                    "to the bundle."
+                )
+
             return AmplifierBackend(
                 coordinator,
-                profiles={},
+                profiles=profiles,
                 provider=first_provider,
                 tools=tools,
             )
@@ -308,7 +340,9 @@ class PipelineOrchestrator:
         coordinator = kwargs.get("coordinator")
         backend = kwargs.get("backend")
         if backend is None:
-            backend = _build_backend(providers, tools, hooks, coordinator)
+            backend = _build_backend(
+                providers, tools, hooks, coordinator, self.config
+            )
 
         # 8. Create engine first (handlers need its _run_from method)
         # Use a placeholder registry, then replace after wiring
