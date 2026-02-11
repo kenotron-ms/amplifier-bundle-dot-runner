@@ -31,6 +31,7 @@ from amplifier_module_loop_pipeline.pipeline_events import (
 # Test helpers
 # ---------------------------------------------------------------------------
 
+
 class MockHooks:
     """Captures all emitted events for assertion."""
 
@@ -97,6 +98,7 @@ def _make_engine(
 # Event constant tests
 # ---------------------------------------------------------------------------
 
+
 class TestEventConstants:
     """Event name constants are defined correctly."""
 
@@ -125,9 +127,45 @@ class TestEventConstants:
         assert PIPELINE_ERROR == "pipeline:error"
 
 
+def test_all_spec_event_constants_exist():
+    """All spec Section 9.6 event types must have constants defined."""
+    from amplifier_module_loop_pipeline import pipeline_events as pe
+
+    required_events = [
+        # Existing
+        "PIPELINE_START",
+        "PIPELINE_COMPLETE",
+        "PIPELINE_NODE_START",
+        "PIPELINE_NODE_COMPLETE",
+        "PIPELINE_EDGE_SELECTED",
+        "PIPELINE_CHECKPOINT",
+        "PIPELINE_GOAL_GATE_CHECK",
+        "PIPELINE_ERROR",
+        # New: Parallel
+        "PIPELINE_PARALLEL_STARTED",
+        "PIPELINE_PARALLEL_BRANCH_STARTED",
+        "PIPELINE_PARALLEL_BRANCH_COMPLETED",
+        "PIPELINE_PARALLEL_COMPLETED",
+        # New: Human
+        "PIPELINE_INTERVIEW_STARTED",
+        "PIPELINE_INTERVIEW_COMPLETED",
+        "PIPELINE_INTERVIEW_TIMEOUT",
+        # New: Retry
+        "PIPELINE_STAGE_RETRYING",
+        "PIPELINE_STAGE_FAILED",
+    ]
+
+    for name in required_events:
+        assert hasattr(pe, name), f"Missing event constant: {name}"
+        value = getattr(pe, name)
+        assert isinstance(value, str), f"{name} should be a string, got {type(value)}"
+        assert value.startswith("pipeline:"), f"{name} should start with 'pipeline:'"
+
+
 # ---------------------------------------------------------------------------
 # Engine emits pipeline:start and pipeline:complete
 # ---------------------------------------------------------------------------
+
 
 class TestPipelineLifecycleEvents:
     """Engine emits start and complete events."""
@@ -266,6 +304,7 @@ class TestPipelineLifecycleEvents:
 # Node events
 # ---------------------------------------------------------------------------
 
+
 class TestNodeEvents:
     """Engine emits node_start and node_complete for each node."""
 
@@ -367,6 +406,7 @@ class TestNodeEvents:
 # Edge selection events
 # ---------------------------------------------------------------------------
 
+
 class TestEdgeEvents:
     """Engine emits edge_selected after each edge selection."""
 
@@ -398,6 +438,7 @@ class TestEdgeEvents:
 # ---------------------------------------------------------------------------
 # Checkpoint events
 # ---------------------------------------------------------------------------
+
 
 class TestCheckpointEvents:
     """Engine emits checkpoint events after saving."""
@@ -431,6 +472,7 @@ class TestCheckpointEvents:
 # Goal gate events
 # ---------------------------------------------------------------------------
 
+
 class TestGoalGateEvents:
     """Engine emits goal_gate_check at exit."""
 
@@ -461,6 +503,7 @@ class TestGoalGateEvents:
 # ---------------------------------------------------------------------------
 # Error events
 # ---------------------------------------------------------------------------
+
 
 class TestErrorEvents:
     """Engine emits error events on failures."""
@@ -503,6 +546,7 @@ class TestErrorEvents:
 # ---------------------------------------------------------------------------
 # No hooks (backward compatibility)
 # ---------------------------------------------------------------------------
+
 
 class TestNoHooksBackwardCompat:
     """Engine works fine without hooks (existing tests pass)."""

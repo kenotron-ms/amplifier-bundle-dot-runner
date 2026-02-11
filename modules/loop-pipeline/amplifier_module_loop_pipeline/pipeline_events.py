@@ -40,3 +40,24 @@ PIPELINE_GOAL_GATE_CHECK: str = "pipeline:goal_gate_check"
 # Errors
 # ---------------------------------------------------------------------------
 PIPELINE_ERROR: str = "pipeline:error"
+
+# ---------------------------------------------------------------------------
+# Parallel execution (spec Section 9.6)
+# ---------------------------------------------------------------------------
+PIPELINE_PARALLEL_STARTED: str = "pipeline:parallel_started"
+PIPELINE_PARALLEL_BRANCH_STARTED: str = "pipeline:parallel_branch_started"
+PIPELINE_PARALLEL_BRANCH_COMPLETED: str = "pipeline:parallel_branch_completed"
+PIPELINE_PARALLEL_COMPLETED: str = "pipeline:parallel_completed"
+
+# ---------------------------------------------------------------------------
+# Human interaction (spec Section 9.6)
+# ---------------------------------------------------------------------------
+PIPELINE_INTERVIEW_STARTED: str = "pipeline:interview_started"
+PIPELINE_INTERVIEW_COMPLETED: str = "pipeline:interview_completed"
+PIPELINE_INTERVIEW_TIMEOUT: str = "pipeline:interview_timeout"
+
+# ---------------------------------------------------------------------------
+# Retry lifecycle (spec Section 9.6)
+# ---------------------------------------------------------------------------
+PIPELINE_STAGE_RETRYING: str = "pipeline:stage_retrying"
+PIPELINE_STAGE_FAILED: str = "pipeline:stage_failed"

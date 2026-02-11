@@ -35,8 +35,18 @@ class HumanGateHandler:
     is provided (e.g. in automated/CI environments).
     """
 
-    def __init__(self, interviewer: Interviewer | None = None) -> None:
+    def __init__(
+        self,
+        interviewer: Interviewer | None = None,
+        hooks: object | None = None,
+    ) -> None:
         self._interviewer = interviewer or AutoApproveInterviewer()
+        self._hooks = hooks
+
+    async def _emit(self, event_name: str, data: dict) -> None:  # type: ignore[type-arg]
+        """Emit an event via hooks, if provided."""
+        if self._hooks is not None:
+            await self._hooks.emit(event_name, data)  # type: ignore[union-attr]
 
     async def execute(
         self,
@@ -79,10 +89,31 @@ class HumanGateHandler:
                 stage=node.id,
             )
 
-        # 3. Ask the interviewer
+        # 3. Emit interview started event
+        from ..pipeline_events import (
+            PIPELINE_INTERVIEW_COMPLETED,
+            PIPELINE_INTERVIEW_STARTED,
+        )
+
+        await self._emit(
+            PIPELINE_INTERVIEW_STARTED,
+            {"node_id": node.id, "question": question.text},
+        )
+
+        # 4. Ask the interviewer
         answer = self._interviewer.ask(question)
 
-        # 4. Determine the selected label
+        await self._emit(
+            PIPELINE_INTERVIEW_COMPLETED,
+            {
+                "node_id": node.id,
+                "answer": str(answer.value)
+                if hasattr(answer, "value")
+                else str(answer),
+            },
+        )
+
+        # 5. Determine the selected label
         selected = self._resolve_selection(answer, choices)
 
         return Outcome(

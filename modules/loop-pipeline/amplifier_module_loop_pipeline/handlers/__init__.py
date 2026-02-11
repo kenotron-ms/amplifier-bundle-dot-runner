@@ -66,12 +66,14 @@ class HandlerRegistry:
             "tool": ToolHandler(),
             "wait.human": HumanGateHandler(
                 interviewer=kwargs.get("interviewer"),
+                hooks=self._hooks,
             ),
             "stack.manager_loop": ManagerLoopHandler(
                 subgraph_runner=kwargs.get("subgraph_runner"),
             ),
             "parallel": ParallelHandler(
                 subgraph_runner=kwargs.get("subgraph_runner"),
+                hooks=self._hooks,
             ),
             "parallel.fan_in": FanInHandler(),
         }

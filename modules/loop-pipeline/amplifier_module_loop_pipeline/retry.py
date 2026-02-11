@@ -89,6 +89,7 @@ async def execute_with_retry(
     graph: Graph,
     logs_root: str,
     policy: RetryPolicy,
+    hooks: Any = None,
 ) -> Outcome:
     """Execute a handler with retry policy.
 
@@ -136,10 +137,36 @@ async def execute_with_retry(
                 attempt,
                 policy.max_attempts,
             )
+            if hooks is not None:
+                from .pipeline_events import PIPELINE_STAGE_RETRYING
+
+                await hooks.emit(
+                    PIPELINE_STAGE_RETRYING,
+                    {
+                        "node_id": node.id,
+                        "attempt": attempt,
+                        "max_attempts": policy.max_attempts,
+                        "delay_ms": policy.backoff.delay_for_attempt(attempt),
+                    },
+                )
             await _sleep_backoff(policy.backoff, attempt)
             continue
 
     # All retries exhausted
+    if hooks is not None:
+        from .pipeline_events import PIPELINE_STAGE_FAILED
+
+        await hooks.emit(
+            PIPELINE_STAGE_FAILED,
+            {
+                "node_id": node.id,
+                "attempts": policy.max_attempts,
+                "final_status": (
+                    "partial_success" if node.attrs.get("allow_partial") else "fail"
+                ),
+            },
+        )
+
     if node.attrs.get("allow_partial") is True:
         return Outcome(
             status=StageStatus.PARTIAL_SUCCESS,

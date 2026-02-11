@@ -41,7 +41,11 @@ class ParallelHandler:
     bounded parallelism, and evaluates a join policy on results.
     """
 
-    def __init__(self, subgraph_runner: SubgraphRunner | None = None) -> None:
+    def __init__(
+        self,
+        subgraph_runner: SubgraphRunner | None = None,
+        hooks: Any = None,
+    ) -> None:
         """Initialize the parallel handler.
 
         Args:
@@ -49,8 +53,15 @@ class ParallelHandler:
                 starting from a given node ID. Signature:
                 (node_id, context, graph, logs_root) -> Outcome.
                 If None, branches return SUCCESS (simulation mode).
+            hooks: Optional hooks object for event emission.
         """
         self._runner = subgraph_runner
+        self._hooks = hooks
+
+    async def _emit(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit an event via hooks, if provided."""
+        if self._hooks is not None:
+            await self._hooks.emit(event_name, data)
 
     async def execute(
         self,
@@ -67,6 +78,13 @@ class ParallelHandler:
         4. Store results in parent context for downstream fan-in.
         5. Evaluate join policy and return aggregate outcome.
         """
+        from ..pipeline_events import (
+            PIPELINE_PARALLEL_BRANCH_COMPLETED,
+            PIPELINE_PARALLEL_BRANCH_STARTED,
+            PIPELINE_PARALLEL_COMPLETED,
+            PIPELINE_PARALLEL_STARTED,
+        )
+
         branches = graph.outgoing_edges(node.id)
         if not branches:
             return Outcome(
@@ -79,9 +97,18 @@ class ParallelHandler:
         error_policy = str(node.attrs.get("error_policy", "continue"))
         semaphore = asyncio.Semaphore(max_parallel)
 
+        await self._emit(
+            PIPELINE_PARALLEL_STARTED,
+            {"node_id": node.id, "branch_count": len(branches)},
+        )
+
         async def run_branch(target_node_id: str) -> dict[str, Any]:
             """Execute a single branch with bounded concurrency."""
             async with semaphore:
+                await self._emit(
+                    PIPELINE_PARALLEL_BRANCH_STARTED,
+                    {"node_id": node.id, "branch_node_id": target_node_id},
+                )
                 branch_context = context.clone()
                 try:
                     if self._runner is not None:
@@ -99,6 +126,15 @@ class ParallelHandler:
                         status=StageStatus.FAIL,
                         failure_reason=str(e),
                     )
+
+                await self._emit(
+                    PIPELINE_PARALLEL_BRANCH_COMPLETED,
+                    {
+                        "node_id": node.id,
+                        "branch_node_id": target_node_id,
+                        "status": outcome.status.value,
+                    },
+                )
 
                 return {
                     "node_id": target_node_id,
@@ -125,6 +161,15 @@ class ParallelHandler:
         # Store results in parent context for fan-in
         context.set("parallel.results", results)
         context.set("parallel.count", len(results))
+
+        await self._emit(
+            PIPELINE_PARALLEL_COMPLETED,
+            {
+                "node_id": node.id,
+                "branch_count": len(branches),
+                "result_count": len(results),
+            },
+        )
 
         # Evaluate join policy
         return _apply_join_policy(results, join_policy, node_attrs=node.attrs)

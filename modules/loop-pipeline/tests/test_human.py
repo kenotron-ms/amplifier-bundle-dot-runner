@@ -314,3 +314,36 @@ class TestHumanHandlerRegistration:
         node = Node(id="gate", shape="hexagon")
         handler = registry.get(node)
         assert isinstance(handler, HumanGateHandler)
+
+
+@pytest.mark.asyncio
+async def test_human_handler_emits_interview_events():
+    """HumanGateHandler must emit interview lifecycle events."""
+    from amplifier_module_loop_pipeline.pipeline_events import (
+        PIPELINE_INTERVIEW_COMPLETED,
+        PIPELINE_INTERVIEW_STARTED,
+    )
+
+    emitted: list[tuple[str, dict]] = []
+
+    class MockHooks:
+        async def emit(self, event_name, data):
+            emitted.append((event_name, data))
+
+    handler = HumanGateHandler(
+        interviewer=AutoApproveInterviewer(), hooks=MockHooks()
+    )
+
+    node = Node(id="gate", shape="hexagon", label="Approve?")
+    graph = Graph(
+        name="test",
+        nodes={"gate": node, "yes": Node(id="yes", shape="box")},
+        edges=[Edge(from_node="gate", to_node="yes", label="Yes")],
+    )
+
+    ctx = PipelineContext()
+    await handler.execute(node, ctx, graph, "/tmp/test")
+
+    event_names = [e[0] for e in emitted]
+    assert PIPELINE_INTERVIEW_STARTED in event_names
+    assert PIPELINE_INTERVIEW_COMPLETED in event_names

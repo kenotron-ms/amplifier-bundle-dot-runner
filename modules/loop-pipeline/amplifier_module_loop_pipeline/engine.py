@@ -206,6 +206,7 @@ class PipelineEngine:
                 self.graph,
                 self.logs_root,
                 retry_policy,
+                hooks=self.hooks,
             )
             node_duration_ms = (time.monotonic() - node_start_time) * 1000
 

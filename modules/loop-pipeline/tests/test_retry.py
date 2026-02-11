@@ -288,3 +288,86 @@ def test_backoff_with_jitter():
     assert all(500.0 <= d <= 1500.0 for d in delays)
     # Not all the same (very unlikely with 100 samples)
     assert len(set(delays)) > 1
+
+
+@pytest.mark.asyncio
+async def test_retry_emits_retrying_event():
+    """execute_with_retry must emit StageRetrying events on retry."""
+    from amplifier_module_loop_pipeline.pipeline_events import (
+        PIPELINE_STAGE_RETRYING,
+    )
+
+    emitted: list[tuple[str, dict]] = []
+
+    class MockHooks:
+        async def emit(self, event_name, data):
+            emitted.append((event_name, data))
+
+    call_count = 0
+
+    class RetryThenSucceedHandler:
+        async def execute(self, node, context, graph, logs_root):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                return Outcome(status=StageStatus.RETRY, failure_reason="not yet")
+            return Outcome(status=StageStatus.SUCCESS)
+
+    node = Node(id="work", shape="box", prompt="do work")
+    graph = Graph(
+        name="test",
+        nodes={"work": node},
+        edges=[],
+    )
+    ctx = PipelineContext()
+    policy = RetryPolicy(max_attempts=3, backoff=BackoffConfig(initial_delay_ms=0))
+
+    await execute_with_retry(
+        RetryThenSucceedHandler(),
+        node,
+        ctx,
+        graph,
+        "/tmp/test",
+        policy,
+        hooks=MockHooks(),
+    )
+
+    event_names = [e[0] for e in emitted]
+    assert PIPELINE_STAGE_RETRYING in event_names
+
+
+@pytest.mark.asyncio
+async def test_retry_emits_stage_failed_on_exhaustion():
+    """execute_with_retry must emit StageFailed when retries exhausted."""
+    from amplifier_module_loop_pipeline.pipeline_events import (
+        PIPELINE_STAGE_FAILED,
+    )
+
+    emitted: list[tuple[str, dict]] = []
+
+    class MockHooks:
+        async def emit(self, event_name, data):
+            emitted.append((event_name, data))
+
+    handler = MockHandler([Outcome(status=StageStatus.RETRY)] * 3)
+    node = Node(id="work", shape="box", prompt="do work")
+    graph = Graph(
+        name="test",
+        nodes={"work": node},
+        edges=[],
+    )
+    ctx = PipelineContext()
+    policy = RetryPolicy(max_attempts=3, backoff=BackoffConfig(initial_delay_ms=0))
+
+    await execute_with_retry(
+        handler,
+        node,
+        ctx,
+        graph,
+        "/tmp/test",
+        policy,
+        hooks=MockHooks(),
+    )
+
+    event_names = [e[0] for e in emitted]
+    assert PIPELINE_STAGE_FAILED in event_names

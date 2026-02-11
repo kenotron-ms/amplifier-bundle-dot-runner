@@ -353,6 +353,49 @@ async def test_parallel_exception_in_branch_becomes_fail():
 
 
 @pytest.mark.asyncio
+async def test_parallel_handler_emits_events():
+    """ParallelHandler must emit parallel lifecycle events."""
+    from amplifier_module_loop_pipeline.pipeline_events import (
+        PIPELINE_PARALLEL_BRANCH_COMPLETED,
+        PIPELINE_PARALLEL_BRANCH_STARTED,
+        PIPELINE_PARALLEL_COMPLETED,
+        PIPELINE_PARALLEL_STARTED,
+    )
+
+    emitted: list[tuple[str, dict]] = []
+
+    class MockHooks:
+        async def emit(self, event_name, data):
+            emitted.append((event_name, data))
+
+    async def mock_runner(node_id, ctx, graph, logs_root):
+        return Outcome(status=StageStatus.SUCCESS, notes="ok")
+
+    handler = ParallelHandler(subgraph_runner=mock_runner, hooks=MockHooks())
+
+    graph = _make_graph(
+        nodes={
+            "par": Node(id="par", shape="component"),
+            "b1": Node(id="b1", shape="box"),
+            "b2": Node(id="b2", shape="box"),
+        },
+        edges=[
+            Edge(from_node="par", to_node="b1"),
+            Edge(from_node="par", to_node="b2"),
+        ],
+    )
+
+    ctx = _make_context()
+    await handler.execute(graph.nodes["par"], ctx, graph, "/tmp/test")
+
+    event_names = [e[0] for e in emitted]
+    assert PIPELINE_PARALLEL_STARTED in event_names
+    assert PIPELINE_PARALLEL_BRANCH_STARTED in event_names
+    assert PIPELINE_PARALLEL_BRANCH_COMPLETED in event_names
+    assert PIPELINE_PARALLEL_COMPLETED in event_names
+
+
+@pytest.mark.asyncio
 async def test_fan_in_selects_best_by_status():
     """Fan-in selects candidate with best status (SUCCESS > FAIL)."""
     handler = FanInHandler()
