@@ -130,11 +130,17 @@ class ManagerLoopHandler:
             # 1. OBSERVE — build child context and run child subgraph
             child_context = context.clone()
             if "steer" in actions and last_outcome is not None:
-                child_context.set(
-                    "manager.steering",
-                    f"Previous attempt {cycle - 1} resulted in "
-                    f"{last_outcome.status.value}. Try a different approach.",
-                )
+                # M-15: Include actual failure details in steering message
+                parts = [
+                    f"Cycle {cycle - 1} of {max_cycles} resulted in"
+                    f" {last_outcome.status.value}.",
+                ]
+                if last_outcome.failure_reason:
+                    parts.append(f"Failure reason: {last_outcome.failure_reason}")
+                if last_outcome.notes:
+                    parts.append(f"Notes: {last_outcome.notes}")
+                parts.append("Adjust your approach based on these details.")
+                child_context.set("manager.steering", " ".join(parts))
 
             try:
                 child_outcome = await self._runner(

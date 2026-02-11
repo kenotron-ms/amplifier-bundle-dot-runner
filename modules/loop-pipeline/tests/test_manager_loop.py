@@ -301,6 +301,44 @@ class TestManagerSteer:
         assert steering is not None
         assert "fail" in steering.lower()
 
+    @pytest.mark.asyncio
+    async def test_steer_includes_failure_details(self):
+        """M-15: Steering message includes actual failure details from prior cycle."""
+        captured_contexts: list[PipelineContext] = []
+
+        async def capturing_runner(
+            node_id: str,
+            context: PipelineContext,
+            graph: Graph,
+            logs_root: str,
+        ) -> Outcome:
+            captured_contexts.append(context)
+            if len(captured_contexts) < 2:
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason="tests failing: 3 of 10 assertions broken",
+                    notes="Unit tests did not pass",
+                )
+            return Outcome(status=StageStatus.SUCCESS)
+
+        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "5",
+                "manager.actions": "observe,steer,wait",
+                "manager.poll_interval": "0s",
+            }
+        )
+        ctx = PipelineContext()
+
+        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+
+        steering = captured_contexts[1].get("manager.steering")
+        assert steering is not None
+        # M-15: steering must include the actual failure reason
+        assert "tests failing" in steering
+        assert "3 of 10 assertions broken" in steering
+
 
 # ---------------------------------------------------------------------------
 # Edge cases
