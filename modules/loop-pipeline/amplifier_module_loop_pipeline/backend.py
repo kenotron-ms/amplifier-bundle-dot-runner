@@ -19,6 +19,11 @@ import json
 import logging
 from typing import Any
 
+try:
+    from amplifier_foundation import ProviderPreference as _ProviderPreference
+except ImportError:  # pragma: no cover — fallback when foundation not installed
+    from types import SimpleNamespace as _ProviderPreference  # type: ignore[assignment,misc]
+
 from .context import PipelineContext
 from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key
 from .graph import Edge, Graph, Node
@@ -212,7 +217,7 @@ class AmplifierBackend:
         }
         if model:
             spawn_kwargs["provider_preferences"] = [
-                {"provider": provider, "model": model}
+                _ProviderPreference(provider=provider, model=model)
             ]
 
         # Session pool for full fidelity (spec FID-001: thread reuse)
@@ -441,9 +446,13 @@ def _build_assistant_message(response: Any) -> Any:
             elif hasattr(block, "tool_call_id") or hasattr(block, "id"):
                 # Tool-call block — extract into a plain dict
                 tc_id = getattr(block, "tool_call_id", None) or getattr(block, "id", "")
-                tc_name = getattr(block, "tool_name", None) or getattr(
-                    block, "name", ""
+                tc_name = (
+                    getattr(block, "tool_name", None)
+                    or getattr(block, "name", None)
+                    or ""
                 )
+                if not tc_name:
+                    continue  # Skip tool calls with no name — can't serialize
                 tc_args = getattr(block, "arguments", None) or getattr(
                     block, "input", {}
                 )
@@ -462,14 +471,18 @@ def _build_assistant_message(response: Any) -> Any:
         existing_ids = {tc["id"] for tc in tool_calls_list}
         for tc in resp_tool_calls:
             tc_id = getattr(tc, "id", "")
-            if tc_id not in existing_ids:
-                tool_calls_list.append(
-                    {
-                        "id": tc_id,
-                        "name": getattr(tc, "name", ""),
-                        "arguments": getattr(tc, "arguments", {}),
-                    }
-                )
+            if tc_id in existing_ids:
+                continue
+            tc_name = getattr(tc, "name", None) or getattr(tc, "tool_name", None) or ""
+            if not tc_name:
+                continue  # Skip tool calls with no name — can't serialize
+            tool_calls_list.append(
+                {
+                    "id": tc_id,
+                    "name": tc_name,
+                    "arguments": getattr(tc, "arguments", {}),
+                }
+            )
 
     text = "\n".join(text_parts) if text_parts else ""
     msg = Message(role="assistant", content=text)

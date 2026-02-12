@@ -460,7 +460,7 @@ async def test_backend_forwards_model():
     await backend.run(node, "task", _make_context())
     prefs = coordinator.last_spawn_kwargs.get("provider_preferences")
     assert prefs is not None
-    assert any(p.get("model") == "claude-sonnet-4-5" for p in prefs)
+    assert any(getattr(p, "model", None) == "claude-sonnet-4-5" for p in prefs)
 
 
 # ---------------------------------------------------------------------------
