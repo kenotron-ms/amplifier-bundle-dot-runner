@@ -583,6 +583,40 @@ def test_retry_target_exists_graph_level():
     assert len(rt_diags) >= 1
 
 
+# --- reachability with retry/fallback targets ---
+
+
+def test_fallback_retry_target_node_reachable():
+    """Nodes referenced as fallback_retry_target should NOT be flagged unreachable."""
+    fallback = Node(id="fallback", shape="box", prompt="retry from here")
+    graph = _make_graph(
+        nodes_extra=[fallback],
+        # "fallback" has NO incoming edges — only reachable via retry attr
+    )
+    graph.nodes["work"].attrs["fallback_retry_target"] = "fallback"
+    diags = validate(graph)
+    reach_diags = [d for d in diags if d.rule == "reachability"]
+    flagged_ids = {d.node_id for d in reach_diags}
+    assert "fallback" not in flagged_ids, (
+        "fallback_retry_target node should be considered reachable"
+    )
+
+
+def test_graph_level_retry_target_reachable():
+    """Graph-level retry_target nodes should NOT be flagged unreachable."""
+    retry_node = Node(id="retry_entry", shape="box", prompt="re-enter here")
+    graph = _make_graph(
+        nodes_extra=[retry_node],
+        graph_attrs={"retry_target": "retry_entry"},
+    )
+    diags = validate(graph)
+    reach_diags = [d for d in diags if d.rule == "reachability"]
+    flagged_ids = {d.node_id for d in reach_diags}
+    assert "retry_entry" not in flagged_ids, (
+        "graph-level retry_target node should be considered reachable"
+    )
+
+
 # --- extra_rules parameter (L-19) ---
 
 

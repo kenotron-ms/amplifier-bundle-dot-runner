@@ -249,6 +249,18 @@ def _check_reachability(graph: Graph, diags: list[Diagnostic]) -> None:
             if edge.to_node in graph.nodes:
                 queue.append(edge.to_node)
 
+    # Retry/fallback targets are reachable by the engine even without an
+    # explicit edge, so include them before flagging orphans.
+    for node in graph.nodes.values():
+        for attr in ("retry_target", "fallback_retry_target"):
+            target = node.attrs.get(attr) or getattr(node, attr, None)
+            if target and target in graph.nodes:
+                visited.add(target)
+    for attr in ("retry_target", "fallback_retry_target"):
+        target = graph.graph_attrs.get(attr) or getattr(graph, attr, None)
+        if target and target in graph.nodes:
+            visited.add(target)
+
     unreachable = set(graph.nodes.keys()) - visited
     for node_id in sorted(unreachable):
         diags.append(
