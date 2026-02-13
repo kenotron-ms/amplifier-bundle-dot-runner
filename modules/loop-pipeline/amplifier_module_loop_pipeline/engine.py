@@ -121,6 +121,22 @@ class PipelineEngine:
         failure_routing_retries = 0
 
         while True:
+            # Step 0: Enforce max_pipeline_duration if set on the graph.
+            # The DOT parser stores durations as milliseconds.
+            if self.graph.max_pipeline_duration:
+                elapsed_ms = (time.monotonic() - pipeline_start_time) * 1000
+                if elapsed_ms > self.graph.max_pipeline_duration:
+                    duration_outcome = Outcome(
+                        status=StageStatus.FAIL,
+                        notes=(
+                            f"Pipeline exceeded max duration of "
+                            f"{self.graph.max_pipeline_duration}ms"
+                        ),
+                        failure_reason="max_pipeline_duration_exceeded",
+                    )
+                    await self._emit_complete(duration_outcome, pipeline_start_time)
+                    return duration_outcome
+
             # Step 1: Check for terminal node (exit)
             if current_node.shape == "Msquare":
                 self._save_checkpoint(current_node.id)

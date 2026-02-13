@@ -117,6 +117,7 @@ _GRAPH_PROMOTED_ATTRS: frozenset[str] = frozenset(
         "fallback_retry_target",
         "default_fidelity",
         "label",
+        "max_pipeline_duration",
     }
 )
 
@@ -246,7 +247,7 @@ class Graph:
     spec Section 2.5 (Graph-Level Attributes).
 
     First-class fields (L-6): retry_target, fallback_retry_target,
-    default_fidelity, label.
+    default_fidelity, label, max_pipeline_duration.
     These are also accessible via ``graph_attrs`` dict for backward compat.
     """
 
@@ -263,6 +264,7 @@ class Graph:
     fallback_retry_target: str | None = None
     default_fidelity: str | None = None
     label: str | None = None
+    max_pipeline_duration: int | None = None  # milliseconds, from DOT graph attribute
 
     def __post_init__(self) -> None:
         raw = self.graph_attrs

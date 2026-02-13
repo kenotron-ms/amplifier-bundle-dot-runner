@@ -25,7 +25,12 @@ _DURATION_UNITS: dict[str, int] = {
 }
 
 # Graph-level attributes that get promoted to Graph fields
-_GRAPH_FIELD_ATTRS = {"goal", "default_max_retry", "model_stylesheet"}
+_GRAPH_FIELD_ATTRS = {
+    "goal",
+    "default_max_retry",
+    "model_stylesheet",
+    "max_pipeline_duration",
+}
 
 # Node attributes that get promoted to Node fields
 _NODE_FIELD_MAP = {"label", "shape", "type", "prompt"}
@@ -39,6 +44,7 @@ _KNOWN_GRAPH_ATTRS = {
     "label",
     "model_stylesheet",
     "default_max_retry",
+    "max_pipeline_duration",
     "retry_target",
     "fallback_retry_target",
     "default_fidelity",
@@ -123,6 +129,7 @@ def parse_dot(source: str) -> Graph:
         goal=ctx.graph_fields.get("goal", ""),
         default_max_retry=ctx.graph_fields.get("default_max_retry", 50),
         model_stylesheet=ctx.graph_fields.get("model_stylesheet", ""),
+        max_pipeline_duration=ctx.graph_fields.get("max_pipeline_duration"),
         graph_attrs=ctx.graph_attrs,
     )
     return graph
@@ -431,6 +438,10 @@ def _set_graph_attr(ctx: _ParseContext, key: str, val: Any) -> None:
         )
     elif key == "model_stylesheet":
         ctx.graph_fields["model_stylesheet"] = str(val)
+    elif key == "max_pipeline_duration":
+        ctx.graph_fields["max_pipeline_duration"] = (
+            int(val) if not isinstance(val, int) else val
+        )
     else:
         ctx.graph_attrs[key] = str(val) if not isinstance(val, str) else val
 
