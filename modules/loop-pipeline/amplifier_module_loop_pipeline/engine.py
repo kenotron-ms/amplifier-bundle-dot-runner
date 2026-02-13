@@ -10,6 +10,7 @@ Spec coverage: EXEC-001–018, CHKP-004–006, EVT-001–008, DIR-001, STAT-001�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -199,15 +200,49 @@ class PipelineEngine:
 
             node_start_time = time.monotonic()
             retry_policy = RetryPolicy.from_node(current_node, self.graph)
-            outcome = await execute_with_retry(
-                handler,
-                current_node,
-                self.context,
-                self.graph,
-                self.logs_root,
-                retry_policy,
-                hooks=self.hooks,
-            )
+
+            # Per-node timeout enforcement: wrap handler execution with
+            # asyncio.timeout when the node declares a timeout attribute.
+            # The DOT parser stores durations as milliseconds.
+            node_timeout_ms = current_node.timeout
+            if node_timeout_ms:
+                timeout_s = node_timeout_ms / 1000
+                try:
+                    async with asyncio.timeout(timeout_s):
+                        outcome = await execute_with_retry(
+                            handler,
+                            current_node,
+                            self.context,
+                            self.graph,
+                            self.logs_root,
+                            retry_policy,
+                            hooks=self.hooks,
+                        )
+                except asyncio.TimeoutError:
+                    node_duration_ms = (time.monotonic() - node_start_time) * 1000
+                    outcome = Outcome(
+                        status=StageStatus.FAIL,
+                        notes=f"Node '{current_node.id}' timed out after {timeout_s}s",
+                        failure_reason="timeout",
+                    )
+                    await self._emit(
+                        PIPELINE_NODE_COMPLETE,
+                        {
+                            "node_id": current_node.id,
+                            "status": "timeout",
+                            "duration_ms": node_duration_ms,
+                        },
+                    )
+            else:
+                outcome = await execute_with_retry(
+                    handler,
+                    current_node,
+                    self.context,
+                    self.graph,
+                    self.logs_root,
+                    retry_policy,
+                    hooks=self.hooks,
+                )
             node_duration_ms = (time.monotonic() - node_start_time) * 1000
 
             # L-9: auto_status — override non-success to SUCCESS when enabled
