@@ -67,6 +67,31 @@ def _parse_duration(raw: str) -> float:
     return value  # seconds
 
 
+def _build_steering_message(
+    prev_cycle: int,
+    max_cycles: int,
+    outcome: Outcome,
+) -> str:
+    """Build a structured steering message for the next child cycle.
+
+    Includes previous cycle status, failure details, cycle budget,
+    and actionable instruction. Uses a multi-line format so child
+    agents can parse and act on the structured context.
+    """
+    remaining = max_cycles - prev_cycle
+    lines: list[str] = [
+        f"[Manager Steering — Cycle {prev_cycle} of {max_cycles}]",
+        f"Status: {outcome.status.value}",
+    ]
+    if outcome.failure_reason:
+        lines.append(f"Failure reason: {outcome.failure_reason}")
+    if outcome.notes:
+        lines.append(f"Notes: {outcome.notes}")
+    lines.append(f"Cycles remaining: {remaining}")
+    lines.append("Adjust your approach based on the failure details above.")
+    return "\n".join(lines)
+
+
 class ManagerLoopHandler:
     """Handler for manager loop nodes (shape=house).
 
@@ -130,17 +155,13 @@ class ManagerLoopHandler:
             # 1. OBSERVE — build child context and run child subgraph
             child_context = context.clone()
             if "steer" in actions and last_outcome is not None:
-                # M-15: Include actual failure details in steering message
-                parts = [
-                    f"Cycle {cycle - 1} of {max_cycles} resulted in"
-                    f" {last_outcome.status.value}.",
-                ]
-                if last_outcome.failure_reason:
-                    parts.append(f"Failure reason: {last_outcome.failure_reason}")
-                if last_outcome.notes:
-                    parts.append(f"Notes: {last_outcome.notes}")
-                parts.append("Adjust your approach based on these details.")
-                child_context.set("manager.steering", " ".join(parts))
+                # M-15: Structured steering with full cycle context
+                steering = _build_steering_message(
+                    prev_cycle=cycle - 1,
+                    max_cycles=max_cycles,
+                    outcome=last_outcome,
+                )
+                child_context.set("manager.steering", steering)
 
             try:
                 child_outcome = await self._runner(
