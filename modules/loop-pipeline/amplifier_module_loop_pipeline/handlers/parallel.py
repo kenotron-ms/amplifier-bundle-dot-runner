@@ -144,9 +144,14 @@ class ParallelHandler:
                     "context_updates": outcome.context_updates,
                 }
 
-        # Dispatch based on error policy
+        # Dispatch based on error policy and join policy
         if error_policy == "fail_fast":
             results = await _run_fail_fast(branches, run_branch, semaphore)
+        elif join_policy == "first_success":
+            results = await _run_first_success(branches, run_branch)
+        elif join_policy == "k_of_n":
+            k = int(node.attrs.get("min_success", 1))
+            results = await _run_k_of_n(branches, run_branch, k)
         else:
             # Default (continue) and ignore both run all branches
             tasks = [run_branch(edge.to_node) for edge in branches]
@@ -229,6 +234,109 @@ async def _run_fail_fast(
                             except asyncio.CancelledError:
                                 pass
                     return results
+
+    return results
+
+
+async def _run_first_success(
+    branches: list,
+    run_branch: Callable,
+) -> list[dict[str, Any]]:
+    """Execute branches with first_success: cancel remaining on first success.
+
+    Uses asyncio tasks with incremental completion. When any branch
+    completes with a success status, remaining branches are cancelled
+    and the collected results are returned immediately.
+    """
+    results: list[dict[str, Any]] = []
+    tasks = [asyncio.create_task(run_branch(edge.to_node)) for edge in branches]
+    pending: set[asyncio.Task] = set(tasks)
+
+    while pending:
+        newly_done, pending = await asyncio.wait(
+            pending, return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in newly_done:
+            result = task.result()
+            results.append(result)
+            if result["status"] in ("success", "partial_success"):
+                # Cancel remaining pending tasks
+                for p in pending:
+                    p.cancel()
+                # Collect any already-completed results from pending
+                if pending:
+                    cancelled_done, _ = await asyncio.wait(pending)
+                    for ct in cancelled_done:
+                        try:
+                            cr = ct.result()
+                            if cr is not None:
+                                results.append(cr)
+                        except asyncio.CancelledError:
+                            pass
+                return results
+
+    return results
+
+
+async def _run_k_of_n(
+    branches: list,
+    run_branch: Callable,
+    k: int,
+) -> list[dict[str, Any]]:
+    """Execute branches with k_of_n: cancel remaining when k successes reached.
+
+    Tracks completed branches incrementally. Returns early when k branches
+    have succeeded. Also returns early when the threshold becomes impossible
+    (too many failures for remaining branches to reach k).
+    """
+    results: list[dict[str, Any]] = []
+    tasks = [asyncio.create_task(run_branch(edge.to_node)) for edge in branches]
+    pending: set[asyncio.Task] = set(tasks)
+    success_count = 0
+
+    while pending:
+        newly_done, pending = await asyncio.wait(
+            pending, return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in newly_done:
+            result = task.result()
+            results.append(result)
+            if result["status"] in ("success", "partial_success"):
+                success_count += 1
+
+        # Check if threshold is met
+        if success_count >= k:
+            for p in pending:
+                p.cancel()
+            if pending:
+                cancelled_done, _ = await asyncio.wait(pending)
+                for ct in cancelled_done:
+                    try:
+                        cr = ct.result()
+                        if cr is not None:
+                            results.append(cr)
+                    except asyncio.CancelledError:
+                        pass
+            return results
+
+        # Check if threshold is impossible: too many failures already
+        remaining = len(pending)
+        if success_count + remaining < k:
+            # Even if all remaining succeed, can't reach k
+            for p in pending:
+                p.cancel()
+            if pending:
+                cancelled_done, _ = await asyncio.wait(pending)
+                for ct in cancelled_done:
+                    try:
+                        cr = ct.result()
+                        if cr is not None:
+                            results.append(cr)
+                    except asyncio.CancelledError:
+                        pass
+            return results
 
     return results
 
