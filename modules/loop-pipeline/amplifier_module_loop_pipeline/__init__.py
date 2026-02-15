@@ -324,6 +324,11 @@ class PipelineOrchestrator:
         if prompt:
             pipeline_context.set("graph.goal", prompt)
 
+        # Set params for $param expansion in transforms
+        params = self.config.get("params")
+        if params:
+            pipeline_context.set("graph.params_values", params)
+
         # 4. Apply transforms (variable expansion, stylesheet) before validation
         apply_transforms(graph, pipeline_context)
 
