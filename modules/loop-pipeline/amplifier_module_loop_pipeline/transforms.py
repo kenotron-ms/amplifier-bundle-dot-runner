@@ -45,6 +45,24 @@ def expand_goal_variable(text: str, graph_goal: str, context_goal: str | Any) ->
     return text.replace("$goal", str(goal_value))
 
 
+def expand_params(text: str, params: dict[str, str]) -> str:
+    """Replace ``$param_name`` tokens in *text* with values from *params*.
+
+    Only expands params that are explicitly provided.  Unknown ``$``-prefixed
+    tokens are left unchanged (backward compatible with ``$goal`` handling).
+
+    Args:
+        text: The text containing ``$param`` tokens.
+        params: Dict mapping param names to replacement values.
+
+    Returns:
+        Text with known ``$param`` tokens replaced.
+    """
+    for key, value in params.items():
+        text = text.replace(f"${key}", str(value))
+    return text
+
+
 # ---------------------------------------------------------------------------
 # M-20: Transform protocol
 # ---------------------------------------------------------------------------
@@ -69,28 +87,35 @@ class Transform(Protocol):
 
 
 def expand_variables(graph: Graph, context: PipelineContext) -> Graph:
-    """Replace ``$goal`` in node prompts with the goal value.
+    """Replace ``$goal`` and ``$param`` tokens in node prompts.
 
     Resolution order for the goal value:
     1. ``context.get("graph.goal")`` — set during engine initialization.
     2. ``graph.goal`` — the graph-level goal attribute (fallback).
 
-    Only ``$goal`` is expanded. Other ``$``-prefixed tokens are left
-    unchanged (spec Section 9.2: no arbitrary expression expansion).
+    Params are resolved from ``context.get("graph.params_values")``,
+    which is set by tool-pipeline-run when the caller provides params.
 
     Args:
         graph: The pipeline graph to transform (modified in place).
         context: The pipeline context with runtime values.
 
     Returns:
-        The same graph, with ``$goal`` replaced in node prompts.
+        The same graph, with ``$goal`` and ``$param`` tokens replaced.
     """
     context_goal = context.get("graph.goal") or ""
     graph_goal = graph.goal or ""
 
+    # Resolve params from context (set by tool-pipeline-run)
+    params: dict[str, str] = context.get("graph.params_values") or {}
+
     for node in graph.nodes.values():
-        if node.prompt and "$goal" in node.prompt:
+        if not node.prompt:
+            continue
+        if "$goal" in node.prompt:
             node.prompt = expand_goal_variable(node.prompt, graph_goal, context_goal)
+        if params and "$" in node.prompt:
+            node.prompt = expand_params(node.prompt, params)
 
     return graph
 
