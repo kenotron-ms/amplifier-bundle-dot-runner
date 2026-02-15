@@ -340,9 +340,7 @@ class PipelineOrchestrator:
         coordinator = kwargs.get("coordinator")
         backend = kwargs.get("backend")
         if backend is None:
-            backend = _build_backend(
-                providers, tools, hooks, coordinator, self.config
-            )
+            backend = _build_backend(providers, tools, hooks, coordinator, self.config)
 
         # 8. Create engine first (handlers need its _run_from method)
         # Use a placeholder registry, then replace after wiring
@@ -375,13 +373,64 @@ class PipelineOrchestrator:
         # 11. Run the engine
         outcome = await engine.run(goal=prompt or None)
 
-        # 12. Return the final outcome as JSON
+        # 12. Build a meaningful summary from all completed nodes
+        summary = self._build_pipeline_summary(engine, outcome)
+
+        # 13. Return the final outcome as JSON
         result = {
             "status": outcome.status.value,
-            "notes": outcome.notes,
+            "notes": summary,
             "failure_reason": outcome.failure_reason,
+            "nodes_completed": len(engine.completed_nodes),
+            "node_statuses": {
+                nid: engine.node_outcomes[nid].status.value
+                for nid in engine.completed_nodes
+                if nid in engine.node_outcomes
+            },
         }
         return json.dumps(result)
+
+    def _build_pipeline_summary(self, engine: PipelineEngine, outcome: Outcome) -> str:
+        """Build a human-readable pipeline summary.
+
+        If the final outcome has meaningful notes, use them.
+        Otherwise, synthesize a summary from all completed nodes.
+        """
+        # Use the outcome's notes if they exist and are meaningful
+        if outcome.notes and len(outcome.notes) > 20:
+            return outcome.notes
+
+        # Synthesize from all node outcomes
+        parts: list[str] = []
+        total = len(engine.completed_nodes)
+        succeeded = sum(
+            1
+            for nid in engine.completed_nodes
+            if nid in engine.node_outcomes and engine.node_outcomes[nid].is_success
+        )
+        failed = total - succeeded
+
+        parts.append(f"Pipeline completed: {succeeded}/{total} nodes succeeded.")
+
+        if failed:
+            failed_nodes = [
+                nid
+                for nid in engine.completed_nodes
+                if nid in engine.node_outcomes
+                and not engine.node_outcomes[nid].is_success
+            ]
+            parts.append(f"Failed nodes: {', '.join(failed_nodes)}.")
+
+        # Include the last node's notes if available
+        if engine.completed_nodes:
+            last_id = engine.completed_nodes[-1]
+            last_out = engine.node_outcomes.get(last_id)
+            if last_out and last_out.notes:
+                # Truncate to avoid bloating the summary
+                snippet = last_out.notes[:300]
+                parts.append(f"Last node ({last_id}): {snippet}")
+
+        return " ".join(parts)
 
     def _resolve_dot_source(self) -> str:
         """Resolve DOT source from config (inline or file)."""
