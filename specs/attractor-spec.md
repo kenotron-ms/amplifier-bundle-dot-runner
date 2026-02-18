@@ -1499,9 +1499,9 @@ digraph Pipeline {
     graph [
         goal="Implement feature X",
         model_stylesheet="
-            * { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }
+            * { llm_model: claude-sonnet-4-6; llm_provider: anthropic; }
             .code { llm_model: claude-opus-4-6; llm_provider: anthropic; }
-            #critical_review { llm_model: gpt-5.2; llm_provider: openai; reasoning_effort: high; }
+            #critical_review { llm_model: gpt-5.2-codex; llm_provider: openai; reasoning_effort: high; }
         "
     ]
 
@@ -1517,9 +1517,9 @@ digraph Pipeline {
 ```
 
 In this example:
-- `plan` gets `claude-sonnet-4-5` from the `*` rule (no class match for `.code`).
+- `plan` gets `claude-sonnet-4-6` from the `*` rule (no class match for `.code`).
 - `implement` gets `claude-opus-4-6` from the `.code` rule.
-- `critical_review` gets `gpt-5.2` from the `#critical_review` rule (highest specificity), overriding the `.code` class match.
+- `critical_review` gets `gpt-5.2-codex` from the `#critical_review` rule (highest specificity), overriding the `.code` class match.
 
 ---
 
