@@ -55,6 +55,8 @@ if "amplifier_core" not in sys.modules:
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
+import unified_llm
+
 from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Node
@@ -64,6 +66,62 @@ from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
 # ---------------------------------------------------------------------------
 # Mock helpers
 # ---------------------------------------------------------------------------
+
+
+class _MockUnifiedClient:
+    """Mock unified_llm.Client for testing."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self._idx = 0
+        self.call_count = 0
+        self.requests = []
+
+    async def complete(self, request):
+        self.call_count += 1
+        self.requests.append(request)
+        if self._idx < len(self._responses):
+            resp = self._responses[self._idx]
+            self._idx += 1
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+        return _make_text_response("fallback")
+
+
+def _make_text_response(text):
+    return unified_llm.Response(
+        id=f"resp-{abs(hash(text)) % 10000}",
+        model="test-model",
+        provider="test",
+        message=unified_llm.Message.assistant(text),
+        finish_reason=unified_llm.FinishReason(reason="stop"),
+        usage=unified_llm.Usage(input_tokens=10, output_tokens=20, total_tokens=30),
+    )
+
+
+def _make_tool_call_response(calls):
+    """calls = [{"id": "tc-1", "name": "write_file", "args": {"path": "a.py"}}]"""
+    content = []
+    for c in calls:
+        content.append(
+            unified_llm.ContentPart(
+                kind=unified_llm.ContentKind.TOOL_CALL,
+                tool_call=unified_llm.ToolCallData(
+                    id=c["id"],
+                    name=c["name"],
+                    arguments=c.get("args", {}),
+                ),
+            )
+        )
+    return unified_llm.Response(
+        id="resp-tool",
+        model="test-model",
+        provider="test",
+        message=unified_llm.Message(role=unified_llm.Role.ASSISTANT, content=content),
+        finish_reason=unified_llm.FinishReason(reason="tool_calls"),
+        usage=unified_llm.Usage(input_tokens=10, output_tokens=20, total_tokens=30),
+    )
 
 
 class _MockSession:
@@ -472,48 +530,44 @@ async def test_backend_forwards_model():
 async def test_backend_falls_back_to_tool_loop():
     """When spawn is unavailable but provider is given, uses direct tool loop."""
     coordinator = NoSpawnCoordinator()
-    provider = _MockProvider()
+    mock_client = _MockUnifiedClient([_make_text_response("done")])
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
-        provider=provider,
+        provider=object(),  # truthy sentinel — no longer called
+        unified_client=mock_client,
     )
-    node = _make_node(attrs={"llm_provider": "anthropic"})
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
     result = await backend.run(node, "task", _make_context())
     assert isinstance(result, Outcome)
     assert result.status == StageStatus.SUCCESS
+    assert mock_client.call_count >= 1
 
 
 @pytest.mark.asyncio
 async def test_tool_loop_executes_tools_then_returns():
     """Tool loop calls tools and feeds results back until model stops."""
     tool = _MockTool("write_file", result="file written")
-    provider = _MockProvider(
-        responses=[
+    mock_client = _MockUnifiedClient(
+        [
             # Round 1: model requests a tool call
-            _MockChatResponse(
-                content=[_MockTextBlock(text="Let me write that file")],
-                tool_calls=[
-                    _MockToolCall(
-                        id="tc-1", name="write_file", arguments={"path": "a.py"}
-                    )
-                ],
+            _make_tool_call_response(
+                [{"id": "tc-1", "name": "write_file", "args": {"path": "a.py"}}]
             ),
             # Round 2: model returns text only (done)
-            _MockChatResponse(
-                content=[_MockTextBlock(text="All done")],
-                tool_calls=None,
-            ),
+            _make_text_response("All done"),
         ]
     )
     coordinator = NoSpawnCoordinator()
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={},
-        provider=provider,
+        provider=object(),  # truthy sentinel
         tools={"write_file": tool},
+        unified_client=mock_client,
     )
-    result = await backend.run(_make_node(), "Write a file", _make_context())
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "Write a file", _make_context())
 
     assert tool.call_count == 1
     assert tool.last_input == {"path": "a.py"}
@@ -523,48 +577,39 @@ async def test_tool_loop_executes_tools_then_returns():
 @pytest.mark.asyncio
 async def test_tool_loop_handles_unknown_tool():
     """Tool loop gracefully handles calls to unknown tools."""
-    provider = _MockProvider(
-        responses=[
-            _MockChatResponse(
-                content=[_MockTextBlock(text="")],
-                tool_calls=[_MockToolCall(id="tc-1", name="nonexistent", arguments={})],
+    mock_client = _MockUnifiedClient(
+        [
+            _make_tool_call_response(
+                [{"id": "tc-1", "name": "nonexistent", "args": {}}]
             ),
-            _MockChatResponse(
-                content=[_MockTextBlock(text="ok, no tool")],
-                tool_calls=None,
-            ),
+            _make_text_response("ok, no tool"),
         ]
     )
     coordinator = NoSpawnCoordinator()
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={},
-        provider=provider,
+        provider=object(),  # truthy sentinel
         tools={},
+        unified_client=mock_client,
     )
-    result = await backend.run(_make_node(), "task", _make_context())
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "task", _make_context())
     assert result.status == StageStatus.SUCCESS
 
 
 @pytest.mark.asyncio
 async def test_tool_loop_handles_provider_failure():
-    """Tool loop returns FAIL when provider raises."""
-
-    class FailingProvider:
-        name = "failing"
-
-        async def complete(self, request):
-            raise ConnectionError("API unreachable")
-
-        def parse_tool_calls(self, response):
-            return []
-
+    """Tool loop returns FAIL when unified_llm client raises."""
+    mock_client = _MockUnifiedClient([unified_llm.SDKError("API unreachable")])
     coordinator = NoSpawnCoordinator()
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={},
-        provider=FailingProvider(),
+        provider=object(),  # truthy sentinel
+        unified_client=mock_client,
     )
-    result = await backend.run(_make_node(), "task", _make_context())
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "task", _make_context())
     assert result.status == StageStatus.FAIL
     assert "unreachable" in (result.failure_reason or "").lower()

@@ -23,6 +23,8 @@ from .dot_parser import parse_dot
 from .engine import PipelineEngine
 from .handlers import HandlerRegistry
 from .outcome import Outcome, StageStatus
+from .hook_bridge import _current_node_context, set_node_context
+from .pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONSE
 from .transforms import apply_transforms
 from .validation import validate_or_raise
 
@@ -30,12 +32,12 @@ logger = logging.getLogger(__name__)
 
 
 class DirectProviderBackend:
-    """Backend that calls a provider directly with a mini tool loop.
+    """Backend that calls a provider directly via unified_llm.generate().
 
     This is the default backend when no session.spawn capability is
-    available.  It runs an agentic loop \u2014 call LLM, execute any tool
-    calls, feed results back, repeat \u2014 until the model returns a
-    text-only response or the max round limit is reached.
+    available.  It delegates the agentic tool loop to the unified-llm-client
+    library, which handles LLM calls, tool execution, retry, and error
+    mapping internally.
     """
 
     def __init__(
@@ -44,14 +46,16 @@ class DirectProviderBackend:
         tools: dict[str, Any] | None = None,
         hooks: Any = None,
         coordinator: Any = None,
+        unified_client: Any | None = None,
     ) -> None:
         self._provider = provider
         self._tools = tools or {}
         self._hooks = hooks
         self._coordinator = coordinator
+        self._unified_client = unified_client
         # Fidelity state (H-9): track completed nodes and message history
         self._completed_nodes: dict[str, Any] = {}
-        self._message_pools: dict[str, list] = {}  # thread_key -> message history
+        self._message_pools: dict[str, list] = {}  # thread_key -> unified_llm Messages
         self._last_node_id: str | None = None
 
     async def run(
@@ -64,20 +68,18 @@ class DirectProviderBackend:
         graph: Any | None = None,
         **kwargs: Any,
     ) -> Outcome:
-        """Run a mini agentic tool loop for *node*.
+        """Run an LLM call for *node* via unified_llm.generate().
 
         Supports fidelity-aware context carryover (spec Section 5.4):
         - full: reuse message history from previous calls with same thread key
         - compact/truncate/summary: prepend preamble from completed node history
         """
-        from amplifier_core import ChatRequest, Message
+        import unified_llm
 
         from .backend import (
-            _build_tool_specs,
-            _extract_text,
-            _extract_tool_calls,
-            _build_assistant_message,
+            _build_unified_tools,
             _parse_outcome,
+            _resolve_model,
             _MAX_TOOL_LOOP_ROUNDS,
         )
 
@@ -92,11 +94,34 @@ class DirectProviderBackend:
                 node, incoming_edge, graph, self._last_node_id
             )
 
-        # Build messages based on fidelity mode
+        # Resolve model, provider, tools, reasoning
+        model = _resolve_model(node)
+        provider_name = (
+            node.llm_provider
+            if hasattr(node, "llm_provider") and node.llm_provider
+            else node.attrs.get("llm_provider", "anthropic")
+        )
+        reasoning_effort = node.attrs.get("reasoning_effort")
+        tools = _build_unified_tools(self._tools)
+        client = self._get_or_create_unified_client()
+
+        # Build generate() kwargs based on fidelity mode
+        generate_kwargs: dict[str, Any] = dict(
+            model=model,
+            tools=tools or None,
+            max_tool_rounds=_MAX_TOOL_LOOP_ROUNDS,
+            reasoning_effort=reasoning_effort,
+            provider=provider_name,
+            client=client,
+        )
+
         if fidelity == "full":
             # Reuse accumulated message history for this thread key
-            messages: list[Any] = list(self._message_pools.get(thread_key, []))
-            messages.append(Message(role="user", content=prompt))
+            ulm_messages: list[unified_llm.Message] = list(
+                self._message_pools.get(thread_key, [])
+            )
+            ulm_messages.append(unified_llm.Message.user(prompt))
+            generate_kwargs["messages"] = ulm_messages
         else:
             # Fresh session with preamble
             if graph is not None and self._completed_nodes:
@@ -106,91 +131,142 @@ class DirectProviderBackend:
                 )
             else:
                 effective_prompt = prompt
-            messages = [Message(role="user", content=effective_prompt)]
+            generate_kwargs["prompt"] = effective_prompt
 
-        reasoning_effort = node.attrs.get("reasoning_effort")
-        tool_specs = _build_tool_specs(self._tools)
+        # Set node context for the hook bridge middleware
+        token = set_node_context({"node_id": node.id})
 
-        for _round in range(_MAX_TOOL_LOOP_ROUNDS):
-            request = ChatRequest(
-                messages=messages,
-                tools=tool_specs or None,
-                tool_choice="auto" if tool_specs else None,
-                reasoning_effort=reasoning_effort,
+        try:
+            # Emit provider:request before the LLM call
+            pre_result = await self._emit(
+                PROVIDER_REQUEST,
+                {
+                    "provider": provider_name,
+                    "model": model,
+                    "node_id": node.id,
+                    "tool_names": [t.name for t in tools] if tools else [],
+                    "message_count": len(generate_kwargs.get("messages", [])) or 1,
+                },
             )
-            try:
-                response = await self._provider.complete(request)
-            except Exception as exc:
-                logger.warning(
-                    "Provider call failed for node %s (round %d): %s",
-                    node.id,
-                    _round,
-                    exc,
-                )
+
+            # Check for deny action from hooks
+            if (
+                pre_result is not None
+                and getattr(pre_result, "action", "continue") == "deny"
+            ):
+                reason = getattr(pre_result, "reason", None) or "Denied by hook"
                 return Outcome(
                     status=StageStatus.FAIL,
-                    failure_reason=str(exc),
+                    failure_reason=f"Denied by hook: {reason}",
                 )
 
-            text = _extract_text(response)
-            tool_calls = _extract_tool_calls(response, self._provider)
+            # Call unified_llm.generate() — handles tool loop, retry, errors
+            result = await unified_llm.generate(**generate_kwargs)
+        except unified_llm.SDKError as exc:
+            logger.warning("unified_llm.generate failed for node %s: %s", node.id, exc)
+            await self._emit(
+                PROVIDER_ERROR,
+                {
+                    "provider": provider_name,
+                    "model": model,
+                    "node_id": node.id,
+                    "error_type": type(exc).__name__,
+                    "error_class": type(exc).__mro__[1].__name__,
+                    "retryable": getattr(exc, "retryable", False),
+                    "message": str(exc),
+                },
+            )
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=str(exc),
+            )
+        except Exception as exc:
+            logger.warning("Unexpected error in generate for node %s: %s", node.id, exc)
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=str(exc),
+            )
+        finally:
+            _current_node_context.reset(token)
 
-            if not tool_calls:
-                # Model is done \u2014 parse the final text as an outcome
-                if text:
-                    outcome = _parse_outcome(text)
-                else:
-                    outcome = Outcome(
-                        status=StageStatus.SUCCESS,
-                        notes=f"Stage completed: {node.id}",
-                    )
-                outcome.context_updates = {
-                    "last_stage": node.id,
-                    "last_response": text[:200] if text else "",
-                }
-
-                # Record fidelity state for future calls
-                self._completed_nodes[node.id] = outcome
-                self._last_node_id = node.id
-
-                # For full fidelity: save message history including response
-                if fidelity == "full":
-                    messages.append(Message(role="assistant", content=text or ""))
-                    self._message_pools[thread_key] = messages
-
-                return outcome
-
-            # Append assistant message and execute tools
-            messages.append(_build_assistant_message(response))
-
-            for tc in tool_calls:
-                tool = self._tools.get(tc.name)
-                if tool is not None:
-                    try:
-                        result = await tool.execute(tc.arguments)
-                        output = (
-                            result.output if hasattr(result, "output") else str(result)
-                        )
-                    except Exception as exc:
-                        output = f"Tool error: {exc}"
-                else:
-                    output = f"Unknown tool: {tc.name}"
-
-                messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=tc.id,
-                        content=str(output) if not isinstance(output, str) else output,
-                    )
-                )
-
-        outcome = Outcome(
-            status=StageStatus.PARTIAL_SUCCESS,
-            notes=f"Max tool loop rounds ({_MAX_TOOL_LOOP_ROUNDS}) reached",
+        # Emit provider:response after successful LLM call
+        await self._emit(
+            PROVIDER_RESPONSE,
+            {
+                "provider": provider_name,
+                "model": model,
+                "node_id": node.id,
+                "usage": {
+                    "input_tokens": result.total_usage.input_tokens,
+                    "output_tokens": result.total_usage.output_tokens,
+                    "total_tokens": result.total_usage.total_tokens,
+                    "reasoning_tokens": result.total_usage.reasoning_tokens,
+                    "cache_read_tokens": result.total_usage.cache_read_tokens,
+                    "cache_write_tokens": result.total_usage.cache_write_tokens,
+                },
+                "finish_reason": result.finish_reason.reason,
+                "text_length": len(result.text) if result.text else 0,
+                "step_count": len(result.steps),
+            },
         )
+
+        # Map GenerateResult → Outcome
+        text = result.text
+        if text:
+            outcome = _parse_outcome(text)
+        else:
+            outcome = Outcome(
+                status=StageStatus.SUCCESS,
+                notes=f"Stage completed: {node.id}",
+            )
+
+        outcome.context_updates = {
+            "last_stage": node.id,
+            "last_response": text[:200] if text else "",
+        }
+
+        # Record fidelity state for future calls
         self._completed_nodes[node.id] = outcome
         self._last_node_id = node.id
+
+        # For full fidelity: save conversation history including tool steps
+        if fidelity == "full":
+            conversation: list[unified_llm.Message] = list(ulm_messages)
+            for i, step in enumerate(result.steps):
+                conversation.append(step.response.message)
+                # Add tool results for intermediate steps (loop continued)
+                if i < len(result.steps) - 1:
+                    for tr in step.tool_results:
+                        conversation.append(
+                            unified_llm.Message.tool_result(
+                                tool_call_id=tr.tool_call_id,
+                                content=tr.content
+                                if isinstance(tr.content, str)
+                                else str(tr.content),
+                                is_error=tr.is_error,
+                            )
+                        )
+            self._message_pools[thread_key] = conversation
+
         return outcome
+
+    def _get_or_create_unified_client(self) -> Any:
+        """Return the injected client or lazily create one from environment."""
+        if self._unified_client is not None:
+            return self._unified_client
+        import unified_llm
+
+        self._unified_client = unified_llm.Client.from_env()
+        return self._unified_client
+
+    async def _emit(self, event_name: str, data: dict[str, Any]) -> Any:
+        """Emit an event via hooks, if provided.
+
+        Returns the HookResult from hooks.emit(), or None if hooks is not set.
+        """
+        if self._hooks is not None:
+            return await self._hooks.emit(event_name, data)
+        return None
 
 
 def _build_backend(
@@ -262,6 +338,7 @@ def _build_backend(
                 profiles=profiles,
                 provider=first_provider,
                 tools=tools,
+                hooks=hooks,
             )
 
     # Fall back to direct provider tool loop

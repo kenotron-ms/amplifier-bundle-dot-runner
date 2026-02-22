@@ -28,6 +28,8 @@ from .context import PipelineContext
 from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key
 from .graph import Edge, Graph, Node
 from .outcome import Outcome, StageStatus
+from .hook_bridge import _current_node_context, set_node_context
+from .pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONSE
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,8 @@ class AmplifierBackend:
         profiles: dict[str, str],
         provider: Any | None = None,
         tools: dict[str, Any] | None = None,
+        unified_client: Any | None = None,
+        hooks: Any | None = None,
     ) -> None:
         """Initialize the backend.
 
@@ -70,12 +74,18 @@ class AmplifierBackend:
             profiles: Map of provider name to profile/bundle name.
                       e.g. {"anthropic": "attractor-anthropic", ...}
             provider: Optional LLM provider for direct tool loop fallback.
+                      Used as a truthiness flag to enable Path B.
             tools: Optional tool dict for direct tool loop fallback.
+            unified_client: Optional ``unified_llm.Client`` for LLM calls.
+                            Created lazily via ``Client.from_env()`` if not provided.
+            hooks: Optional HookRegistry for emitting provider-level events.
         """
         self._coordinator = coordinator
         self._profiles = profiles
         self._provider = provider
         self._tools = tools or {}
+        self._unified_client = unified_client
+        self._hooks = hooks
         self._spawn_fn: Any | None = None
         self._spawn_checked = False
         self._session_pool: dict[str, str] = {}
@@ -264,91 +274,197 @@ class AmplifierBackend:
         instruction: str,
         reasoning_effort: str | None,
     ) -> Outcome:
-        """Execute a mini agentic loop directly (no child session).
+        """Execute via unified_llm.generate() (no child session).
 
-        Calls the provider in a loop: LLM response → if tool calls,
-        execute them and feed results back → repeat until the model
-        returns a text-only response or max rounds is reached.
+        Delegates the full agentic tool loop to the unified-llm-client
+        library, which handles LLM calls, tool execution, retry, and
+        error mapping internally.
         """
-        from amplifier_core import ChatRequest, Message
+        import unified_llm
 
-        messages: list[Message] = [Message(role="user", content=instruction)]
+        client = self._get_or_create_unified_client()
+        model = _resolve_model(node)
+        provider_name = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
+        tools = _build_unified_tools(self._tools)
 
-        # Build tool specs from available tools
-        tool_specs = _build_tool_specs(self._tools)
+        # Set node context for the hook bridge middleware
+        token = set_node_context({"node_id": node.id})
 
-        for _round in range(_MAX_TOOL_LOOP_ROUNDS):
-            request = ChatRequest(
-                messages=messages,
-                tools=tool_specs or None,
-                tool_choice="auto" if tool_specs else None,
-                reasoning_effort=reasoning_effort,
+        try:
+            # Emit provider:request before the LLM call
+            pre_result = await self._emit(
+                PROVIDER_REQUEST,
+                {
+                    "provider": provider_name,
+                    "model": model,
+                    "node_id": node.id,
+                    "tool_names": [t.name for t in tools] if tools else [],
+                    "message_count": 1,  # prompt-only = 1 message
+                },
             )
 
-            try:
-                response = await self._provider.complete(request)
-            except Exception as exc:
-                logger.warning(
-                    "Provider call failed for node %s (round %d): %s",
-                    node.id,
-                    _round,
-                    exc,
-                )
+            # Check for deny action from hooks (e.g., approval gates)
+            if (
+                pre_result is not None
+                and getattr(pre_result, "action", "continue") == "deny"
+            ):
+                reason = getattr(pre_result, "reason", None) or "Denied by hook"
                 return Outcome(
                     status=StageStatus.FAIL,
-                    failure_reason=str(exc),
+                    failure_reason=f"Denied by hook: {reason}",
                 )
 
-            # Extract text and tool calls from response
-            text = _extract_text(response)
-            tool_calls = _extract_tool_calls(response, self._provider)
+            result = await unified_llm.generate(
+                model=model,
+                prompt=instruction,
+                tools=tools or None,
+                max_tool_rounds=_MAX_TOOL_LOOP_ROUNDS,
+                reasoning_effort=reasoning_effort,
+                provider=provider_name,
+                client=client,
+            )
+        except unified_llm.SDKError as exc:
+            logger.warning("unified_llm.generate failed for node %s: %s", node.id, exc)
+            await self._emit(
+                PROVIDER_ERROR,
+                {
+                    "provider": provider_name,
+                    "model": model,
+                    "node_id": node.id,
+                    "error_type": type(exc).__name__,
+                    "error_class": type(exc).__mro__[1].__name__,
+                    "retryable": getattr(exc, "retryable", False),
+                    "message": str(exc),
+                },
+            )
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=str(exc),
+            )
+        except Exception as exc:
+            logger.warning("Unexpected error in generate for node %s: %s", node.id, exc)
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=str(exc),
+            )
+        finally:
+            _current_node_context.reset(token)
 
-            if not tool_calls:
-                # No tool calls → model is done
-                return (
-                    _parse_outcome(text)
-                    if text
-                    else Outcome(
-                        status=StageStatus.SUCCESS,
-                        notes=f"Stage completed: {node.id}",
-                    )
-                )
-
-            # Append assistant message with tool call blocks
-            messages.append(_build_assistant_message(response))
-
-            # Execute each tool call and append results
-            for tc in tool_calls:
-                tool = self._tools.get(tc.name)
-                if tool is not None:
-                    try:
-                        result = await tool.execute(tc.arguments)
-                        output = (
-                            result.output if hasattr(result, "output") else str(result)
-                        )
-                    except Exception as exc:
-                        output = f"Tool error: {exc}"
-                else:
-                    output = f"Unknown tool: {tc.name}"
-
-                messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=tc.id,
-                        content=str(output) if not isinstance(output, str) else output,
-                    )
-                )
-
-        # Exhausted rounds
-        return Outcome(
-            status=StageStatus.PARTIAL_SUCCESS,
-            notes=f"Max tool loop rounds ({_MAX_TOOL_LOOP_ROUNDS}) reached",
+        # Emit provider:response after successful LLM call
+        await self._emit(
+            PROVIDER_RESPONSE,
+            {
+                "provider": provider_name,
+                "model": model,
+                "node_id": node.id,
+                "usage": {
+                    "input_tokens": result.total_usage.input_tokens,
+                    "output_tokens": result.total_usage.output_tokens,
+                    "total_tokens": result.total_usage.total_tokens,
+                    "reasoning_tokens": result.total_usage.reasoning_tokens,
+                    "cache_read_tokens": result.total_usage.cache_read_tokens,
+                    "cache_write_tokens": result.total_usage.cache_write_tokens,
+                },
+                "finish_reason": result.finish_reason.reason,
+                "text_length": len(result.text) if result.text else 0,
+                "step_count": len(result.steps),
+            },
         )
+
+        # Map GenerateResult → Outcome
+        if result.text:
+            return _parse_outcome(result.text)
+        return Outcome(
+            status=StageStatus.SUCCESS,
+            notes=f"Stage completed: {node.id}",
+        )
+
+    def _get_or_create_unified_client(self) -> Any:
+        """Return the injected client or lazily create one from environment."""
+        if self._unified_client is not None:
+            return self._unified_client
+        import unified_llm
+
+        self._unified_client = unified_llm.Client.from_env()
+        return self._unified_client
+
+    async def _emit(self, event_name: str, data: dict[str, Any]) -> Any:
+        """Emit an event via hooks, if provided.
+
+        Returns the HookResult from hooks.emit(), or None if hooks is not set.
+        Unlike the engine's fire-and-forget _emit, this returns the result
+        so callers can inspect the action (deny, modify, etc.).
+        """
+        if self._hooks is not None:
+            return await self._hooks.emit(event_name, data)
+        return None
 
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+# Default models per provider (used when node.llm_model is not set)
+_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o",
+    "gemini": "gemini-2.0-flash",
+    "test": "test-model",
+}
+
+
+def _resolve_model(node: Node) -> str:
+    """Resolve the LLM model identifier from a pipeline node.
+
+    Uses the node's ``llm_model`` if set, otherwise falls back to a
+    sensible default based on the provider.
+    """
+    if node.llm_model:
+        return node.llm_model
+    provider = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
+    return _DEFAULT_MODELS.get(provider, "claude-sonnet-4-20250514")
+
+
+def _make_tool_handler(pipeline_tool: Any) -> Any:
+    """Create a unified_llm-compatible execute handler from a pipeline tool.
+
+    Pipeline tools expect ``execute(input: dict)``.
+    unified_llm calls ``tool.execute(**kwargs)``.
+    This wrapper bridges the two conventions.
+    """
+
+    async def handler(**kwargs: Any) -> str:
+        result = await pipeline_tool.execute(kwargs)
+        if hasattr(result, "output"):
+            return result.output
+        return str(result)
+
+    return handler
+
+
+def _build_unified_tools(pipeline_tools: dict[str, Any]) -> list[Any]:
+    """Convert pipeline tools to unified_llm.Tool objects."""
+    import unified_llm
+
+    tools: list[Any] = []
+    for tool in pipeline_tools.values():
+        schema = getattr(tool, "parameters", None) or getattr(tool, "schema", None)
+        if schema is None:
+            schema = {"type": "object", "properties": {}}
+
+        execute_fn = None
+        if hasattr(tool, "execute"):
+            execute_fn = _make_tool_handler(tool)
+
+        tools.append(
+            unified_llm.Tool(
+                name=getattr(tool, "name", str(tool)),
+                description=getattr(tool, "description", ""),
+                parameters=schema if isinstance(schema, dict) else {},
+                execute=execute_fn,
+            )
+        )
+    return tools
 
 
 def _parse_outcome(output: str) -> Outcome:

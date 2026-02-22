@@ -98,12 +98,22 @@ class CodergenHandler:
 def _expand_variables(prompt: str, graph: Graph, context: PipelineContext) -> str:
     """Expand template variables in a prompt string.
 
-    L-17: Delegates to the shared expand_goal_variable utility.
-    Only built-in variable: $goal resolves to graph.goal.
+    L-17: Delegates to the shared expand_goal_variable utility for $goal.
+    Runtime variable: $context resolves to the previous node's response
+    (stored as ``last_response`` in the pipeline context).
+
     Spec Section 4.5: Variable expansion.
     """
+    # $goal — static for the whole pipeline (also expanded at parse time in transforms)
     context_goal = context.get("graph.goal") or ""
-    return expand_goal_variable(prompt, graph.goal, context_goal)
+    result = expand_goal_variable(prompt, graph.goal, context_goal)
+
+    # $context — runtime, changes after each node completes
+    if "$context" in result:
+        last_response = context.get("last_response", "") or ""
+        result = result.replace("$context", str(last_response))
+
+    return result
 
 
 def _write_file(path: str, content: str) -> None:

@@ -99,43 +99,49 @@ class ReportOutcomeTool:
         # Validate status is present
         status = input.get("status")
         if not status:
+            error_msg = "status parameter is required"
             return ToolResult(
                 success=False,
-                error={"message": "status parameter is required"},
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Validate status value
         if status not in VALID_STATUSES:
+            error_msg = (
+                f"Invalid status: {status!r}. "
+                f"Must be one of: {', '.join(sorted(VALID_STATUSES))}"
+            )
             return ToolResult(
                 success=False,
-                error={
-                    "message": (
-                        f"Invalid status: {status!r}. "
-                        f"Must be one of: {', '.join(sorted(VALID_STATUSES))}"
-                    )
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Validate context_updates type if provided
         context_updates = input.get("context_updates")
         if context_updates is not None and not isinstance(context_updates, dict):
+            error_msg = (
+                "context_updates must be an object (dict), "
+                f"got {type(context_updates).__name__}"
+            )
             return ToolResult(
                 success=False,
-                error={
-                    "message": "context_updates must be an object (dict), "
-                    f"got {type(context_updates).__name__}"
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Validate suggested_next_ids type if provided
         suggested_next_ids = input.get("suggested_next_ids")
         if suggested_next_ids is not None and not isinstance(suggested_next_ids, list):
+            error_msg = (
+                "suggested_next_ids must be an array (list), "
+                f"got {type(suggested_next_ids).__name__}"
+            )
             return ToolResult(
                 success=False,
-                error={
-                    "message": "suggested_next_ids must be an array (list), "
-                    f"got {type(suggested_next_ids).__name__}"
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Build the outcome record

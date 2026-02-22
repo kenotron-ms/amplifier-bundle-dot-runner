@@ -229,3 +229,77 @@ def test_build_preamble_includes_context_values():
     assert "My goal" in preamble
     # context.* values should be included
     assert "architecture" in preamble
+
+
+# --- last_response in preamble (built-in context keys) ---
+
+
+def test_compact_preamble_includes_last_response():
+    """Compact preamble includes last_response from context when present."""
+    ctx = PipelineContext()
+    ctx.set("graph.goal", "Explain monads")
+    ctx.set("last_response", "A monad is a design pattern in functional programming")
+    ctx.set("last_stage", "draft")
+    completed = {
+        "draft": Outcome(status=StageStatus.SUCCESS, notes="Stage completed: draft"),
+    }
+    preamble = build_preamble("compact", ctx, completed)
+    assert "Explain monads" in preamble
+    assert "draft" in preamble
+    # The actual LLM response must appear in the preamble
+    assert "A monad is a design pattern" in preamble
+
+
+def test_compact_preamble_without_last_response():
+    """Compact preamble still works when last_response is absent."""
+    ctx = PipelineContext()
+    ctx.set("graph.goal", "Some goal")
+    completed = {
+        "plan": Outcome(status=StageStatus.SUCCESS, notes="Done"),
+    }
+    preamble = build_preamble("compact", ctx, completed)
+    assert "Some goal" in preamble
+    # No crash, no "Last response" section
+    assert "Last response" not in preamble
+
+
+def test_summary_medium_includes_last_response():
+    """summary:medium preamble includes last_response from context."""
+    ctx = PipelineContext()
+    ctx.set("graph.goal", "Build API")
+    ctx.set("last_response", "Here is the API design with three endpoints")
+    completed = {
+        "design": Outcome(status=StageStatus.SUCCESS, notes="Design done"),
+    }
+    preamble = build_preamble("summary:medium", ctx, completed)
+    assert "Here is the API design" in preamble
+
+
+def test_summary_high_includes_last_response():
+    """summary:high preamble includes last_response from context."""
+    ctx = PipelineContext()
+    ctx.set("graph.goal", "Deploy service")
+    ctx.set("last_response", "Deployment plan: step 1 provision, step 2 deploy")
+    completed = {
+        "plan": Outcome(status=StageStatus.SUCCESS, notes="Plan ready"),
+    }
+    preamble = build_preamble("summary:high", ctx, completed)
+    assert "Deployment plan: step 1 provision" in preamble
+
+
+def test_compact_preamble_last_response_after_stages_before_context():
+    """last_response appears after completed stages and before context.* values."""
+    ctx = PipelineContext()
+    ctx.set("graph.goal", "Test ordering")
+    ctx.set("last_response", "The draft output text here")
+    ctx.set("context.style", "formal")
+    completed = {
+        "draft": Outcome(status=StageStatus.SUCCESS, notes="Done"),
+    }
+    preamble = build_preamble("compact", ctx, completed)
+    # All three sections should be present
+    stages_pos = preamble.index("Completed stages")
+    response_pos = preamble.index("Last response")
+    context_pos = preamble.index("Context values")
+    # Order: stages < last_response < context values
+    assert stages_pos < response_pos < context_pos

@@ -1,0 +1,11 @@
+digraph ConditionalRetry {
+    graph [goal="Fix the bug"]
+
+    start [shape=Mdiamond]
+    fix [shape=box, prompt="Fix the bug: $goal"]
+    done [shape=Msquare]
+
+    start -> fix
+    fix -> done [condition="outcome=success"]
+    fix -> fix [condition="outcome!=success"]
+}

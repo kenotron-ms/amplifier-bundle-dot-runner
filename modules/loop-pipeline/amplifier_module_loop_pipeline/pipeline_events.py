@@ -61,3 +61,10 @@ PIPELINE_INTERVIEW_TIMEOUT: str = "pipeline:interview_timeout"
 # ---------------------------------------------------------------------------
 PIPELINE_STAGE_RETRYING: str = "pipeline:stage_retrying"
 PIPELINE_STAGE_FAILED: str = "pipeline:stage_failed"
+
+# ---------------------------------------------------------------------------
+# Provider-level events (LLM call observability)
+# ---------------------------------------------------------------------------
+PROVIDER_REQUEST: str = "provider:request"
+PROVIDER_RESPONSE: str = "provider:response"
+PROVIDER_ERROR: str = "provider:error"

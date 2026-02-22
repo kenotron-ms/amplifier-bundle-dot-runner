@@ -657,3 +657,38 @@ def test_extra_rules_multiple():
     diags = validate(graph, extra_rules=[rule_a, rule_b])
     custom_rules = {d.rule for d in diags if d.rule in ("rule_a", "rule_b")}
     assert custom_rules == {"rule_a", "rule_b"}
+
+
+# --- SHAPE_TO_HANDLER / _LLM_SHAPES completeness ---
+
+
+def test_ellipse_in_shape_to_handler():
+    """ellipse shape must map to 'codergen' handler (documented alias for box)."""
+    from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER
+
+    assert "ellipse" in SHAPE_TO_HANDLER, "ellipse missing from SHAPE_TO_HANDLER"
+    assert SHAPE_TO_HANDLER["ellipse"] == "codergen"
+
+
+def test_ellipse_in_llm_shapes():
+    """ellipse must be in _LLM_SHAPES since it maps to codergen (an LLM handler)."""
+    from amplifier_module_loop_pipeline.validation import _LLM_SHAPES
+
+    assert "ellipse" in _LLM_SHAPES, "ellipse missing from _LLM_SHAPES"
+
+
+def test_ellipse_node_gets_prompt_warning():
+    """An ellipse node with no prompt/label should trigger prompt_on_llm_nodes warning."""
+    graph = _make_graph(
+        nodes_extra=[
+            Node(id="plan", shape="ellipse"),
+        ],
+        edges_extra=[
+            Edge(from_node="work", to_node="plan"),
+            Edge(from_node="plan", to_node="done"),
+        ],
+    )
+    diags = validate(graph)
+    assert any(
+        d.rule == "prompt_on_llm_nodes" and "plan" in d.message for d in diags
+    ), "ellipse node should trigger prompt_on_llm_nodes warning"

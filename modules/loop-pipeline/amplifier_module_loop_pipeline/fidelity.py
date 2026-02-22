@@ -227,6 +227,13 @@ def _build_compact_preamble(
             lines.append(f"  - {node_id}: {status}{note}")
         lines.append("")
 
+    # Last LLM response (spec Section 5.1 built-in key, already truncated by handler)
+    last_response = context.get("last_response")
+    if last_response:
+        lines.append("Last response:")
+        lines.append(f"  {last_response}")
+        lines.append("")
+
     # Key context values (context.* namespace)
     snapshot = context.snapshot()
     ctx_values = {k: v for k, v in sorted(snapshot.items()) if k.startswith("context.")}
@@ -269,6 +276,13 @@ def _build_summary_preamble(
                     lines.append(f"    Notes: {outcome.notes}")
             lines.append("")
 
+        # Last LLM response (spec Section 5.1 built-in key)
+        last_response = context.get("last_response")
+        if last_response:
+            lines.append("Last response:")
+            lines.append(f"  {last_response}")
+            lines.append("")
+
         # Include context.* values
         snapshot = context.snapshot()
         ctx_values = {
@@ -292,6 +306,13 @@ def _build_summary_preamble(
                 if outcome.context_updates:
                     for k, v in outcome.context_updates.items():
                         lines.append(f"    Update: {k} = {v}")
+            lines.append("")
+
+        # Last LLM response (spec Section 5.1 built-in key)
+        last_response = context.get("last_response")
+        if last_response:
+            lines.append("Last response:")
+            lines.append(f"  {last_response}")
             lines.append("")
 
         # Include all context.* values

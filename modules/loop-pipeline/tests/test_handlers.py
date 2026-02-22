@@ -296,6 +296,105 @@ def test_registry_resolves_tool_handler():
     assert isinstance(handler, ToolHandler)
 
 
+# --- $context variable expansion ---
+
+
+@pytest.mark.asyncio
+async def test_codergen_expands_context_variable(tmp_path):
+    """$context in prompt is replaced with last_response from context."""
+    backend = MockBackend("review complete")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="review", prompt="Review this: $context")
+    graph = _make_graph()
+    ctx = _make_context()
+    ctx.set("last_response", "The draft output from previous node")
+    outcome = await handler.execute(node, ctx, graph, str(tmp_path))
+    assert outcome.status == StageStatus.SUCCESS
+    # $context should be replaced with the last_response value
+    assert "The draft output from previous node" in backend.last_prompt
+    assert "$context" not in backend.last_prompt
+
+
+@pytest.mark.asyncio
+async def test_codergen_context_variable_empty_when_no_last_response(tmp_path):
+    """$context resolves to empty string when no last_response in context."""
+    backend = MockBackend("ok")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="first", prompt="Do this: $context")
+    graph = _make_graph()
+    ctx = _make_context()
+    # No last_response set in context
+    await handler.execute(node, ctx, graph, str(tmp_path))
+    assert "$context" not in backend.last_prompt
+    assert "Do this: " in backend.last_prompt
+
+
+@pytest.mark.asyncio
+async def test_codergen_expands_both_goal_and_context(tmp_path):
+    """Both $goal and $context are expanded in the same prompt."""
+    backend = MockBackend("done")
+    handler = CodergenHandler(backend=backend)
+    node = Node(id="step", prompt="Goal: $goal, Previous: $context")
+    graph = _make_graph(goal="build auth")
+    ctx = _make_context()
+    ctx.set("last_response", "draft plan")
+    await handler.execute(node, ctx, graph, str(tmp_path))
+    assert "build auth" in backend.last_prompt
+    assert "draft plan" in backend.last_prompt
+    assert "$goal" not in backend.last_prompt
+    assert "$context" not in backend.last_prompt
+
+
+# --- Integration: $context flows across pipeline nodes ---
+
+
+@pytest.mark.asyncio
+async def test_context_variable_flows_between_pipeline_nodes(tmp_path):
+    """In a 2-node pipeline, the second node's $context contains the first node's response."""
+    from amplifier_module_loop_pipeline.dot_parser import parse_dot
+    from amplifier_module_loop_pipeline.engine import PipelineEngine
+    from amplifier_module_loop_pipeline.validation import validate_or_raise
+
+    class CapturingBackend:
+        """Backend that returns a fixed response and captures prompts per node."""
+
+        def __init__(self):
+            self.prompts: dict[str, str] = {}
+
+        async def run(self, node, prompt, context):
+            self.prompts[node.id] = prompt
+            if node.id == "draft":
+                return "Here is the draft content about fibonacci"
+            return "review done"
+
+    backend = CapturingBackend()
+    dot_source = """
+    digraph {
+        graph [goal="test context flow"]
+        start [shape=Mdiamond]
+        draft [shape=box, prompt="Write a draft"]
+        review [shape=box, prompt="Review this: $context"]
+        done [shape=Msquare]
+        start -> draft -> review -> done
+    }
+    """
+    graph = parse_dot(dot_source)
+    validate_or_raise(graph)
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=backend)
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+    assert outcome.status == StageStatus.SUCCESS
+    # The review node's prompt should contain the draft node's response
+    assert "Here is the draft content about fibonacci" in backend.prompts["review"]
+    assert "$context" not in backend.prompts["review"]
+
+
 def test_registry_unknown_shape_defaults_to_codergen():
     """Unknown shape falls back to codergen handler."""
     registry = HandlerRegistry()

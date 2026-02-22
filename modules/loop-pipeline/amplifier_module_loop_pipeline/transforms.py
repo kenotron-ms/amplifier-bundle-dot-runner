@@ -28,23 +28,6 @@ from .stylesheet import apply_stylesheet, parse_stylesheet
 # ---------------------------------------------------------------------------
 
 
-def expand_goal_variable(text: str, graph_goal: str, context_goal: str | Any) -> str:
-    """Replace ``$goal`` in *text* with the goal value.
-
-    Resolution order:
-    1. *context_goal* (from ``context.get("graph.goal")``).
-    2. *graph_goal* (the graph-level goal attribute).
-
-    If neither is truthy, *text* is returned unchanged.
-
-    This is the **single** location for ``$goal`` expansion (L-17).
-    """
-    goal_value = context_goal or graph_goal
-    if not goal_value:
-        return text
-    return text.replace("$goal", str(goal_value))
-
-
 def expand_params(text: str, params: dict[str, str]) -> str:
     """Replace ``$param_name`` tokens in *text* with values from *params*.
 
@@ -61,6 +44,23 @@ def expand_params(text: str, params: dict[str, str]) -> str:
     for key, value in params.items():
         text = text.replace(f"${key}", str(value))
     return text
+
+
+def expand_goal_variable(text: str, graph_goal: str, context_goal: str | Any) -> str:
+    """Replace ``$goal`` in *text* with the goal value.
+
+    Resolution order:
+    1. *context_goal* (from ``context.get("graph.goal")``).
+    2. *graph_goal* (the graph-level goal attribute).
+
+    If neither is truthy, *text* is returned unchanged.
+
+    This is the **single** location for ``$goal`` expansion (L-17).
+    """
+    goal_value = context_goal or graph_goal
+    if not goal_value:
+        return text
+    return text.replace("$goal", str(goal_value))
 
 
 # ---------------------------------------------------------------------------

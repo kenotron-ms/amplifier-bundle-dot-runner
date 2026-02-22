@@ -7,7 +7,9 @@ requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
-dependencies = []
+dependencies = [
+    "unified-llm-client",
+]
 
 [project.entry-points."amplifier.modules"]
 loop-pipeline = "amplifier_module_loop_pipeline:mount"
@@ -20,6 +22,9 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+unified-llm-client = { path = "../../../unified-llm-client" }
 
 [tool.hatch.build.targets.wheel]
 packages = [

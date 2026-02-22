@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 # ---------------------------------------------------------------------------
 # Provide a minimal amplifier_core stub so the backend's lazy imports work
@@ -50,28 +49,47 @@ if "amplifier_core" not in sys.modules:
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
+import unified_llm
+
 from amplifier_module_loop_pipeline import DirectProviderBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.outcome import StageStatus
 
 
-def _make_mock_provider(response_text="Done"):
-    """Create a mock provider that returns a text-only response."""
-    provider = MagicMock()
-    # Remove parse_tool_calls so _extract_tool_calls won't try to call it
-    if hasattr(provider, "parse_tool_calls"):
-        del provider.parse_tool_calls
-    provider.spec = []  # prevent auto-attribute creation
+# ---------------------------------------------------------------------------
+# Mock helpers
+# ---------------------------------------------------------------------------
 
-    response = MagicMock()
-    text_block = MagicMock()
-    text_block.text = response_text
-    response.content = [text_block]
-    response.tool_calls = None
 
-    provider.complete = AsyncMock(return_value=response)
-    return provider
+class _MockUnifiedClient:
+    """Mock unified_llm.Client for testing."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self._idx = 0
+        self.call_count = 0
+        self.requests = []
+
+    async def complete(self, request):
+        self.call_count += 1
+        self.requests.append(request)
+        if self._idx < len(self._responses):
+            resp = self._responses[self._idx]
+            self._idx += 1
+            return resp
+        return _make_text_response("fallback")
+
+
+def _make_text_response(text):
+    return unified_llm.Response(
+        id=f"resp-{abs(hash(text)) % 10000}",
+        model="test-model",
+        provider="test",
+        message=unified_llm.Message.assistant(text),
+        finish_reason=unified_llm.FinishReason(reason="stop"),
+        usage=unified_llm.Usage(input_tokens=10, output_tokens=20, total_tokens=30),
+    )
 
 
 def _make_graph_with_fidelity(node_fidelity="compact"):
@@ -84,13 +102,21 @@ def _make_graph_with_fidelity(node_fidelity="compact"):
                 id="step1",
                 shape="box",
                 prompt="First step",
-                attrs={"fidelity": node_fidelity},
+                attrs={
+                    "fidelity": node_fidelity,
+                    "llm_provider": "test",
+                    "llm_model": "test-model",
+                },
             ),
             "step2": Node(
                 id="step2",
                 shape="box",
                 prompt="Second step",
-                attrs={"fidelity": node_fidelity},
+                attrs={
+                    "fidelity": node_fidelity,
+                    "llm_provider": "test",
+                    "llm_model": "test-model",
+                },
             ),
             "done": Node(id="done", shape="Msquare"),
         },
@@ -105,8 +131,16 @@ def _make_graph_with_fidelity(node_fidelity="compact"):
 @pytest.mark.asyncio
 async def test_direct_backend_compact_fidelity_prepends_preamble():
     """With compact fidelity, the prompt should include a preamble after first node."""
-    provider = _make_mock_provider("Step completed successfully")
-    backend = DirectProviderBackend(provider)
+    mock_client = _MockUnifiedClient(
+        [
+            _make_text_response("Step completed successfully"),
+            _make_text_response("Step 2 done"),
+        ]
+    )
+    backend = DirectProviderBackend(
+        provider=object(),  # truthy sentinel — no longer called
+        unified_client=mock_client,
+    )
     graph = _make_graph_with_fidelity("compact")
     context = PipelineContext()
     context.set("graph.goal", "test goal")
@@ -135,10 +169,11 @@ async def test_direct_backend_compact_fidelity_prepends_preamble():
     )
     assert outcome2.status == StageStatus.SUCCESS
 
-    # Check that the second call's messages included preamble content
-    second_call_args = provider.complete.call_args_list[1]
-    request = second_call_args[0][0]
-    user_message = request.messages[0].content
+    # Check that the second call's request included preamble content.
+    # In compact/truncate modes, generate() is called with prompt= (not messages=),
+    # so the Request has a single user message containing the preamble + prompt.
+    second_request = mock_client.requests[1]
+    user_message = second_request.messages[0].text
     # The preamble should mention the goal and completed stages
     assert "test goal" in user_message or "step1" in user_message
 
@@ -146,8 +181,16 @@ async def test_direct_backend_compact_fidelity_prepends_preamble():
 @pytest.mark.asyncio
 async def test_direct_backend_truncate_fidelity_minimal_preamble():
     """With truncate fidelity, preamble should be minimal (just goal + run ID)."""
-    provider = _make_mock_provider("Done")
-    backend = DirectProviderBackend(provider)
+    mock_client = _MockUnifiedClient(
+        [
+            _make_text_response("Done"),
+            _make_text_response("Done 2"),
+        ]
+    )
+    backend = DirectProviderBackend(
+        provider=object(),
+        unified_client=mock_client,
+    )
     graph = _make_graph_with_fidelity("truncate")
     context = PipelineContext()
     context.set("graph.goal", "my goal")
@@ -170,16 +213,24 @@ async def test_direct_backend_truncate_fidelity_minimal_preamble():
         graph=graph,
     )
 
-    second_request = provider.complete.call_args_list[1][0][0]
-    user_content = second_request.messages[0].content
+    second_request = mock_client.requests[1]
+    user_content = second_request.messages[0].text
     assert "my goal" in user_content
 
 
 @pytest.mark.asyncio
 async def test_direct_backend_full_fidelity_reuses_messages():
     """With full fidelity, message history should accumulate across calls."""
-    provider = _make_mock_provider("Response text")
-    backend = DirectProviderBackend(provider)
+    mock_client = _MockUnifiedClient(
+        [
+            _make_text_response("Response text"),
+            _make_text_response("Response 2"),
+        ]
+    )
+    backend = DirectProviderBackend(
+        provider=object(),
+        unified_client=mock_client,
+    )
     graph = _make_graph_with_fidelity("full")
     context = PipelineContext()
 
@@ -201,7 +252,7 @@ async def test_direct_backend_full_fidelity_reuses_messages():
         graph=graph,
     )
 
-    second_request = provider.complete.call_args_list[1][0][0]
+    second_request = mock_client.requests[1]
     # In full mode, messages from step1 should carry over
     # At minimum: user(first prompt), assistant(response), user(second prompt)
     assert len(second_request.messages) >= 3
@@ -210,10 +261,18 @@ async def test_direct_backend_full_fidelity_reuses_messages():
 @pytest.mark.asyncio
 async def test_direct_backend_without_graph_falls_back_gracefully():
     """When graph/edge not provided, backend works like before (no fidelity)."""
-    provider = _make_mock_provider("ok")
-    backend = DirectProviderBackend(provider)
+    mock_client = _MockUnifiedClient([_make_text_response("ok")])
+    backend = DirectProviderBackend(
+        provider=object(),
+        unified_client=mock_client,
+    )
     context = PipelineContext()
 
-    node = Node(id="work", shape="box", prompt="do work")
+    node = Node(
+        id="work",
+        shape="box",
+        prompt="do work",
+        attrs={"llm_provider": "test", "llm_model": "test-model"},
+    )
     outcome = await backend.run(node, "do work", context)
     assert outcome.status == StageStatus.SUCCESS

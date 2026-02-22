@@ -25,6 +25,7 @@ SHAPE_TO_HANDLER: dict[str, str] = {
     "Mdiamond": "start",
     "Msquare": "exit",
     "box": "codergen",
+    "ellipse": "codergen",
     "hexagon": "wait.human",
     "diamond": "conditional",
     "component": "parallel",
@@ -34,7 +35,7 @@ SHAPE_TO_HANDLER: dict[str, str] = {
 }
 
 # Shapes that map to LLM/codergen handler
-_LLM_SHAPES = {"box"}
+_LLM_SHAPES = {"box", "ellipse"}
 
 
 @dataclass

@@ -1,0 +1,9 @@
+digraph UnifiedSimple {
+    graph [goal="Write hello world"]
+
+    start [shape=Mdiamond]
+    implement [shape=box, prompt="Write a hello world program"]
+    done [shape=Msquare]
+
+    start -> implement -> done
+}
