@@ -156,6 +156,7 @@ class AmplifierBackend:
                 fidelity,
                 incoming_edge,
                 graph,
+                context,
             )
             # Fall back to direct tool loop if spawn failed and provider available
             if outcome.status == StageStatus.FAIL and self._provider is not None:
@@ -204,6 +205,7 @@ class AmplifierBackend:
         fidelity: str,
         incoming_edge: Edge | None,
         graph: Graph | None,
+        context: PipelineContext | None = None,
     ) -> Outcome:
         """Spawn a full child session via the CLI's session.spawn capability."""
         assert self._spawn_fn is not None  # guaranteed by caller
@@ -229,6 +231,24 @@ class AmplifierBackend:
             spawn_kwargs["provider_preferences"] = [
                 _ProviderPreference(provider=provider, model=model)
             ]
+
+        # Inject shared execution environment attachment for child session
+        if context is not None:
+            container_id = context.get("internal.env_container_id")
+            env_type = context.get("internal.env_type")
+            if container_id:
+                spawn_kwargs["tools"] = spawn_kwargs.get("tools", []) + [
+                    {
+                        "module": "tools-env-all",
+                        "config": {
+                            "auto_attach": {
+                                "type": env_type,
+                                "name": "pipeline-workspace",
+                                "attach_to": container_id,
+                            }
+                        },
+                    }
+                ]
 
         # Session pool for full fidelity (spec FID-001: thread reuse)
         if fidelity == "full" and graph is not None:
