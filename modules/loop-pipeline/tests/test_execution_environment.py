@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from amplifier_module_loop_pipeline import PipelineOrchestrator
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.graph import Node
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
 
 
@@ -214,3 +217,141 @@ async def test_env_lifecycle_destroy_called_on_failure():
 
     # env_destroy was STILL called despite the exception
     env_destroy.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_env_lifecycle_unparseable_create_response(caplog):
+    """Falls back to local when env_create returns non-JSON output."""
+    env_create = AsyncMock()
+    env_create.execute = AsyncMock(
+        return_value=MagicMock(
+            success=True,
+            output="not json",
+        )
+    )
+    env_destroy = _make_mock_env_destroy()
+
+    orchestrator = _make_orchestrator(
+        execution_environment={"type": "docker", "name": "pipeline-workspace"}
+    )
+
+    with caplog.at_level(logging.WARNING, logger="amplifier_module_loop_pipeline"):
+        with patch(
+            "amplifier_module_loop_pipeline.PipelineEngine.run",
+            new_callable=AsyncMock,
+            return_value=Outcome(status=StageStatus.SUCCESS, notes="done"),
+        ):
+            result = await orchestrator.execute(
+                prompt="Build it",
+                context=None,
+                providers={},
+                tools={"env_create": env_create, "env_destroy": env_destroy},
+                hooks=None,
+                backend=MagicMock(),
+            )
+
+    # No exception raised, pipeline ran successfully
+    parsed_result = json.loads(result)
+    assert parsed_result["status"] == "success"
+
+    # Warning logged about unparseable output
+    assert any(
+        "unparseable" in record.message.lower() or "env_create" in record.message
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+
+    # env_destroy is NOT called since no container was created
+    env_destroy.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Backend attach-to injection tests
+# ---------------------------------------------------------------------------
+
+
+def _make_backend_with_mock_spawn():
+    """Create an AmplifierBackend with a mock coordinator that has session.spawn.
+
+    Returns (backend, mock_spawn_fn) so tests can inspect spawn call args.
+    """
+    mock_spawn = AsyncMock(
+        return_value={
+            "output": '{"status": "success", "notes": "done"}',
+            "session_id": "child-1",
+        }
+    )
+
+    coordinator = MagicMock()
+    coordinator.get_capability = MagicMock(return_value=mock_spawn)
+    coordinator.session = MagicMock()
+    coordinator.config = {"agents": {}}
+
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "test-profile"},
+    )
+    return backend, mock_spawn
+
+
+def _make_simple_node(node_id="work"):
+    """Create a simple Node for backend tests."""
+    return Node(id=node_id, prompt="Do some work")
+
+
+@pytest.mark.asyncio
+async def test_backend_passes_attach_to_when_container_in_context():
+    """When internal.env_container_id is set, spawn kwargs include tools-env-all config."""
+    backend, mock_spawn = _make_backend_with_mock_spawn()
+    node = _make_simple_node()
+
+    context = PipelineContext()
+    context.set("internal.env_container_id", "container-xyz")
+    context.set("internal.env_type", "docker")
+
+    await backend.run(node, "Do work", context)
+
+    mock_spawn.assert_called_once()
+    call_kwargs = mock_spawn.call_args[1]  # keyword args
+
+    # Should have tools list with env-all auto_attach config
+    assert "tools" in call_kwargs, "Expected 'tools' in spawn kwargs"
+    tools_list = call_kwargs["tools"]
+    assert isinstance(tools_list, list)
+
+    # Find the tools-env-all entry
+    env_tool_entries = [t for t in tools_list if t.get("module") == "tools-env-all"]
+    assert len(env_tool_entries) == 1, (
+        f"Expected one tools-env-all entry, got {env_tool_entries}"
+    )
+
+    env_config = env_tool_entries[0]["config"]
+    assert env_config["auto_attach"]["type"] == "docker"
+    assert env_config["auto_attach"]["name"] == "pipeline-workspace"
+    assert env_config["auto_attach"]["attach_to"] == "container-xyz"
+
+
+@pytest.mark.asyncio
+async def test_backend_no_attach_when_no_container_in_context():
+    """When internal.env_container_id is NOT set, spawn kwargs have no tools-env-all config."""
+    backend, mock_spawn = _make_backend_with_mock_spawn()
+    node = _make_simple_node()
+
+    context = PipelineContext()
+    # No internal.env_container_id set
+
+    await backend.run(node, "Do work", context)
+
+    mock_spawn.assert_called_once()
+    call_kwargs = mock_spawn.call_args[1]
+
+    # Either no 'tools' key, or no tools-env-all entry in it
+    tools_list = call_kwargs.get("tools", [])
+    env_tool_entries = [
+        t
+        for t in tools_list
+        if isinstance(t, dict) and t.get("module") == "tools-env-all"
+    ]
+    assert len(env_tool_entries) == 0, (
+        f"Expected no tools-env-all entry, got {env_tool_entries}"
+    )

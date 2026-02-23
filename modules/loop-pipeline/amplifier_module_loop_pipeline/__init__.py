@@ -435,7 +435,13 @@ class PipelineOrchestrator:
                 env_create_args.setdefault("type", "docker")
                 env_create_args.setdefault("name", "pipeline-workspace")
                 result = await tools["env_create"].execute(env_create_args)
-                parsed = json.loads(result.output)
+                try:
+                    parsed = json.loads(result.output)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "env_create returned unparseable output: %s", result.output
+                    )
+                    parsed = {}
                 container_id = parsed.get("container_id")
                 if container_id:
                     pipeline_context.set("internal.env_container_id", container_id)
