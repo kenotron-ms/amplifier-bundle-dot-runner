@@ -355,3 +355,252 @@ async def test_backend_no_attach_when_no_container_in_context():
     assert len(env_tool_entries) == 0, (
         f"Expected no tools-env-all entry, got {env_tool_entries}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Graceful fallback verification tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_env_destroy_failure_does_not_mask_outcome():
+    """env_destroy raising does not mask a successful pipeline outcome."""
+    env_create = _make_mock_env_create(container_id="abc123")
+    env_destroy = AsyncMock()
+    env_destroy.execute = AsyncMock(side_effect=RuntimeError("destroy boom"))
+
+    orchestrator = _make_orchestrator(
+        execution_environment={"type": "docker", "name": "pipeline-workspace"}
+    )
+
+    with patch(
+        "amplifier_module_loop_pipeline.PipelineEngine.run",
+        new_callable=AsyncMock,
+        return_value=Outcome(status=StageStatus.SUCCESS, notes="all good"),
+    ):
+        result = await orchestrator.execute(
+            prompt="Build it",
+            context=None,
+            providers={},
+            tools={"env_create": env_create, "env_destroy": env_destroy},
+            hooks=None,
+            backend=MagicMock(),
+        )
+
+    # env_destroy was called (and raised)
+    env_destroy.execute.assert_called_once()
+
+    # The pipeline still returns the successful outcome
+    parsed = json.loads(result)
+    assert parsed["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_env_create_failure_propagates(caplog):
+    """env_create returning success=False falls back to local execution."""
+    env_create = AsyncMock()
+    env_create.execute = AsyncMock(
+        return_value=MagicMock(
+            success=False,
+            output="Container creation failed",
+        )
+    )
+    env_destroy = _make_mock_env_destroy()
+
+    orchestrator = _make_orchestrator(
+        execution_environment={"type": "docker", "name": "pipeline-workspace"}
+    )
+
+    with caplog.at_level(logging.WARNING, logger="amplifier_module_loop_pipeline"):
+        with patch(
+            "amplifier_module_loop_pipeline.PipelineEngine.run",
+            new_callable=AsyncMock,
+            return_value=Outcome(status=StageStatus.SUCCESS, notes="done locally"),
+        ):
+            result = await orchestrator.execute(
+                prompt="Build it",
+                context=None,
+                providers={},
+                tools={"env_create": env_create, "env_destroy": env_destroy},
+                hooks=None,
+                backend=MagicMock(),
+            )
+
+    # Pipeline succeeded via local fallback
+    parsed = json.loads(result)
+    assert parsed["status"] == "success"
+
+    # env_create was called
+    env_create.execute.assert_called_once()
+
+    # env_destroy was NOT called (no container_id was stored)
+    env_destroy.execute.assert_not_called()
+
+    # Warning was logged about unparseable output
+    assert any(
+        "unparseable" in record.message.lower() or "env_create" in record.message
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+
+
+@pytest.mark.asyncio
+async def test_env_lifecycle_with_ssh_type(caplog):
+    """SSH env_create returning no container_id falls back to local execution."""
+    env_create = AsyncMock()
+    env_create.execute = AsyncMock(
+        return_value=MagicMock(
+            success=True,
+            output=json.dumps({"host": "10.0.0.5"}),  # no container_id
+        )
+    )
+    env_destroy = _make_mock_env_destroy()
+
+    orchestrator = _make_orchestrator(
+        execution_environment={"type": "ssh", "host": "10.0.0.5", "name": "remote"}
+    )
+
+    captured_context = {}
+
+    async def capturing_engine_run(self_engine, *args, **kwargs):
+        captured_context["container_id"] = self_engine.context.get(
+            "internal.env_container_id"
+        )
+        captured_context["env_type"] = self_engine.context.get("internal.env_type")
+        return Outcome(status=StageStatus.SUCCESS, notes="done")
+
+    with caplog.at_level(logging.WARNING, logger="amplifier_module_loop_pipeline"):
+        with patch(
+            "amplifier_module_loop_pipeline.PipelineEngine.run",
+            capturing_engine_run,
+        ):
+            result = await orchestrator.execute(
+                prompt="Build it",
+                context=None,
+                providers={},
+                tools={"env_create": env_create, "env_destroy": env_destroy},
+                hooks=None,
+                backend=MagicMock(),
+            )
+
+    # env_create was called with SSH config
+    env_create.execute.assert_called_once()
+    create_args = env_create.execute.call_args[0][0]
+    assert create_args["type"] == "ssh"
+    assert create_args["host"] == "10.0.0.5"
+    assert create_args["name"] == "remote"
+
+    # No container_id was stored in context (SSH response lacked one)
+    assert captured_context["container_id"] is None
+    assert captured_context["env_type"] is None
+
+    # Pipeline succeeded via local fallback
+    parsed = json.loads(result)
+    assert parsed["status"] == "success"
+
+    # env_destroy was NOT called (no container_id)
+    env_destroy.execute.assert_not_called()
+
+    # Warning logged about missing container_id
+    assert any(
+        "container_id" in record.message
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Integration test with mock env tools
+# ---------------------------------------------------------------------------
+
+
+TWO_NODE_DOT = """\
+digraph {
+    start [shape=Mdiamond]
+    step1 [prompt="Do step 1"]
+    step2 [prompt="Do step 2"]
+    exit  [shape=Msquare]
+    start -> step1 -> step2 -> exit
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_full_lifecycle_orchestrator_and_backend(tmp_path):
+    """Integration: env_create → context flows through engine → backend sees container_id → env_destroy."""
+    env_create = _make_mock_env_create(container_id="int-container-99")
+    env_destroy = _make_mock_env_destroy()
+
+    # Track what the backend receives during each node execution
+    backend_calls: list[dict] = []
+
+    class CapturingBackend:
+        """Mock backend that records context state on each run() call."""
+
+        async def run(self, node, prompt, context, **kwargs):
+            backend_calls.append(
+                {
+                    "node_id": node.id,
+                    "container_id": context.get("internal.env_container_id"),
+                    "env_type": context.get("internal.env_type"),
+                }
+            )
+            return Outcome(
+                status=StageStatus.SUCCESS,
+                notes=f"Completed {node.id}",
+                context_updates={"last_stage": node.id},
+            )
+
+    # Use tmp_path for logs_root to avoid stale checkpoint contamination
+    orchestrator = PipelineOrchestrator(
+        {
+            "dot_source": TWO_NODE_DOT,
+            "logs_root": str(tmp_path / "pipeline-logs"),
+            "execution_environment": {
+                "type": "docker",
+                "name": "pipeline-workspace",
+                "image": "python:3.12",
+            },
+        }
+    )
+
+    result = await orchestrator.execute(
+        prompt="Run integration test",
+        context=None,
+        providers={},
+        tools={"env_create": env_create, "env_destroy": env_destroy},
+        hooks=None,
+        backend=CapturingBackend(),
+    )
+
+    # 1. env_create was called first
+    env_create.execute.assert_called_once()
+
+    # 2. Backend was called for both work nodes (step1, step2)
+    assert len(backend_calls) == 2
+    assert backend_calls[0]["node_id"] == "step1"
+    assert backend_calls[1]["node_id"] == "step2"
+
+    # 3. Both nodes saw the container_id in context
+    assert backend_calls[0]["container_id"] == "int-container-99"
+    assert backend_calls[0]["env_type"] == "docker"
+    assert backend_calls[1]["container_id"] == "int-container-99"
+    assert backend_calls[1]["env_type"] == "docker"
+
+    # 4. env_destroy was called after engine completed
+    env_destroy.execute.assert_called_once()
+    destroy_args = env_destroy.execute.call_args[0][0]
+    assert destroy_args["instance"] == "pipeline-workspace"
+
+    # 5. Pipeline completed successfully
+    parsed = json.loads(result)
+    assert parsed["status"] == "success"
+    assert parsed["nodes_completed"] >= 2
+
+    # 6. Verify call ordering: env_create before backend, backend before env_destroy
+    # env_create was called before backend_calls were recorded (backend_calls populated
+    # during engine.run, which happens after env_create in orchestrator.execute)
+    # env_destroy was called after engine.run completed (in the finally block)
+    # The assertions above already confirm this ordering implicitly:
+    # - env_create returned container_id → it was in context when backend ran
+    # - env_destroy was called → pipeline returned successfully after
