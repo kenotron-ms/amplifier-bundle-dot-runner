@@ -424,6 +424,41 @@ class PipelineOrchestrator:
         if backend is None:
             backend = _build_backend(providers, tools, hooks, coordinator, self.config)
 
+        # 7b. Environment setup (if configured)
+        env_config: dict[str, Any] | None = self.config.get("execution_environment")
+        container_id = None
+        env_instance_name = "pipeline-workspace"  # default for teardown
+        if env_config:
+            env_instance_name = env_config.get("name", "pipeline-workspace")
+            if "env_create" in tools:
+                env_create_args = dict(env_config)  # copy to avoid mutating config
+                env_create_args.setdefault("type", "docker")
+                env_create_args.setdefault("name", "pipeline-workspace")
+                result = await tools["env_create"].execute(env_create_args)
+                parsed = json.loads(result.output)
+                container_id = parsed.get("container_id")
+                if container_id:
+                    pipeline_context.set("internal.env_container_id", container_id)
+                    pipeline_context.set(
+                        "internal.env_type", env_config.get("type", "docker")
+                    )
+                    logger.info(
+                        "Execution environment created: %s (container_id=%s)",
+                        env_instance_name,
+                        container_id,
+                    )
+                else:
+                    logger.warning(
+                        "env_create succeeded but returned no container_id "
+                        "— falling back to local execution"
+                    )
+            else:
+                logger.warning(
+                    "execution_environment configured but env_create tool not "
+                    "available (env-all bundle not composed?) — falling back "
+                    "to local execution"
+                )
+
         # 8. Create engine first (handlers need its _run_from method)
         # Use a placeholder registry, then replace after wiring
         engine = PipelineEngine(
@@ -452,8 +487,24 @@ class PipelineOrchestrator:
         )
         engine.handler_registry = registry
 
-        # 11. Run the engine
-        outcome = await engine.run(goal=prompt or None)
+        # 11. Run the engine (with environment teardown in finally)
+        try:
+            outcome = await engine.run(goal=prompt or None)
+        finally:
+            # Environment teardown
+            if container_id and "env_destroy" in tools:
+                try:
+                    await tools["env_destroy"].execute({"instance": env_instance_name})
+                    logger.info(
+                        "Execution environment destroyed: %s",
+                        env_instance_name,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to destroy execution environment %s "
+                        "— container may need manual cleanup",
+                        env_instance_name,
+                    )
 
         # 12. Build a meaningful summary from all completed nodes
         summary = self._build_pipeline_summary(engine, outcome)
