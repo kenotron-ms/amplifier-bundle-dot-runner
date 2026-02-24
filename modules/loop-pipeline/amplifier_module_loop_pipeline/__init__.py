@@ -418,6 +418,11 @@ class PipelineOrchestrator:
         )
         os.makedirs(logs_root, exist_ok=True)
 
+        # 6b. Write the DOT source for dashboard visualization
+        dot_path = os.path.join(logs_root, "graph.dot")
+        with open(dot_path, "w") as f:
+            f.write(dot_source)
+
         # 7. Resolve backend: explicit kwarg \u2192 auto-construct from providers
         coordinator = kwargs.get("coordinator")
         backend = kwargs.get("backend")
