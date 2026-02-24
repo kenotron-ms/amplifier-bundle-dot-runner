@@ -222,7 +222,7 @@ class PipelineEngine:
             # The DOT parser stores durations as milliseconds.
             node_timeout_ms = current_node.timeout
             if node_timeout_ms:
-                timeout_s = node_timeout_ms / 1000
+                timeout_s = float(node_timeout_ms) / 1000
                 try:
                     async with asyncio.timeout(timeout_s):
                         outcome = await execute_with_retry(
