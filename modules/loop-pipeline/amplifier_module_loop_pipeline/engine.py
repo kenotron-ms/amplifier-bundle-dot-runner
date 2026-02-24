@@ -138,7 +138,7 @@ class PipelineEngine:
                     return duration_outcome
 
             # Step 1: Check for terminal node (exit)
-            if current_node.shape == "Msquare":
+            if current_node.is_exit_node():
                 self._save_checkpoint(current_node.id)
                 await self._emit(
                     PIPELINE_CHECKPOINT,
@@ -393,12 +393,9 @@ class PipelineEngine:
         # Safety bound to prevent infinite loops
         max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
 
-        # Shapes that terminate a subgraph walk (exit, fan_in)
-        _TERMINAL_SHAPES = {"Msquare", "tripleoctagon"}
-
         for _step in range(max_steps):
             # Check for terminal node (exit or fan_in)
-            if current_node.shape in _TERMINAL_SHAPES:
+            if current_node.is_exit_node() or current_node.shape == "tripleoctagon":
                 return last_outcome or Outcome(
                     status=StageStatus.SUCCESS,
                     notes="Subgraph reached terminal node",
@@ -408,7 +405,7 @@ class PipelineEngine:
             handler = self.handler_registry.get(current_node)
 
             # Skip start nodes (no-op)
-            if current_node.shape == "Mdiamond":
+            if current_node.is_start_node():
                 outcome = Outcome(status=StageStatus.SUCCESS)
             else:
                 try:
@@ -461,9 +458,10 @@ class PipelineEngine:
     def _find_start_node(self) -> Node:
         """Find the start node.
 
-        Resolution order (L-21, Spec Section 3.2):
+        Resolution order (L-21, Spec Section 3.2, NLSpec line 344):
           1. shape=Mdiamond
-          2. id="start" or id="Start"
+          2. node_type="start" attribute
+          3. id="start" (case-insensitive)
 
         Raises ValueError if no start node can be resolved.
         """
@@ -472,17 +470,27 @@ class PipelineEngine:
             if node.shape == "Mdiamond":
                 return node
 
-        # Priority 2: id="start" or "Start" (L-21)
-        for candidate_id in ("start", "Start"):
-            if candidate_id in self.graph.nodes:
+        # Priority 2: node_type="start" attribute
+        for node in self.graph.nodes.values():
+            if node.attrs.get("node_type") == "start":
                 logger.debug(
-                    "No Mdiamond node found; using id='%s' as start node",
-                    candidate_id,
+                    "No Mdiamond node found; using node_type='start' node '%s'",
+                    node.id,
                 )
-                return self.graph.nodes[candidate_id]
+                return node
+
+        # Priority 3: id="start" (case-insensitive, L-21)
+        for node in self.graph.nodes.values():
+            if node.id.lower() == "start":
+                logger.debug(
+                    "No Mdiamond/node_type node found; using id='%s' as start node",
+                    node.id,
+                )
+                return node
 
         raise ValueError(
-            "No start node found (no shape=Mdiamond and no id='start'/'Start')"
+            "No start node found (no shape=Mdiamond, no node_type='start', "
+            "and no id='start'/'Start')"
         )
 
     async def _check_goal_gates(self) -> Outcome:

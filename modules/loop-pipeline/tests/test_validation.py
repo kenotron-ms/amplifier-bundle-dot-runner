@@ -692,3 +692,198 @@ def test_ellipse_node_gets_prompt_warning():
     assert any(
         d.rule == "prompt_on_llm_nodes" and "plan" in d.message for d in diags
     ), "ellipse node should trigger prompt_on_llm_nodes warning"
+
+
+# --- Alternative start/exit node conventions ---
+
+
+def test_start_node_by_node_type_attr():
+    """shape=circle + node_type='start' should pass validation as a start node."""
+    g = _graph(
+        nodes={
+            "Start": Node(
+                id="Start",
+                shape="circle",
+                label="Start",
+                attrs={"node_type": "start"},
+            ),
+            "work": _box("work", prompt="do it"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    errors = [d for d in diags if d.severity == "ERROR"]
+    assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+
+def test_exit_node_by_node_type_attr():
+    """shape=doublecircle + node_type='exit' should pass validation as an exit node."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", prompt="do it"),
+            "Exit": Node(
+                id="Exit",
+                shape="doublecircle",
+                label="Exit",
+                attrs={"node_type": "exit"},
+            ),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="Exit"),
+        ],
+    )
+    diags = validate(g)
+    errors = [d for d in diags if d.severity == "ERROR"]
+    assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+
+def test_start_node_by_id_fallback():
+    """Node with id='Start' (no Mdiamond, no node_type) should pass as start (NLSpec)."""
+    g = _graph(
+        nodes={
+            "Start": Node(id="Start", shape="box", label="Start", prompt="begin"),
+            "work": _box("work", prompt="do it"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    start_errors = [
+        d for d in diags if d.severity == "ERROR" and d.rule == "start_node"
+    ]
+    assert len(start_errors) == 0, f"Expected no start_node errors, got: {start_errors}"
+
+
+def test_exit_node_by_id_fallback():
+    """Node with id='Exit' (no Msquare, no node_type) should pass as exit node."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", prompt="do it"),
+            "Exit": Node(id="Exit", shape="box", label="Exit", prompt="end"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="Exit"),
+        ],
+    )
+    diags = validate(g)
+    terminal_errors = [
+        d for d in diags if d.severity == "ERROR" and d.rule == "terminal_node"
+    ]
+    assert len(terminal_errors) == 0, (
+        f"Expected no terminal_node errors, got: {terminal_errors}"
+    )
+
+
+def test_alternative_start_exit_full_pipeline():
+    """Real-world pattern: circle+node_type start, doublecircle+node_type exit."""
+    g = _graph(
+        nodes={
+            "Start": Node(
+                id="Start",
+                shape="circle",
+                label="Start",
+                attrs={"node_type": "start"},
+            ),
+            "work": _box("work", prompt="do it"),
+            "Exit": Node(
+                id="Exit",
+                shape="doublecircle",
+                label="Exit",
+                attrs={"node_type": "exit"},
+            ),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="Exit"),
+        ],
+    )
+    diags = validate(g)
+    errors = [d for d in diags if d.severity == "ERROR"]
+    assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+
+def test_no_prompt_warning_on_alternative_start_exit():
+    """Start/exit nodes using circle/doublecircle should not trigger prompt warnings."""
+    g = _graph(
+        nodes={
+            "Start": Node(
+                id="Start",
+                shape="circle",
+                label="Start",
+                attrs={"node_type": "start"},
+            ),
+            "work": _box("work", prompt="do it"),
+            "Exit": Node(
+                id="Exit",
+                shape="doublecircle",
+                label="Exit",
+                attrs={"node_type": "exit"},
+            ),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="Exit"),
+        ],
+    )
+    diags = validate(g)
+    prompt_diags = [d for d in diags if d.rule == "prompt_on_llm_nodes"]
+    flagged_ids = {d.node_id for d in prompt_diags}
+    assert "Start" not in flagged_ids, "Start node should not get prompt warning"
+    assert "Exit" not in flagged_ids, "Exit node should not get prompt warning"
+
+
+def test_start_no_incoming_alternative_convention():
+    """start_no_incoming applies to alternative start nodes too."""
+    g = _graph(
+        nodes={
+            "Start": Node(
+                id="Start",
+                shape="circle",
+                label="Start",
+                attrs={"node_type": "start"},
+            ),
+            "work": _box("work", prompt="do it"),
+            "exit": _msquare(),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="Start"),  # bad: incoming to start
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "start_no_incoming" for d in diags)
+
+
+def test_exit_no_outgoing_alternative_convention():
+    """exit_no_outgoing applies to alternative exit nodes too."""
+    g = _graph(
+        nodes={
+            "start": _mdiamond(),
+            "work": _box("work", prompt="do it"),
+            "Exit": Node(
+                id="Exit",
+                shape="doublecircle",
+                label="Exit",
+                attrs={"node_type": "exit"},
+            ),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="Exit"),
+            Edge(from_node="Exit", to_node="work"),  # bad: outgoing from exit
+        ],
+    )
+    diags = validate(g)
+    assert any(d.severity == "ERROR" and d.rule == "exit_no_outgoing" for d in diags)

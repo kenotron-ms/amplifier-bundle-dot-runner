@@ -371,7 +371,9 @@ async def test_auto_status_overrides_fail_to_success(tmp_path):
         nodes={
             "start": Node(id="start", shape="Mdiamond"),
             "auto_node": Node(
-                id="auto_node", shape="box", prompt="work",
+                id="auto_node",
+                shape="box",
+                prompt="work",
                 auto_status=True,
             ),
             "exit": Node(id="exit", shape="Msquare"),
@@ -384,7 +386,9 @@ async def test_auto_status_overrides_fail_to_success(tmp_path):
     context = PipelineContext()
     registry = HandlerRegistry(backend=FailingBackend())
     engine = PipelineEngine(
-        graph=graph, context=context, handler_registry=registry,
+        graph=graph,
+        context=context,
+        handler_registry=registry,
         logs_root=str(tmp_path),
     )
     outcome = await engine.run()
@@ -418,7 +422,9 @@ async def test_auto_status_false_preserves_fail(tmp_path):
     context = PipelineContext()
     registry = HandlerRegistry(backend=FailingBackend())
     engine = PipelineEngine(
-        graph=graph, context=context, handler_registry=registry,
+        graph=graph,
+        context=context,
+        handler_registry=registry,
         logs_root=str(tmp_path),
     )
     await engine.run()
@@ -445,3 +451,107 @@ async def test_engine_records_node_outcomes(tmp_path):
     assert "start" in engine.node_outcomes
     assert "step" in engine.node_outcomes
     assert engine.node_outcomes["step"].status == StageStatus.SUCCESS
+
+
+# --- Alternative start/exit node conventions ---
+
+
+@pytest.mark.asyncio
+async def test_engine_finds_start_by_node_type_attr(tmp_path):
+    """Engine finds start node via node_type='start' attribute."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "Start": Node(
+                id="Start",
+                shape="circle",
+                label="Start",
+                attrs={"node_type": "start"},
+            ),
+            "work": Node(id="work", shape="box", prompt="Do work"),
+            "exit": Node(id="exit", shape="Msquare", label="Exit"),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=MockBackend("done"))
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    start = engine._find_start_node()
+    assert start.id == "Start"
+
+
+@pytest.mark.asyncio
+async def test_engine_runs_alternative_start_exit(tmp_path):
+    """Engine executes pipeline with circle/doublecircle + node_type conventions."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "Start": Node(
+                id="Start",
+                shape="circle",
+                label="Start",
+                attrs={"node_type": "start"},
+            ),
+            "work": Node(id="work", shape="box", prompt="Do work"),
+            "Exit": Node(
+                id="Exit",
+                shape="doublecircle",
+                label="Exit",
+                attrs={"node_type": "exit"},
+            ),
+        },
+        edges=[
+            Edge(from_node="Start", to_node="work"),
+            Edge(from_node="work", to_node="Exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=MockBackend("done"))
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+
+
+@pytest.mark.asyncio
+async def test_engine_mdiamond_takes_priority_over_node_type(tmp_path):
+    """shape=Mdiamond has higher priority than node_type='start'."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "real_start": Node(id="real_start", shape="Mdiamond", label="RealStart"),
+            "alt_start": Node(
+                id="alt_start",
+                shape="circle",
+                attrs={"node_type": "start"},
+            ),
+            "work": Node(id="work", shape="box", prompt="Do work"),
+            "exit": Node(id="exit", shape="Msquare", label="Exit"),
+        },
+        edges=[
+            Edge(from_node="real_start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=MockBackend("done"))
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    start = engine._find_start_node()
+    assert start.id == "real_start", "Mdiamond should take priority over node_type"

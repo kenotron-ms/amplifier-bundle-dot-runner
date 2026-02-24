@@ -119,15 +119,21 @@ def validate_or_raise(graph: Graph) -> list[Diagnostic]:
 
 
 def _check_start_node(graph: Graph, diags: list[Diagnostic]) -> None:
-    """LINT: start_node — exactly one start node (shape=Mdiamond)."""
-    start_nodes = [n for n in graph.nodes.values() if n.shape == "Mdiamond"]
+    """LINT: start_node — exactly one start node.
+
+    Detected by: shape=Mdiamond, node_type="start" attr, or id="start".
+    """
+    start_nodes = [n for n in graph.nodes.values() if n.is_start_node()]
     if len(start_nodes) == 0:
         diags.append(
             Diagnostic(
                 rule="start_node",
                 severity="ERROR",
-                message="Pipeline must have exactly one start node (shape=Mdiamond)",
-                fix="Add a node with shape=Mdiamond",
+                message=(
+                    "Pipeline must have exactly one start node "
+                    '(shape=Mdiamond, node_type="start", or id="start")'
+                ),
+                fix='Add a start node (shape=Mdiamond, node_type="start" attr, or id="start")',
             )
         )
     elif len(start_nodes) > 1:
@@ -137,21 +143,27 @@ def _check_start_node(graph: Graph, diags: list[Diagnostic]) -> None:
                 rule="start_node",
                 severity="ERROR",
                 message=f"Pipeline has {len(start_nodes)} start nodes ({ids}); exactly one is required",
-                fix="Remove extra start nodes so only one has shape=Mdiamond",
+                fix="Remove extra start nodes so only one is detected as a start node",
             )
         )
 
 
 def _check_terminal_node(graph: Graph, diags: list[Diagnostic]) -> None:
-    """LINT: terminal_node — exactly one exit node (shape=Msquare) (M-11)."""
-    exit_nodes = [n for n in graph.nodes.values() if n.shape == "Msquare"]
+    """LINT: terminal_node — exactly one exit node (M-11).
+
+    Detected by: shape=Msquare, node_type="exit" attr, or id="exit"/"done".
+    """
+    exit_nodes = [n for n in graph.nodes.values() if n.is_exit_node()]
     if len(exit_nodes) == 0:
         diags.append(
             Diagnostic(
                 rule="terminal_node",
                 severity="ERROR",
-                message="Pipeline must have exactly one exit node (shape=Msquare)",
-                fix="Add a node with shape=Msquare",
+                message=(
+                    "Pipeline must have exactly one exit node "
+                    '(shape=Msquare, node_type="exit", or id="exit"/"done")'
+                ),
+                fix='Add an exit node (shape=Msquare, node_type="exit" attr, or id="exit")',
             )
         )
     elif len(exit_nodes) > 1:
@@ -164,7 +176,7 @@ def _check_terminal_node(graph: Graph, diags: list[Diagnostic]) -> None:
                     f"Pipeline has {len(exit_nodes)} exit nodes ({ids}); "
                     f"exactly one is required"
                 ),
-                fix="Remove extra exit nodes so only one has shape=Msquare",
+                fix="Remove extra exit nodes so only one is detected as an exit node",
             )
         )
 
@@ -197,7 +209,7 @@ def _check_edge_targets(graph: Graph, diags: list[Diagnostic]) -> None:
 
 def _check_start_no_incoming(graph: Graph, diags: list[Diagnostic]) -> None:
     """LINT: start_no_incoming — start node must have no incoming edges."""
-    start_nodes = [n for n in graph.nodes.values() if n.shape == "Mdiamond"]
+    start_nodes = [n for n in graph.nodes.values() if n.is_start_node()]
     for start in start_nodes:
         incoming = graph.incoming_edges(start.id)
         if incoming:
@@ -215,7 +227,7 @@ def _check_start_no_incoming(graph: Graph, diags: list[Diagnostic]) -> None:
 
 def _check_exit_no_outgoing(graph: Graph, diags: list[Diagnostic]) -> None:
     """LINT: exit_no_outgoing — exit node must have no outgoing edges."""
-    exit_nodes = [n for n in graph.nodes.values() if n.shape == "Msquare"]
+    exit_nodes = [n for n in graph.nodes.values() if n.is_exit_node()]
     for exit_node in exit_nodes:
         outgoing = graph.outgoing_edges(exit_node.id)
         if outgoing:
@@ -233,7 +245,7 @@ def _check_exit_no_outgoing(graph: Graph, diags: list[Diagnostic]) -> None:
 
 def _check_reachability(graph: Graph, diags: list[Diagnostic]) -> None:
     """LINT: reachability — all nodes reachable from start via BFS."""
-    start_nodes = [n for n in graph.nodes.values() if n.shape == "Mdiamond"]
+    start_nodes = [n for n in graph.nodes.values() if n.is_start_node()]
     if not start_nodes:
         return  # start_node rule already flagged
 
@@ -299,6 +311,10 @@ def _check_goal_gate_has_retry(graph: Graph, diags: list[Diagnostic]) -> None:
 def _check_prompt_on_llm_nodes(graph: Graph, diags: list[Diagnostic]) -> None:
     """LINT: prompt_on_llm_nodes — codergen nodes should have prompt or meaningful label."""
     for node in graph.nodes.values():
+        # Skip start/exit nodes — they are not LLM nodes regardless of shape
+        if node.is_start_node() or node.is_exit_node():
+            continue
+
         # Determine if this is an LLM/codergen node
         handler = node.type or SHAPE_TO_HANDLER.get(node.shape, "codergen")
         if handler != "codergen":
