@@ -613,3 +613,81 @@ async def test_tool_loop_handles_provider_failure():
     result = await backend.run(node, "task", _make_context())
     assert result.status == StageStatus.FAIL
     assert "unreachable" in (result.failure_reason or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Path B: reasoning_effort passthrough via unified_llm.generate()
+# ---------------------------------------------------------------------------
+
+
+def _make_generate_result(text: str = "done") -> "unified_llm.GenerateResult":
+    """Build a minimal unified_llm.GenerateResult for mocking generate()."""
+    usage = unified_llm.Usage(
+        input_tokens=10,
+        output_tokens=20,
+        total_tokens=30,
+    )
+    response = unified_llm.Response(
+        id="resp-mock",
+        model="test-model",
+        provider="test",
+        message=unified_llm.Message.assistant(text),
+        finish_reason=unified_llm.FinishReason(reason="stop"),
+        usage=usage,
+    )
+    return unified_llm.GenerateResult(
+        text=text,
+        finish_reason=unified_llm.FinishReason(reason="stop"),
+        usage=usage,
+        total_usage=usage,
+        steps=[],
+        response=response,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_passed_to_tool_loop(monkeypatch):
+    """reasoning_effort='low' in node attrs is forwarded to unified_llm.generate()."""
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _fake_generate(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_generate_result("done")
+
+    monkeypatch.setattr(unified_llm, "generate", _fake_generate)
+
+    coordinator = NoSpawnCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),  # truthy sentinel to enable Path B
+    )
+    node = _make_node(attrs={"llm_provider": "test", "reasoning_effort": "low"})
+    result = await backend.run(node, "task", _make_context())
+
+    assert result.status == StageStatus.SUCCESS
+    assert captured_kwargs.get("reasoning_effort") == "low"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_defaults_to_none(monkeypatch):
+    """Without reasoning_effort in node attrs, None is passed to unified_llm.generate()."""
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _fake_generate(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_generate_result("done")
+
+    monkeypatch.setattr(unified_llm, "generate", _fake_generate)
+
+    coordinator = NoSpawnCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),  # truthy sentinel to enable Path B
+    )
+    node = _make_node(attrs={"llm_provider": "test"})
+    result = await backend.run(node, "task", _make_context())
+
+    assert result.status == StageStatus.SUCCESS
+    assert captured_kwargs.get("reasoning_effort") is None
