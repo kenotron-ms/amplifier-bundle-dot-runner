@@ -4,7 +4,10 @@ Spec coverage: ESEL-001–010, Section 3.3.
 """
 
 from amplifier_module_loop_pipeline.context import PipelineContext
-from amplifier_module_loop_pipeline.edge_selection import select_edge
+from amplifier_module_loop_pipeline.edge_selection import (
+    select_all_matching_edges,
+    select_edge,
+)
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
 
@@ -229,3 +232,85 @@ def test_preferred_label_beats_suggested_ids():
     selected = select_edge("A", outcome, PipelineContext(), graph)
     assert selected is not None
     assert selected.to_node == "B"
+
+
+# --- Multi-edge fan-out detection (select_all_matching_edges) ---
+
+
+def test_select_all_matching_edges_single_match():
+    """Single matching edge returns a list with one edge."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "a": Node(id="a", shape="box", prompt="A"),
+            "b": Node(id="b", shape="box", prompt="B"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a", condition="outcome=success"),
+            Edge(from_node="start", to_node="b", condition="outcome=fail"),
+        ],
+    )
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    context = PipelineContext()
+    edges = select_all_matching_edges("start", outcome, context, graph)
+    assert len(edges) == 1
+    assert edges[0].to_node == "a"
+
+
+def test_select_all_matching_edges_multi_match():
+    """Multiple edges with same condition returns all of them."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "a": Node(id="a", shape="box", prompt="A"),
+            "b": Node(id="b", shape="box", prompt="B"),
+            "c": Node(id="c", shape="box", prompt="C"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a", condition="outcome=success"),
+            Edge(from_node="start", to_node="b", condition="outcome=success"),
+            Edge(from_node="start", to_node="c", condition="outcome=success"),
+        ],
+    )
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    context = PipelineContext()
+    edges = select_all_matching_edges("start", outcome, context, graph)
+    assert len(edges) == 3
+    target_nodes = {e.to_node for e in edges}
+    assert target_nodes == {"a", "b", "c"}
+
+
+def test_select_all_matching_edges_no_match():
+    """No matching edges returns empty list."""
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "a": Node(id="a", shape="box", prompt="A"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="a", condition="outcome=fail"),
+        ],
+    )
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    context = PipelineContext()
+    edges = select_all_matching_edges("start", outcome, context, graph)
+    assert len(edges) == 0
+
+
+def test_select_all_matching_edges_no_outgoing():
+    """Node with no outgoing edges returns empty list."""
+    graph = Graph(
+        name="test",
+        nodes={"a": Node(id="a")},
+        edges=[],
+    )
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    context = PipelineContext()
+    edges = select_all_matching_edges("a", outcome, context, graph)
+    assert len(edges) == 0

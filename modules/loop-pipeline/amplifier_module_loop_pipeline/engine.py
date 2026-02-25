@@ -21,7 +21,7 @@ from typing import Any
 from .artifacts import ArtifactStore
 from .checkpoint import Checkpoint, load_checkpoint, save_checkpoint
 from .context import PipelineContext
-from .edge_selection import select_edge
+from .edge_selection import select_all_matching_edges, select_edge
 from .graph import Graph, Node
 from .handlers import HandlerRegistry
 from .outcome import Outcome, StageStatus
@@ -311,7 +311,42 @@ class PipelineEngine:
                 },
             )
 
-            # Step 5: Select next edge
+            # Step 5: Select next edge(s) — detect multi-edge fan-out
+            all_matching = select_all_matching_edges(
+                current_node.id, outcome, self.context, self.graph
+            )
+
+            if len(all_matching) > 1:
+                # Multi-edge fan-out: execute all targets in parallel
+                logger.info(
+                    "Multi-edge fan-out from '%s': %d parallel targets",
+                    current_node.id,
+                    len(all_matching),
+                )
+
+                await self._execute_parallel_fan_out(all_matching, pipeline_start_time)
+
+                # Find convergence node: the first node that all parallel
+                # targets share as a common outgoing edge target
+                fan_in_node_id = self._find_fan_in_node(
+                    [e.to_node for e in all_matching]
+                )
+                if fan_in_node_id is None:
+                    fail_outcome = Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason=(
+                            f"Multi-edge fan-out from '{current_node.id}' "
+                            f"has no convergence (fan-in) node"
+                        ),
+                    )
+                    await self._emit_complete(fail_outcome, pipeline_start_time)
+                    return fail_outcome
+
+                # Store parallel results in context for the fan-in node
+                current_node = self.graph.nodes[fan_in_node_id]
+                continue
+
+            # Single-edge selection (normal path)
             edge = select_edge(current_node.id, outcome, self.context, self.graph)
             if edge is None:
                 # Try failure routing: node/graph retry targets
@@ -708,6 +743,115 @@ class PipelineEngine:
         status_path = os.path.join(node_dir, "status.json")
         with open(status_path, "w") as f:
             json.dump(status, f, indent=2)
+
+    # -- Multi-edge parallel fan-out helpers -----------------------------------
+
+    async def _execute_parallel_fan_out(
+        self,
+        edges: list,
+        pipeline_start_time: float,
+    ) -> list[dict[str, Any]]:
+        """Execute multiple branch targets in parallel with isolated contexts.
+
+        Each branch gets a clone of the current context for isolation
+        (NLSpec Section 798). Results are collected and context_updates
+        from all branches are merged back into the main context.
+        """
+
+        async def run_branch(target_node_id: str) -> dict[str, Any]:
+            branch_context = self.context.clone()
+            node = self.graph.nodes[target_node_id]
+            handler = self.handler_registry.get(node)
+            handler_type = node.type or node.shape
+
+            await self._emit(
+                PIPELINE_NODE_START,
+                {"node_id": node.id, "handler_type": handler_type, "attempt": 1},
+            )
+
+            node_start = time.monotonic()
+            retry_policy = RetryPolicy.from_node(node, self.graph)
+
+            try:
+                outcome = await execute_with_retry(
+                    handler,
+                    node,
+                    branch_context,
+                    self.graph,
+                    self.logs_root,
+                    retry_policy,
+                    hooks=self.hooks,
+                )
+            except Exception as exc:
+                outcome = Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason=f"Parallel branch '{target_node_id}' raised: {exc}",
+                )
+
+            node_duration = (time.monotonic() - node_start) * 1000
+
+            # Record completion in the main engine state
+            self.completed_nodes.append(target_node_id)
+            self.node_outcomes[target_node_id] = outcome
+
+            await self._emit(
+                PIPELINE_NODE_COMPLETE,
+                {
+                    "node_id": target_node_id,
+                    "status": outcome.status.value,
+                    "duration_ms": node_duration,
+                },
+            )
+            self._write_node_status(target_node_id, outcome, node_duration)
+
+            return {
+                "node_id": target_node_id,
+                "status": outcome.status.value,
+                "notes": outcome.notes,
+                "failure_reason": outcome.failure_reason,
+                "context_updates": outcome.context_updates,
+            }
+
+        # Execute all branches concurrently
+        tasks = [run_branch(edge.to_node) for edge in edges]
+        results = list(await asyncio.gather(*tasks))
+
+        # Apply context_updates from all branches
+        for result in results:
+            updates = result.get("context_updates")
+            if updates:
+                self.context.update(updates)
+
+        return results
+
+    def _find_fan_in_node(self, parallel_target_ids: list[str]) -> str | None:
+        """Find the convergence node where all parallel branches meet.
+
+        Looks for a node that is an outgoing edge target from ALL
+        parallel target nodes (intersection of downstream neighbors).
+        """
+        if not parallel_target_ids:
+            return None
+
+        # Collect all outgoing edge targets from each parallel node
+        target_sets: list[set[str]] = []
+        for node_id in parallel_target_ids:
+            targets = {e.to_node for e in self.graph.outgoing_edges(node_id)}
+            target_sets.append(targets)
+
+        if not target_sets:
+            return None
+
+        # Fan-in node = intersection of all target sets
+        common = target_sets[0]
+        for ts in target_sets[1:]:
+            common = common & ts
+
+        if not common:
+            return None
+
+        # If multiple common targets, pick the first alphabetically
+        return sorted(common)[0]
 
     # -- Failure routing helpers ----------------------------------------------
 

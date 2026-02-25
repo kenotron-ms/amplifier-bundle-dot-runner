@@ -695,3 +695,210 @@ async def test_normal_edge_without_loop_restart(tmp_path):
     # All nodes are still in completed_nodes (not cleared)
     assert "start" in engine.completed_nodes
     assert "work" in engine.completed_nodes
+
+
+# --- Multi-edge parallel fan-out ---
+
+
+@pytest.mark.asyncio
+async def test_multi_edge_fan_out_executes_all_targets(tmp_path):
+    """Graph with node having 3 edges with same condition executes all three."""
+    executed_nodes: list[str] = []
+
+    class TrackingBackend:
+        async def run(self, node, prompt, context):
+            executed_nodes.append(node.id)
+            return Outcome(status=StageStatus.SUCCESS)
+
+    graph = Graph(
+        name="test-fanout",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "check": Node(id="check", shape="box", prompt="Check"),
+            "branch_a": Node(id="branch_a", shape="box", prompt="A"),
+            "branch_b": Node(id="branch_b", shape="box", prompt="B"),
+            "branch_c": Node(id="branch_c", shape="box", prompt="C"),
+            "consolidate": Node(id="consolidate", shape="box", prompt="Merge"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="check"),
+            # Multi-edge fan-out: same condition, three targets
+            Edge(from_node="check", to_node="branch_a", condition="outcome=success"),
+            Edge(from_node="check", to_node="branch_b", condition="outcome=success"),
+            Edge(from_node="check", to_node="branch_c", condition="outcome=success"),
+            # All branches converge on consolidate (fan-in)
+            Edge(from_node="branch_a", to_node="consolidate"),
+            Edge(from_node="branch_b", to_node="consolidate"),
+            Edge(from_node="branch_c", to_node="consolidate"),
+            Edge(from_node="consolidate", to_node="exit"),
+        ],
+    )
+
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=TrackingBackend())
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # All three branches should have been executed
+    assert "branch_a" in executed_nodes
+    assert "branch_b" in executed_nodes
+    assert "branch_c" in executed_nodes
+
+
+@pytest.mark.asyncio
+async def test_multi_edge_fan_out_detects_fan_in(tmp_path):
+    """Fan-in node E executes after parallel branches B, C, D complete."""
+    executed_nodes: list[str] = []
+
+    class TrackingBackend:
+        async def run(self, node, prompt, context):
+            executed_nodes.append(node.id)
+            return Outcome(status=StageStatus.SUCCESS)
+
+    graph = Graph(
+        name="test-fanin",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "A": Node(id="A", shape="box", prompt="A"),
+            "B": Node(id="B", shape="box", prompt="B"),
+            "C": Node(id="C", shape="box", prompt="C"),
+            "D": Node(id="D", shape="box", prompt="D"),
+            "E": Node(id="E", shape="box", prompt="E"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="A"),
+            # A fans out to B, C, D (same condition)
+            Edge(from_node="A", to_node="B", condition="outcome=success"),
+            Edge(from_node="A", to_node="C", condition="outcome=success"),
+            Edge(from_node="A", to_node="D", condition="outcome=success"),
+            # B, C, D all converge on E (fan-in)
+            Edge(from_node="B", to_node="E"),
+            Edge(from_node="C", to_node="E"),
+            Edge(from_node="D", to_node="E"),
+            Edge(from_node="E", to_node="exit"),
+        ],
+    )
+
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=TrackingBackend())
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # E (fan-in) should execute after B, C, D
+    assert "E" in executed_nodes
+    # B, C, D should all appear before E
+    e_index = executed_nodes.index("E")
+    assert "B" in executed_nodes[:e_index]
+    assert "C" in executed_nodes[:e_index]
+    assert "D" in executed_nodes[:e_index]
+
+
+@pytest.mark.asyncio
+async def test_multi_edge_single_match_still_works(tmp_path):
+    """When only one edge matches a condition, single-edge path is used."""
+    backend = SequenceBackend(
+        outcomes={
+            "check": Outcome(status=StageStatus.SUCCESS),
+        }
+    )
+
+    graph = Graph(
+        name="test-single",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "check": Node(id="check", shape="box", prompt="Check"),
+            "yes_path": Node(id="yes_path", shape="box", prompt="Yes"),
+            "no_path": Node(id="no_path", shape="box", prompt="No"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="check"),
+            Edge(from_node="check", to_node="yes_path", condition="outcome=success"),
+            Edge(from_node="check", to_node="no_path", condition="outcome=fail"),
+            Edge(from_node="yes_path", to_node="exit"),
+            Edge(from_node="no_path", to_node="exit"),
+        ],
+    )
+
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=backend)
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # Only yes_path should have been executed (single match)
+    assert "yes_path" in backend.calls
+    assert "no_path" not in backend.calls
+
+
+@pytest.mark.asyncio
+async def test_multi_edge_parallel_context_isolation(tmp_path):
+    """Each parallel branch gets its own context copy — mutations don't leak."""
+    seen_values: dict[str, str | None] = {}
+
+    class ContextMutatingBackend:
+        async def run(self, node, prompt, context):
+            if node.id == "branch_a":
+                context.set("branch_key", "from_a")
+                return Outcome(status=StageStatus.SUCCESS)
+            if node.id == "branch_b":
+                # branch_b should NOT see branch_a's mutation
+                seen_values["branch_b_saw"] = context.get("branch_key")
+                return Outcome(status=StageStatus.SUCCESS)
+            if node.id == "merge":
+                seen_values["merge_saw"] = context.get("branch_key")
+                return Outcome(status=StageStatus.SUCCESS)
+            return Outcome(status=StageStatus.SUCCESS)
+
+    graph = Graph(
+        name="test-isolation",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "check": Node(id="check", shape="box", prompt="Check"),
+            "branch_a": Node(id="branch_a", shape="box", prompt="A"),
+            "branch_b": Node(id="branch_b", shape="box", prompt="B"),
+            "merge": Node(id="merge", shape="box", prompt="Merge"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="check"),
+            Edge(from_node="check", to_node="branch_a", condition="outcome=success"),
+            Edge(from_node="check", to_node="branch_b", condition="outcome=success"),
+            Edge(from_node="branch_a", to_node="merge"),
+            Edge(from_node="branch_b", to_node="merge"),
+            Edge(from_node="merge", to_node="exit"),
+        ],
+    )
+
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=ContextMutatingBackend())
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # branch_b should NOT have seen branch_a's context mutation
+    assert seen_values.get("branch_b_saw") is None

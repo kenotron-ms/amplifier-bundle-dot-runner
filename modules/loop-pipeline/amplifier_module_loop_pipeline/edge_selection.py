@@ -68,6 +68,33 @@ def select_edge(
     return _best_by_weight_then_lexical(edges)
 
 
+def select_all_matching_edges(
+    node_id: str,
+    outcome: Outcome,
+    context: PipelineContext,
+    graph: Graph,
+) -> list[Edge]:
+    """Return ALL condition-matching edges from a node's outgoing edges.
+
+    Unlike select_edge() which returns the single best edge, this returns
+    every edge whose condition evaluates to True. Used by the engine to
+    detect multi-edge fan-out patterns (parallel execution).
+
+    Returns an empty list if no edges have matching conditions.
+    """
+    edges = graph.outgoing_edges(node_id)
+    if not edges:
+        return []
+
+    # All condition-matching edges
+    condition_matched = [
+        e
+        for e in edges
+        if e.condition and evaluate_condition(e.condition, outcome, context)
+    ]
+    return condition_matched
+
+
 def _best_by_weight_then_lexical(edges: list[Edge]) -> Edge:
     """Sort by weight descending, then target node ID ascending."""
     return sorted(edges, key=lambda e: (-e.weight, e.to_node))[0]
