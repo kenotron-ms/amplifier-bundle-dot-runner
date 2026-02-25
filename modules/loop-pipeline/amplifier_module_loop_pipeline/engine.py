@@ -69,6 +69,7 @@ class PipelineEngine:
         self.hooks = hooks
         self.node_outcomes: dict[str, Outcome] = {}
         self.completed_nodes: list[str] = []
+        self.iteration_count: int = 0
         self._checkpoint_path = os.path.join(logs_root, "checkpoint.json")
         self.artifact_store = ArtifactStore(base_dir=logs_root)
 
@@ -354,7 +355,27 @@ class PipelineEngine:
                 },
             )
 
-            # Step 6: Advance to next node
+            # Step 6: Handle loop_restart edge attribute (NLSpec Section 174)
+            if edge.loop_restart is True:
+                self.iteration_count += 1
+                iteration_dir = os.path.join(
+                    self.logs_root, f"iteration_{self.iteration_count}"
+                )
+                os.makedirs(iteration_dir, exist_ok=True)
+                logger.info(
+                    "loop_restart: iteration %d, fresh log dir '%s', "
+                    "continuing from '%s'",
+                    self.iteration_count,
+                    iteration_dir,
+                    edge.to_node,
+                )
+                # Reset engine state for clean re-execution
+                self.completed_nodes.clear()
+                self.node_outcomes.clear()
+                goal_gate_retries = 0
+                failure_routing_retries = 0
+
+            # Step 7: Advance to next node
             current_node = self.graph.nodes[edge.to_node]
 
     async def _run_from(

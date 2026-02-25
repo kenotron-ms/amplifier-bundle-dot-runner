@@ -555,3 +555,143 @@ async def test_engine_mdiamond_takes_priority_over_node_type(tmp_path):
     )
     start = engine._find_start_node()
     assert start.id == "real_start", "Mdiamond should take priority over node_type"
+
+
+# --- loop_restart edge handling ---
+
+
+class LoopOnceBackend:
+    """Backend that triggers loop_restart on first call to 'work', then succeeds."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def run(self, node, prompt, context):
+        self.calls.append(node.id)
+        if node.id == "work" and self.calls.count("work") == 1:
+            return Outcome(status=StageStatus.SUCCESS, preferred_label="loop")
+        return Outcome(status=StageStatus.SUCCESS)
+
+
+def _make_loop_restart_graph() -> Graph:
+    """Build a graph with a loop_restart edge: start -> work -[loop]-> work -> exit."""
+    return Graph(
+        name="test-loop",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "work": Node(id="work", shape="box", prompt="Do work"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(
+                from_node="work",
+                to_node="work",
+                condition="preferred_label=loop",
+                loop_restart=True,
+            ),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_loop_restart_re_executes_target_node(tmp_path):
+    """loop_restart=true on an edge causes the engine to re-execute the target node."""
+    backend = LoopOnceBackend()
+    graph = _make_loop_restart_graph()
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=backend)
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # "work" was executed twice: once before loop_restart, once after
+    assert backend.calls.count("work") == 2
+    # completed_nodes was cleared by loop_restart; "start" from the
+    # first iteration should no longer be present
+    assert "start" not in engine.completed_nodes
+
+
+@pytest.mark.asyncio
+async def test_loop_restart_resets_retry_counters(tmp_path):
+    """loop_restart clears node_outcomes (retry tracking) for clean re-execution."""
+    backend = LoopOnceBackend()
+    graph = _make_loop_restart_graph()
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=backend)
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    await engine.run()
+
+    # node_outcomes was cleared by loop_restart; only last-iteration outcomes remain.
+    # "start" from the first iteration should not be in node_outcomes.
+    assert "start" not in engine.node_outcomes
+    # "work" from the second iteration should still be present
+    assert "work" in engine.node_outcomes
+
+
+@pytest.mark.asyncio
+async def test_loop_restart_increments_iteration_counter(tmp_path):
+    """loop_restart increments iteration_count and creates a fresh log directory."""
+    backend = LoopOnceBackend()
+    graph = _make_loop_restart_graph()
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=backend)
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    await engine.run()
+
+    # Iteration counter should have been incremented once
+    assert engine.iteration_count == 1
+    # A fresh log subdirectory should have been created
+    assert (tmp_path / "iteration_1").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_normal_edge_without_loop_restart(tmp_path):
+    """Normal edges (without loop_restart) don't reset state or increment counter."""
+    backend = MockBackend("done")
+    graph = Graph(
+        name="test",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "work": Node(id="work", shape="box", prompt="Do work"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="work"),
+            Edge(from_node="work", to_node="exit"),
+        ],
+    )
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=backend)
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # No loop restart occurred
+    assert engine.iteration_count == 0
+    # "work" was only executed once
+    assert backend.calls.count("work") == 1
+    # All nodes are still in completed_nodes (not cleared)
+    assert "start" in engine.completed_nodes
+    assert "work" in engine.completed_nodes
