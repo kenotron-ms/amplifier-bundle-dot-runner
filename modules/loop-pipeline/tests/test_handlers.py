@@ -417,6 +417,63 @@ def test_registry_custom_handler_registration():
     assert isinstance(handler, CustomHandler)
 
 
+# --- node_type fallback dispatch ---
+
+
+def test_registry_node_type_fallback():
+    """node_type attribute is used as fallback when type is empty."""
+    registry = HandlerRegistry()
+    # node_type="conditional" should resolve to ConditionalHandler
+    node = Node(id="x", shape="box", type="", attrs={"node_type": "conditional"})
+    handler = registry.get(node)
+    assert isinstance(handler, ConditionalHandler)
+
+
+def test_registry_node_type_unknown_falls_to_shape():
+    """Unknown node_type (e.g. stack.observe) falls through to shape-based lookup."""
+    registry = HandlerRegistry()
+    # node_type="stack.observe" is NOT a registered handler type
+    # shape=box -> codergen
+    node = Node(id="x", shape="box", type="", attrs={"node_type": "stack.observe"})
+    handler = registry.get(node)
+    assert isinstance(handler, CodergenHandler)
+
+
+def test_registry_node_type_steer_falls_to_shape():
+    """Unknown node_type (stack.steer) falls through to shape-based lookup."""
+    registry = HandlerRegistry()
+    node = Node(id="x", shape="box", type="", attrs={"node_type": "stack.steer"})
+    handler = registry.get(node)
+    assert isinstance(handler, CodergenHandler)
+
+
+def test_registry_type_takes_priority_over_node_type():
+    """Explicit type= attribute takes priority over node_type."""
+    registry = HandlerRegistry()
+    node = Node(
+        id="x", shape="box", type="conditional", attrs={"node_type": "codergen"}
+    )
+    handler = registry.get(node)
+    assert isinstance(handler, ConditionalHandler)
+
+
+def test_registry_node_type_takes_priority_over_shape():
+    """node_type takes priority over shape-based lookup."""
+    registry = HandlerRegistry()
+    # shape=box -> codergen, but node_type="tool" should override to ToolHandler
+    node = Node(id="x", shape="box", type="", attrs={"node_type": "tool"})
+    handler = registry.get(node)
+    assert isinstance(handler, ToolHandler)
+
+
+def test_registry_no_type_no_node_type_uses_shape():
+    """When neither type nor node_type is set, shape-based lookup works as before."""
+    registry = HandlerRegistry()
+    node = Node(id="x", shape="diamond")
+    handler = registry.get(node)
+    assert isinstance(handler, ConditionalHandler)
+
+
 def test_registry_register_replaces_existing():
     """Registering for an existing type replaces the handler (HAND-006)."""
     registry = HandlerRegistry()

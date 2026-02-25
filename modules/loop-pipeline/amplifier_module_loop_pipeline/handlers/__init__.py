@@ -81,10 +81,20 @@ class HandlerRegistry:
     def get(self, node: Node) -> NodeHandler:
         """Resolve the handler for a node.
 
-        Uses the node's explicit type first, then shape mapping,
-        falling back to codergen.
+        Resolution order:
+        1. Node's explicit ``type`` attribute (highest priority)
+        2. ``node_type`` attribute if it matches a registered handler
+        3. Shape-to-handler-type mapping (lowest priority, default codergen)
         """
-        handler_type = node.type or SHAPE_TO_HANDLER.get(node.shape, "codergen")
+        if node.type:
+            handler_type = node.type
+        else:
+            # Fallback: check node_type attr for recognized handler types
+            node_type_attr = node.attrs.get("node_type")
+            if node_type_attr and node_type_attr in self._handlers:
+                handler_type = node_type_attr
+            else:
+                handler_type = SHAPE_TO_HANDLER.get(node.shape, "codergen")
         return self._handlers.get(handler_type, self._handlers["codergen"])
 
     def register(self, handler_type: str, handler: NodeHandler) -> None:
