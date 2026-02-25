@@ -8,6 +8,7 @@ authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
+    "amplifier-core>=0.1.0",
     "unified-llm-client",
 ]
 
@@ -23,8 +24,7 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
-[tool.uv.sources]
-unified-llm-client = { path = "../../../unified-llm-client" }
+
 
 [tool.hatch.build.targets.wheel]
 packages = [
