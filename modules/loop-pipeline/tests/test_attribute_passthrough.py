@@ -1,17 +1,19 @@
-"""Tests for reasoning_effort attribute passthrough across all backend paths.
+"""Tests for DOT node attribute passthrough across all backend paths.
 
-Verifies that the ``reasoning_effort`` DOT node attribute flows correctly
-through three distinct execution paths:
+Covers:
+- **reasoning_effort**: Passes through all three execution paths with all
+  valid values ("low", "medium", "high") and default (None).
+- **max_agent_turns**: Passes through all three execution paths as
+  ``max_tool_rounds`` (int-converted) for generate() and ``max_turns``
+  (int-converted) in ``orchestrator_config`` for spawn.
+- **allow_partial**: Already implemented in ``retry.py`` (lines 264-269)
+  and tested in ``test_retry.py::test_allow_partial_on_exhaustion``.
+  No additional tests needed here — see RETRY-005.
 
-- **Path A (spawn)**: ``AmplifierBackend._run_with_spawn()`` passes
-  ``reasoning_effort`` inside ``orchestrator_config`` to the spawn call.
-- **Path B (tool loop)**: ``AmplifierBackend._run_with_tool_loop()`` passes
-  ``reasoning_effort`` as a kwarg to ``unified_llm.generate()``.
-- **DirectProviderBackend**: ``DirectProviderBackend.run()`` passes
-  ``reasoning_effort`` as a kwarg to ``unified_llm.generate()``.
-
-Covers: all three valid values ("low", "medium", "high") and the default
-(None when not set).
+Execution paths tested:
+- **Path A (spawn)**: ``AmplifierBackend._run_with_spawn()``
+- **Path B (tool loop)**: ``AmplifierBackend._run_with_tool_loop()``
+- **DirectProviderBackend**: ``DirectProviderBackend.run()``
 """
 
 import sys
