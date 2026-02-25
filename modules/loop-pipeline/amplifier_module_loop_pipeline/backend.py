@@ -126,6 +126,10 @@ class AmplifierBackend:
         provider = node.attrs.get("llm_provider", "anthropic")
         model = node.attrs.get("llm_model")
         reasoning_effort = node.attrs.get("reasoning_effort")
+        max_agent_turns_raw = node.attrs.get("max_agent_turns")
+        max_agent_turns = (
+            int(max_agent_turns_raw) if max_agent_turns_raw is not None else None
+        )
         profile_name = self._profiles.get(
             provider, next(iter(self._profiles.values()), "")
         )
@@ -152,6 +156,7 @@ class AmplifierBackend:
                 provider,
                 model,
                 reasoning_effort,
+                max_agent_turns,
                 profile_name,
                 fidelity,
                 incoming_edge,
@@ -168,12 +173,14 @@ class AmplifierBackend:
                     node,
                     instruction,
                     reasoning_effort,
+                    max_agent_turns,
                 )
         elif self._provider is not None:
             outcome = await self._run_with_tool_loop(
                 node,
                 instruction,
                 reasoning_effort,
+                max_agent_turns,
             )
         else:
             return Outcome(
@@ -201,6 +208,7 @@ class AmplifierBackend:
         provider: str,
         model: str | None,
         reasoning_effort: str | None,
+        max_agent_turns: int | None,
         profile_name: str,
         fidelity: str,
         incoming_edge: Edge | None,
@@ -225,6 +233,7 @@ class AmplifierBackend:
             "agent_configs": agent_configs,
             "orchestrator_config": {
                 "reasoning_effort": reasoning_effort,
+                "max_turns": max_agent_turns,
             },
         }
         if model:
@@ -293,6 +302,7 @@ class AmplifierBackend:
         node: Node,
         instruction: str,
         reasoning_effort: str | None,
+        max_agent_turns: int | None = None,
     ) -> Outcome:
         """Execute via unified_llm.generate() (no child session).
 
@@ -338,7 +348,9 @@ class AmplifierBackend:
                 model=model,
                 prompt=instruction,
                 tools=tools or None,
-                max_tool_rounds=_MAX_TOOL_LOOP_ROUNDS,
+                max_tool_rounds=max_agent_turns
+                if max_agent_turns is not None
+                else _MAX_TOOL_LOOP_ROUNDS,
                 reasoning_effort=reasoning_effort,
                 provider=provider_name,
                 client=client,

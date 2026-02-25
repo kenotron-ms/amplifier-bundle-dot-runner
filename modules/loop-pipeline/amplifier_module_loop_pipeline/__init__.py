@@ -94,7 +94,7 @@ class DirectProviderBackend:
                 node, incoming_edge, graph, self._last_node_id
             )
 
-        # Resolve model, provider, tools, reasoning
+        # Resolve model, provider, tools, reasoning, max_agent_turns
         model = _resolve_model(node)
         provider_name = (
             node.llm_provider
@@ -102,6 +102,10 @@ class DirectProviderBackend:
             else node.attrs.get("llm_provider", "anthropic")
         )
         reasoning_effort = node.attrs.get("reasoning_effort")
+        max_agent_turns_raw = node.attrs.get("max_agent_turns")
+        max_agent_turns = (
+            int(max_agent_turns_raw) if max_agent_turns_raw is not None else None
+        )
         tools = _build_unified_tools(self._tools)
         client = self._get_or_create_unified_client()
 
@@ -109,7 +113,9 @@ class DirectProviderBackend:
         generate_kwargs: dict[str, Any] = dict(
             model=model,
             tools=tools or None,
-            max_tool_rounds=_MAX_TOOL_LOOP_ROUNDS,
+            max_tool_rounds=max_agent_turns
+            if max_agent_turns is not None
+            else _MAX_TOOL_LOOP_ROUNDS,
             reasoning_effort=reasoning_effort,
             provider=provider_name,
             client=client,

@@ -287,3 +287,151 @@ async def test_direct_backend_reasoning_effort_defaults_to_none(
 
     assert result.status.value == "success"
     assert captured.get("reasoning_effort") is None
+
+
+# ===================================================================
+# Path A: AmplifierBackend spawn — max_agent_turns in orchestrator_config
+# ===================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turns", ["2", "8", "25"])
+async def test_spawn_passes_max_agent_turns(turns: str) -> None:
+    """max_agent_turns from node attrs reaches orchestrator_config as int."""
+    coordinator = MockCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node = _make_node(attrs={"llm_provider": "anthropic", "max_agent_turns": turns})
+    await backend.run(node, "task", _make_context())
+
+    assert coordinator.spawn_called
+    orch_config = coordinator.last_spawn_kwargs.get("orchestrator_config", {})
+    assert orch_config.get("max_turns") == int(turns)
+
+
+@pytest.mark.asyncio
+async def test_spawn_max_agent_turns_defaults_to_none() -> None:
+    """Without max_agent_turns in node attrs, None reaches orchestrator_config."""
+    coordinator = MockCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node = _make_node(attrs={"llm_provider": "anthropic"})
+    await backend.run(node, "task", _make_context())
+
+    assert coordinator.spawn_called
+    orch_config = coordinator.last_spawn_kwargs.get("orchestrator_config", {})
+    assert orch_config.get("max_turns") is None
+
+
+# ===================================================================
+# Path B: AmplifierBackend tool loop — max_agent_turns as max_tool_rounds
+# ===================================================================
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_passes_max_agent_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """max_agent_turns='8' in node attrs reaches generate() as max_tool_rounds=8."""
+    captured: dict[str, Any] = {}
+
+    async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
+        captured.update(kwargs)
+        return _make_generate_result("done")
+
+    monkeypatch.setattr(unified_llm, "generate", _fake_generate)
+
+    coordinator = NoSpawnCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),
+    )
+    node = _make_node(attrs={"llm_provider": "test", "max_agent_turns": "8"})
+    result = await backend.run(node, "task", _make_context())
+
+    assert result.status.value == "success"
+    assert captured.get("max_tool_rounds") == 8
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_max_agent_turns_defaults_to_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without max_agent_turns, max_tool_rounds defaults to _MAX_TOOL_LOOP_ROUNDS (20)."""
+    captured: dict[str, Any] = {}
+
+    async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
+        captured.update(kwargs)
+        return _make_generate_result("done")
+
+    monkeypatch.setattr(unified_llm, "generate", _fake_generate)
+
+    coordinator = NoSpawnCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),
+    )
+    node = _make_node(attrs={"llm_provider": "test"})
+    result = await backend.run(node, "task", _make_context())
+
+    assert result.status.value == "success"
+    assert captured.get("max_tool_rounds") == 20
+
+
+# ===================================================================
+# DirectProviderBackend — max_agent_turns as max_tool_rounds
+# ===================================================================
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_passes_max_agent_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DirectProviderBackend forwards max_agent_turns='8' as max_tool_rounds=8."""
+    captured: dict[str, Any] = {}
+
+    async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
+        captured.update(kwargs)
+        return _make_generate_result("done")
+
+    monkeypatch.setattr(unified_llm, "generate", _fake_generate)
+
+    backend = DirectProviderBackend(provider=object())
+    node = _make_node(
+        attrs={
+            "llm_provider": "test",
+            "llm_model": "test-model",
+            "max_agent_turns": "8",
+        }
+    )
+    result = await backend.run(node, "task", _make_context())
+
+    assert result.status.value == "success"
+    assert captured.get("max_tool_rounds") == 8
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_max_agent_turns_defaults_to_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DirectProviderBackend uses _MAX_TOOL_LOOP_ROUNDS (20) when not set."""
+    captured: dict[str, Any] = {}
+
+    async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
+        captured.update(kwargs)
+        return _make_generate_result("done")
+
+    monkeypatch.setattr(unified_llm, "generate", _fake_generate)
+
+    backend = DirectProviderBackend(provider=object())
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "task", _make_context())
+
+    assert result.status.value == "success"
+    assert captured.get("max_tool_rounds") == 20
