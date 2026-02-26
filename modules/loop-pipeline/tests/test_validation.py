@@ -887,3 +887,31 @@ def test_exit_no_outgoing_alternative_convention():
     )
     diags = validate(g)
     assert any(d.severity == "ERROR" and d.rule == "exit_no_outgoing" for d in diags)
+
+
+# --- folder shape -> pipeline mapping ---
+
+
+def test_folder_shape_maps_to_pipeline():
+    """SHAPE_TO_HANDLER must map 'folder' to 'pipeline'."""
+    from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER
+
+    assert SHAPE_TO_HANDLER["folder"] == "pipeline"
+
+
+def test_folder_node_type_known():
+    """A node with shape=folder should not trigger a type_known warning."""
+    graph = _make_graph(
+        nodes_extra=[
+            Node(id="sub", shape="folder", label="Sub-pipeline"),
+        ],
+        edges_extra=[
+            Edge(from_node="work", to_node="sub"),
+            Edge(from_node="sub", to_node="done"),
+        ],
+    )
+    diags = validate(graph)
+    type_diags = [d for d in diags if d.rule == "type_known"]
+    assert len(type_diags) == 0, (
+        f"folder node should not trigger type_known warning, got: {type_diags}"
+    )

@@ -32,6 +32,7 @@ SHAPE_TO_HANDLER: dict[str, str] = {
     "tripleoctagon": "parallel.fan_in",
     "parallelogram": "tool",
     "house": "stack.manager_loop",
+    "folder": "pipeline",
 }
 
 # Shapes that map to LLM/codergen handler
