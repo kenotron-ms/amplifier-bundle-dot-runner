@@ -346,3 +346,76 @@ class TestPipelineHandlerRegistration:
         node = Node(id="sub", shape="box", type="pipeline")
         handler = registry.get(node)
         assert isinstance(handler, PipelineHandler)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end tests: parent DOT referencing child DOT via fixtures
+# ---------------------------------------------------------------------------
+
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+class TestPipelineHandlerE2E:
+    """End-to-end tests using fixture DOT files for parent-child pipelines."""
+
+    @pytest.mark.asyncio
+    async def test_full_pipeline_with_child_dot(self, tmp_path):
+        """Full engine run of parent_with_child.dot returns SUCCESS."""
+        from amplifier_module_loop_pipeline.dot_parser import parse_dot
+        from amplifier_module_loop_pipeline.engine import PipelineEngine
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+
+        parent_dot_path = os.path.join(FIXTURES_DIR, "parent_with_child.dot")
+        with open(parent_dot_path) as f:
+            dot_source = f.read()
+
+        graph = parse_dot(dot_source)
+        graph.source_dir = FIXTURES_DIR
+
+        context = PipelineContext()
+        registry = HandlerRegistry()
+        logs_root = str(tmp_path / "logs")
+
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=registry,
+            logs_root=logs_root,
+        )
+        outcome = await engine.run()
+
+        assert outcome.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_child_creates_log_subdirectory(self, tmp_path):
+        """Child logs directory subgraph_review/ is created with manifest.json."""
+        from amplifier_module_loop_pipeline.dot_parser import parse_dot
+        from amplifier_module_loop_pipeline.engine import PipelineEngine
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+
+        parent_dot_path = os.path.join(FIXTURES_DIR, "parent_with_child.dot")
+        with open(parent_dot_path) as f:
+            dot_source = f.read()
+
+        graph = parse_dot(dot_source)
+        graph.source_dir = FIXTURES_DIR
+
+        context = PipelineContext()
+        registry = HandlerRegistry()
+        logs_root = str(tmp_path / "logs")
+
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=registry,
+            logs_root=logs_root,
+        )
+        await engine.run()
+
+        subgraph_dir = os.path.join(logs_root, "subgraph_review")
+        assert os.path.isdir(subgraph_dir)
+        manifest_path = os.path.join(subgraph_dir, "manifest.json")
+        assert os.path.exists(manifest_path)
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        assert "graph_name" in manifest
