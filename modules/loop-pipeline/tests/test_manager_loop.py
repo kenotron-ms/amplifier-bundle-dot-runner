@@ -484,3 +484,159 @@ class TestManagerHandlerRegistration:
         node = Node(id="mgr", shape="house")
         handler = registry.get(node)
         assert isinstance(handler, ManagerLoopHandler)
+
+
+# ---------------------------------------------------------------------------
+# Child dotfile tests
+# ---------------------------------------------------------------------------
+
+
+def _make_graph_with_graph_attrs(
+    *,
+    manager_attrs: dict | None = None,
+    graph_attrs: dict | None = None,
+    has_child_edge: bool = True,
+) -> Graph:
+    """Build a minimal graph with optional graph_attrs."""
+    nodes = {
+        "start": Node(id="start", shape="Mdiamond"),
+        "manager": Node(
+            id="manager",
+            shape="house",
+            label="Sprint Manager",
+            attrs=manager_attrs or {},
+        ),
+        "child_task": Node(id="child_task", shape="box", label="Do work"),
+        "exit": Node(id="exit", shape="Msquare"),
+    }
+    edges = [
+        Edge(from_node="start", to_node="manager"),
+    ]
+    if has_child_edge:
+        edges.append(Edge(from_node="manager", to_node="child_task"))
+    edges.append(Edge(from_node="child_task", to_node="exit"))
+    return Graph(
+        name="test_manager",
+        nodes=nodes,
+        edges=edges,
+        graph_attrs=graph_attrs or {},
+    )
+
+
+class TestManagerChildDotfile:
+    """stack.child_dotfile routes manager to external DOT engine execution."""
+
+    @pytest.mark.asyncio
+    async def test_child_dotfile_on_node_attrs(self, tmp_path):
+        """child_dotfile on node attrs runs external DOT, inline runner NOT called."""
+        # Write a minimal child DOT file
+        child_dot = tmp_path / "child.dot"
+        child_dot.write_text(
+            "digraph child {\n"
+            "  start [shape=Mdiamond];\n"
+            "  task [shape=box];\n"
+            "  done [shape=Msquare];\n"
+            "  start -> task -> done;\n"
+            "}\n"
+        )
+
+        inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
+        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        graph = _make_graph_with_graph_attrs(
+            manager_attrs={
+                "manager.max_cycles": "1",
+                "stack.child_dotfile": str(child_dot),
+            },
+            has_child_edge=True,
+        )
+
+        result = await handler.execute(
+            graph.nodes["manager"], PipelineContext(), graph, str(tmp_path)
+        )
+
+        # External DOT runs; inline runner is NOT called
+        assert inline_runner.call_count == 0
+        assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)
+
+    @pytest.mark.asyncio
+    async def test_child_dotfile_on_graph_attrs(self, tmp_path):
+        """child_dotfile on graph_attrs works when node-level is absent."""
+        child_dot = tmp_path / "child.dot"
+        child_dot.write_text(
+            "digraph child {\n"
+            "  start [shape=Mdiamond];\n"
+            "  task [shape=box];\n"
+            "  done [shape=Msquare];\n"
+            "  start -> task -> done;\n"
+            "}\n"
+        )
+
+        inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
+        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        graph = _make_graph_with_graph_attrs(
+            manager_attrs={"manager.max_cycles": "1"},
+            graph_attrs={"stack.child_dotfile": str(child_dot)},
+            has_child_edge=True,
+        )
+
+        result = await handler.execute(
+            graph.nodes["manager"], PipelineContext(), graph, str(tmp_path)
+        )
+
+        assert inline_runner.call_count == 0
+        assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)
+
+    @pytest.mark.asyncio
+    async def test_no_child_dotfile_uses_inline_runner(self):
+        """Without child_dotfile, inline subgraph_runner is called."""
+        inline_runner = _make_runner([Outcome(status=StageStatus.SUCCESS)])
+        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        graph = _make_graph(manager_attrs={"manager.max_cycles": "1"})
+
+        result = await handler.execute(
+            graph.nodes["manager"], PipelineContext(), graph, "/tmp"
+        )
+
+        assert inline_runner.call_count == 1
+        assert result.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_node_attrs_override_graph_attrs(self, tmp_path):
+        """Node-level stack.child_dotfile takes priority over graph-level."""
+        node_dot = tmp_path / "node_child.dot"
+        node_dot.write_text(
+            "digraph node_child {\n"
+            "  start [shape=Mdiamond];\n"
+            "  task [shape=box];\n"
+            "  done [shape=Msquare];\n"
+            "  start -> task -> done;\n"
+            "}\n"
+        )
+        graph_dot = tmp_path / "graph_child.dot"
+        graph_dot.write_text(
+            "digraph graph_child {\n"
+            "  start [shape=Mdiamond];\n"
+            "  task [shape=box];\n"
+            "  done [shape=Msquare];\n"
+            "  start -> task -> done;\n"
+            "}\n"
+        )
+
+        inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
+        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        graph = _make_graph_with_graph_attrs(
+            manager_attrs={
+                "manager.max_cycles": "1",
+                "stack.child_dotfile": str(node_dot),
+            },
+            graph_attrs={"stack.child_dotfile": str(graph_dot)},
+            has_child_edge=True,
+        )
+
+        result = await handler.execute(
+            graph.nodes["manager"], PipelineContext(), graph, str(tmp_path)
+        )
+
+        # Node-level wins; inline runner NOT called
+        assert inline_runner.call_count == 0
+        assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)

@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Any, Callable, Coroutine
 
 from ..conditions import evaluate_condition
 from ..context import PipelineContext
+from ..dot_parser import parse_dot
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
 
@@ -126,27 +128,37 @@ class ManagerLoopHandler:
 
         # -- Validate prerequisites ---------------------------------------------
         child_edges = graph.outgoing_edges(node.id)
-        if not child_edges:
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason="Manager loop has no child to supervise",
-            )
 
-        if self._runner is None:
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason="Manager loop requires a subgraph_runner",
-            )
+        child_start_id = child_edges[0].to_node if child_edges else ""
 
-        child_start_id = child_edges[0].to_node
+        # Resolve child_dotfile: node-level first, then graph-level
+        child_dotfile = (
+            node.attrs.get("stack.child_dotfile")
+            or graph.graph_attrs.get("stack.child_dotfile")
+            or ""
+        )
+
+        if not child_dotfile:
+            # Without child_dotfile, require outgoing edges and runner
+            if not child_edges:
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason="Manager loop has no child to supervise",
+                )
+            if self._runner is None:
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason="Manager loop requires a subgraph_runner",
+                )
 
         logger.info(
-            "Manager '%s': max_cycles=%d, poll=%.1fs, actions=%s, child=%s",
+            "Manager '%s': max_cycles=%d, poll=%.1fs, actions=%s, child=%s, child_dotfile=%s",
             node.id,
             max_cycles,
             poll_interval_s,
             actions,
             child_start_id,
+            child_dotfile or "(none)",
         )
 
         # -- Observation loop ---------------------------------------------------
@@ -164,9 +176,15 @@ class ManagerLoopHandler:
                 child_context.set("manager.steering", steering)
 
             try:
-                child_outcome = await self._runner(
-                    child_start_id, child_context, graph, logs_root
-                )
+                if child_dotfile:
+                    child_outcome = await self._run_child_dotfile(
+                        child_dotfile, child_context, graph, logs_root, node.id, cycle
+                    )
+                else:
+                    assert self._runner is not None
+                    child_outcome = await self._runner(
+                        child_start_id, child_context, graph, logs_root
+                    )
             except Exception as exc:
                 logger.warning(
                     "Manager '%s' cycle %d: child raised %s",
@@ -223,3 +241,78 @@ class ManagerLoopHandler:
                 "manager.cycles": max_cycles,
             },
         )
+
+    async def _run_child_dotfile(
+        self,
+        child_dotfile: str,
+        child_context: PipelineContext,
+        graph: Graph,
+        logs_root: str,
+        manager_node_id: str,
+        cycle: int,
+    ) -> Outcome:
+        """Run a child pipeline from an external DOT file.
+
+        Mirrors PipelineHandler-style child engine execution:
+        resolve path, read DOT, parse, create child engine, run.
+        """
+        # Lazy imports to avoid circular dependencies
+        from ..engine import PipelineEngine
+        from . import HandlerRegistry
+        from .pipeline import resolve_dot_path
+
+        # Resolve the DOT file path
+        resolved_path = resolve_dot_path(child_dotfile, graph.source_dir, child_context)
+
+        # Read the DOT file
+        try:
+            with open(resolved_path) as f:
+                dot_source = f.read()
+        except FileNotFoundError:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=f"Child DOT file not found: {resolved_path}",
+            )
+
+        # Parse DOT source
+        try:
+            child_graph = parse_dot(dot_source)
+        except ValueError as exc:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=f"Failed to parse child DOT: {exc}",
+            )
+
+        # Set source_dir for nested resolution
+        child_graph.source_dir = os.path.dirname(resolved_path)
+
+        # Create child logs directory
+        child_logs = os.path.join(
+            logs_root, f"subgraph_{manager_node_id}_cycle_{cycle}"
+        )
+        os.makedirs(child_logs, exist_ok=True)
+
+        # Create child HandlerRegistry and PipelineEngine
+        child_registry = HandlerRegistry()
+        child_engine = PipelineEngine(
+            graph=child_graph,
+            context=child_context,
+            handler_registry=child_registry,
+            logs_root=child_logs,
+        )
+
+        # Run child engine
+        try:
+            outcome = await child_engine.run()
+        except Exception as exc:
+            logger.exception(
+                "Manager '%s' cycle %d: child dotfile pipeline failed",
+                manager_node_id,
+                cycle,
+            )
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=f"Child pipeline exception: {exc}",
+            )
+
+        return outcome
