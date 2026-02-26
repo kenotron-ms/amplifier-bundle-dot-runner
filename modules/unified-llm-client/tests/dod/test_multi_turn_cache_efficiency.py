@@ -122,6 +122,8 @@ TURN_PROMPTS = [
 ]
 
 PROVIDER_MODELS = {
+    # claude-sonnet-4-6 does NOT honor cache_control breakpoints (0 cache_write).
+    # Use the dated version which supports explicit prompt caching.
     "anthropic": "claude-sonnet-4-20250514",
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.0-flash",
