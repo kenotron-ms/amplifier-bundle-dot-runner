@@ -290,6 +290,7 @@ class Graph:
     dot_source: str = ""
     default_max_retry: int = 50
     model_stylesheet: str = ""
+    source_dir: str = ""  # Directory of the DOT file that produced this graph
     graph_attrs: dict[str, str] = field(default_factory=dict)
 
     # Promoted graph attributes (L-6) -- all optional, default None

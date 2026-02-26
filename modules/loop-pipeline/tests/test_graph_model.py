@@ -289,3 +289,18 @@ def test_graph_attrs_from_dict_promotes():
     )
     assert graph.retry_target == "plan"
     assert graph.graph_attrs.get("rankdir") == "LR"
+
+
+# --- source_dir field ---
+
+
+def test_graph_source_dir_defaults_to_empty():
+    """Graph.source_dir should default to empty string."""
+    graph = Graph(name="test", nodes={}, edges=[])
+    assert graph.source_dir == ""
+
+
+def test_graph_source_dir_set():
+    """Graph.source_dir should be settable via constructor."""
+    graph = Graph(name="test", nodes={}, edges=[], source_dir="/some/path")
+    assert graph.source_dir == "/some/path"
