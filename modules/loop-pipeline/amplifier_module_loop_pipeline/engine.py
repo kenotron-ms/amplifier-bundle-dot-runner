@@ -814,8 +814,9 @@ class PipelineEngine:
 
         async def run_branch(target_node_id: str) -> dict[str, Any]:
             branch_context = self.context.clone()
+            branch_registry = self.handler_registry.clone_for_branch()
             node = self.graph.nodes[target_node_id]
-            handler = self.handler_registry.get(node)
+            handler = branch_registry.get(node)
             handler_type = node.type or node.shape
 
             await self._emit(

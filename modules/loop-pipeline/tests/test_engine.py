@@ -3,6 +3,9 @@
 Spec coverage: EXEC-001–018, Section 3.2.
 """
 
+import asyncio
+import time
+
 import pytest
 
 from amplifier_module_loop_pipeline.context import PipelineContext
@@ -902,3 +905,116 @@ async def test_multi_edge_parallel_context_isolation(tmp_path):
     assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
     # branch_b should NOT have seen branch_a's context mutation
     assert seen_values.get("branch_b_saw") is None
+
+
+# --- Parallel fan-out: concurrency timing and clone-per-branch isolation ---
+
+
+@pytest.mark.asyncio
+async def test_parallel_fan_out_branches_run_concurrently(tmp_path):
+    """Three parallel branches each sleeping 0.2s finish in < 0.5s wall-clock."""
+
+    class SlowCloningBackend:
+        def clone(self):
+            return SlowCloningBackend()
+
+        async def run(self, node, prompt, context):
+            if node.id.startswith("b"):
+                await asyncio.sleep(0.2)
+            return Outcome(status=StageStatus.SUCCESS)
+
+    graph = Graph(
+        name="test-timing",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "src": Node(id="src", shape="box", prompt="Source"),
+            "b1": Node(id="b1", shape="box", prompt="B1"),
+            "b2": Node(id="b2", shape="box", prompt="B2"),
+            "b3": Node(id="b3", shape="box", prompt="B3"),
+            "converge": Node(id="converge", shape="box", prompt="Converge"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="src"),
+            Edge(from_node="src", to_node="b1", condition="outcome=success"),
+            Edge(from_node="src", to_node="b2", condition="outcome=success"),
+            Edge(from_node="src", to_node="b3", condition="outcome=success"),
+            Edge(from_node="b1", to_node="converge"),
+            Edge(from_node="b2", to_node="converge"),
+            Edge(from_node="b3", to_node="converge"),
+            Edge(from_node="converge", to_node="exit"),
+        ],
+    )
+
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=SlowCloningBackend())
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+
+    t0 = time.monotonic()
+    outcome = await engine.run()
+    elapsed = time.monotonic() - t0
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # 3 × 0.2s concurrent should be ~0.2s, NOT 0.6s sequential
+    assert elapsed < 0.5, f"Parallel branches took {elapsed:.2f}s (expected < 0.5s)"
+
+
+@pytest.mark.asyncio
+async def test_parallel_fan_out_clones_registry_per_branch(tmp_path):
+    """Each parallel branch gets its own cloned handler registry."""
+    from unittest.mock import patch
+
+    class CloningBackend:
+        def clone(self):
+            return CloningBackend()
+
+        async def run(self, node, prompt, context):
+            return Outcome(status=StageStatus.SUCCESS)
+
+    graph = Graph(
+        name="test-clone-isolation",
+        nodes={
+            "start": Node(id="start", shape="Mdiamond"),
+            "src": Node(id="src", shape="box", prompt="Source"),
+            "b1": Node(id="b1", shape="box", prompt="B1"),
+            "b2": Node(id="b2", shape="box", prompt="B2"),
+            "b3": Node(id="b3", shape="box", prompt="B3"),
+            "converge": Node(id="converge", shape="box", prompt="Converge"),
+            "exit": Node(id="exit", shape="Msquare"),
+        },
+        edges=[
+            Edge(from_node="start", to_node="src"),
+            Edge(from_node="src", to_node="b1", condition="outcome=success"),
+            Edge(from_node="src", to_node="b2", condition="outcome=success"),
+            Edge(from_node="src", to_node="b3", condition="outcome=success"),
+            Edge(from_node="b1", to_node="converge"),
+            Edge(from_node="b2", to_node="converge"),
+            Edge(from_node="b3", to_node="converge"),
+            Edge(from_node="converge", to_node="exit"),
+        ],
+    )
+
+    context = PipelineContext()
+    registry = HandlerRegistry(backend=CloningBackend())
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+    )
+
+    with patch.object(
+        registry, "clone_for_branch", wraps=registry.clone_for_branch
+    ) as mock_clone:
+        outcome = await engine.run()
+
+    assert outcome.status in (StageStatus.SUCCESS, StageStatus.PARTIAL_SUCCESS)
+    # clone_for_branch should be called once per parallel branch (3 branches)
+    assert mock_clone.call_count == 3, (
+        f"Expected 3 clone_for_branch calls, got {mock_clone.call_count}"
+    )

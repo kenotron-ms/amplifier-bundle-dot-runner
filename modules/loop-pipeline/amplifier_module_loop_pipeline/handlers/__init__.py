@@ -115,10 +115,11 @@ class HandlerRegistry:
 
         # Replace codergen with a clone that has its own backend state
         original_codergen = self._handlers.get("codergen")
-        if original_codergen is not None and hasattr(original_codergen, "_backend"):
+        if isinstance(original_codergen, CodergenHandler):
             backend = original_codergen._backend
-            cloned_backend = backend.clone() if backend is not None else None
-            new._handlers["codergen"] = CodergenHandler(backend=cloned_backend)
+            if backend is not None and hasattr(backend, "clone"):
+                cloned_backend = backend.clone()
+                new._handlers["codergen"] = CodergenHandler(backend=cloned_backend)
 
         return new
 
