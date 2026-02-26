@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from typing import Any, Callable, Coroutine
 
 from ..conditions import evaluate_condition
@@ -103,6 +104,7 @@ class ManagerLoopHandler:
 
     def __init__(self, subgraph_runner: SubgraphRunner | None = None) -> None:
         self._runner = subgraph_runner
+        self._subgraph_runs: dict[str, Any] = {}
 
     async def execute(
         self,
@@ -303,7 +305,9 @@ class ManagerLoopHandler:
 
         # Run child engine
         try:
+            t0 = time.monotonic()
             outcome = await child_engine.run()
+            elapsed_ms = (time.monotonic() - t0) * 1000
         except Exception as exc:
             logger.exception(
                 "Manager '%s' cycle %d: child dotfile pipeline failed",
@@ -314,5 +318,26 @@ class ManagerLoopHandler:
                 status=StageStatus.FAIL,
                 failure_reason=f"Child pipeline exception: {exc}",
             )
+
+        # Cycle-indexed observability
+        node_outcomes_summary: dict[str, dict[str, str | None]] = {}
+        for nid, node_out in child_engine.node_outcomes.items():
+            node_outcomes_summary[nid] = {
+                "status": node_out.status.value,
+                "notes": node_out.notes,
+                "failure_reason": node_out.failure_reason,
+            }
+
+        self._subgraph_runs[f"{manager_node_id}_cycle_{cycle}"] = {
+            "dot_file": resolved_path,
+            "pipeline_id": child_graph.name,
+            "goal": child_graph.goal or "",
+            "status": outcome.status.value,
+            "execution_path": list(child_engine.completed_nodes),
+            "node_outcomes": node_outcomes_summary,
+            "total_elapsed_ms": elapsed_ms,
+            "nodes_completed": len(child_engine.completed_nodes),
+            "nodes_total": len(child_graph.nodes),
+        }
 
         return outcome

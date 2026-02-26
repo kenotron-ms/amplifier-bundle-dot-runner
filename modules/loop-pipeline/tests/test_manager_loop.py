@@ -623,3 +623,48 @@ class TestManagerChildDotfile:
         # not child pipeline outcome — the child DOT's box handler may or may not
         # produce SUCCESS in the test environment.
         assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)
+
+
+# ---------------------------------------------------------------------------
+# Cycle-indexed observability tests
+# ---------------------------------------------------------------------------
+
+
+class TestManagerChildDotfileObservability:
+    """_subgraph_runs captures cycle-indexed observability data."""
+
+    @pytest.mark.asyncio
+    async def test_cycle_indexed_subgraph_runs(self, tmp_path):
+        """After child dotfile execution, _subgraph_runs has cycle-indexed entry."""
+        child_dot = tmp_path / "child.dot"
+        child_dot.write_text(
+            "digraph child {\n"
+            "  start [shape=Mdiamond];\n"
+            "  task [shape=box];\n"
+            "  done [shape=Msquare];\n"
+            "  start -> task -> done;\n"
+            "}\n"
+        )
+
+        handler = ManagerLoopHandler()
+        graph = _make_graph(
+            manager_attrs={
+                "manager.max_cycles": "2",
+                "manager.stop_condition": "outcome=success",
+                "stack.child_dotfile": str(child_dot),
+            },
+            has_child_edge=True,
+        )
+
+        await handler.execute(
+            graph.nodes["manager"], PipelineContext(), graph, str(tmp_path)
+        )
+
+        # _subgraph_runs attribute must exist
+        assert hasattr(handler, "_subgraph_runs")
+        # Cycle-indexed key must be present
+        assert "manager_cycle_1" in handler._subgraph_runs
+        run_data = handler._subgraph_runs["manager_cycle_1"]
+        # Must have status and nodes_completed keys
+        assert run_data["status"] == "success"
+        assert "nodes_completed" in run_data
