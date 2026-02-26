@@ -104,7 +104,7 @@ class ManagerLoopHandler:
 
     def __init__(self, subgraph_runner: SubgraphRunner | None = None) -> None:
         self._runner = subgraph_runner
-        self._subgraph_runs: dict[str, Any] = {}
+        self._subgraph_runs: dict[str, dict[str, Any]] = {}
 
     async def execute(
         self,
@@ -309,6 +309,7 @@ class ManagerLoopHandler:
             outcome = await child_engine.run()
             elapsed_ms = (time.monotonic() - t0) * 1000
         except Exception as exc:
+            # No subgraph_runs entry on exception — no engine state to capture
             logger.exception(
                 "Manager '%s' cycle %d: child dotfile pipeline failed",
                 manager_node_id,

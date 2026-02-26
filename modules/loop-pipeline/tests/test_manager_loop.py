@@ -668,3 +668,5 @@ class TestManagerChildDotfileObservability:
         # Must have status and nodes_completed keys
         assert run_data["status"] == "success"
         assert "nodes_completed" in run_data
+        assert run_data["dot_file"] == str(child_dot)
+        assert run_data["total_elapsed_ms"] >= 0
