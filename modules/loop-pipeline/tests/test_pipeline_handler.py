@@ -79,6 +79,25 @@ class TestResolveDotPath:
         )
         assert result == "/parent/$unknown/python/child.dot"
 
+    def test_variable_adjacent_to_hyphen(self) -> None:
+        """$language-review.dot expands $language, hyphen is not part of variable."""
+        ctx = PipelineContext()
+        ctx.set("language", "python")
+        result = resolve_dot_path(
+            "pipelines/$language-review.dot", source_dir="/root", context=ctx
+        )
+        assert result == "/root/pipelines/python-review.dot"
+
+    def test_multiple_known_variables(self) -> None:
+        """Multiple $tokens in a single path are all expanded."""
+        ctx = PipelineContext()
+        ctx.set("org", "acme")
+        ctx.set("project", "widget")
+        result = resolve_dot_path(
+            "$org/$project-pipeline.dot", source_dir="/pipelines", context=ctx
+        )
+        assert result == "/pipelines/acme/widget-pipeline.dot"
+
 
 # ---------------------------------------------------------------------------
 # PipelineHandler.execute() tests
@@ -227,6 +246,44 @@ class TestPipelineHandlerExecute:
         # Parent context should NOT have child engine's internal keys
         # (like graph.goal which is set by engine._initialize_context)
         assert context.get("outcome") is None
+
+    @pytest.mark.asyncio
+    async def test_execute_expands_context_variable_in_dot_file(self, tmp_path):
+        """dot_file with $variable is expanded from context before resolution."""
+        # Write child DOT into a subdirectory named "python"
+        subdir = tmp_path / "python"
+        subdir.mkdir()
+        child_dot = subdir / "review.dot"
+        child_dot.write_text(CHILD_DOT)
+
+        # Build parent graph with $lang/review.dot as dot_file
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="component",
+                    type="pipeline",
+                    attrs={"dot_file": "$lang/review.dot"},
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        context.set("lang", "python")
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler()
+        outcome = await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        assert outcome.status == StageStatus.SUCCESS
 
 
 # ---------------------------------------------------------------------------
