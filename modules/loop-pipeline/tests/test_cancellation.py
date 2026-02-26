@@ -222,3 +222,100 @@ async def test_cancel_emits_pipeline_complete_event(tmp_path):
     assert len(complete_events) >= 1
     complete_data = complete_events[-1]["data"]
     assert complete_data["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Cancellation propagation to nested child pipeline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_propagates_to_nested_child_pipeline(tmp_path):
+    """When parent is cancelled, the child pipeline (nested via PipelineHandler) also stops.
+
+    Wiring: parent PipelineEngine -> HandlerRegistry(cancel_event=...) ->
+            PipelineHandler(cancel_event=..., handler_registry_factory=...) ->
+            child PipelineEngine(cancel_event=...)
+
+    The handler_registry_factory ensures the child engine uses our test
+    backend (so we can trigger cancellation from inside child execution).
+    """
+    from amplifier_module_loop_pipeline.handlers.pipeline import PipelineHandler
+
+    # -- Child DOT: 3 work nodes so cancellation can interrupt mid-execution --
+    child_dot = """\
+digraph child {
+    start [shape=Mdiamond]
+    child_step1 [prompt="Child step 1"]
+    child_step2 [prompt="Child step 2"]
+    child_step3 [prompt="Child step 3"]
+    done [shape=Msquare]
+    start -> child_step1 -> child_step2 -> child_step3 -> done
+}
+"""
+    child_dot_path = tmp_path / "child.dot"
+    child_dot_path.write_text(child_dot)
+
+    # -- Parent DOT: folder node references the child DOT --
+    parent_dot = f"""\
+digraph parent {{
+    start [shape=Mdiamond]
+    sub [shape=folder, dot_file="{child_dot_path}"]
+    done [shape=Msquare]
+    start -> sub -> done
+}}
+"""
+
+    cancel_event = threading.Event()
+
+    # Backend that sets cancel_event after child_step1 runs, so the child
+    # engine sees cancellation before executing child_step2.
+    class CancelAfterChildStep1:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def run(self, node, prompt, context):
+            self.calls.append(node.id)
+            if node.id == "child_step1":
+                cancel_event.set()
+            return "done"
+
+    backend = CancelAfterChildStep1()
+
+    graph = parse_dot(parent_dot)
+    validate_or_raise(graph)
+    context = PipelineContext()
+
+    # Build parent registry with cancel_event and our backend
+    registry = HandlerRegistry(backend=backend, cancel_event=cancel_event)
+
+    # Override the pipeline handler with one that uses a factory so the
+    # *child* engine also gets our test backend (the default child registry
+    # would use a simulated backend that doesn't trigger cancellation).
+    registry.register(
+        "pipeline",
+        PipelineHandler(
+            handler_registry_factory=lambda: HandlerRegistry(backend=backend),
+            cancel_event=cancel_event,
+        ),
+    )
+
+    engine = PipelineEngine(
+        graph=graph,
+        context=context,
+        handler_registry=registry,
+        logs_root=str(tmp_path / "logs"),
+        cancel_event=cancel_event,
+    )
+
+    outcome = await engine.run()
+
+    # Parent outcome should be cancelled
+    assert outcome.status == StageStatus.FAIL
+    assert outcome.failure_reason == "cancelled"
+
+    # child_step1 ran (it triggered the cancel), but child_step2 and
+    # child_step3 should NOT have run — proving the child was interrupted.
+    assert "child_step1" in backend.calls
+    assert "child_step2" not in backend.calls
+    assert "child_step3" not in backend.calls
