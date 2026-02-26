@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -61,17 +62,23 @@ class PipelineEngine:
         handler_registry: HandlerRegistry,
         logs_root: str,
         hooks: Any | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self.graph = graph
         self.context = context
         self.handler_registry = handler_registry
         self.logs_root = logs_root
         self.hooks = hooks
+        self._cancel_event = cancel_event
         self.node_outcomes: dict[str, Outcome] = {}
         self.completed_nodes: list[str] = []
         self.iteration_count: int = 0
         self._checkpoint_path = os.path.join(logs_root, "checkpoint.json")
         self.artifact_store = ArtifactStore(base_dir=logs_root)
+
+    def _check_cancelled(self) -> bool:
+        """Check if cancellation has been requested via the cancel event."""
+        return self._cancel_event is not None and self._cancel_event.is_set()
 
     async def run(self, goal: str | None = None) -> Outcome:
         """Execute the pipeline from start to exit.
@@ -137,6 +144,23 @@ class PipelineEngine:
                     )
                     await self._emit_complete(duration_outcome, pipeline_start_time)
                     return duration_outcome
+
+            # Step 0.5: Check for cancellation (cooperative cross-thread signal)
+            if self._check_cancelled():
+                cancelled_outcome = Outcome(
+                    status=StageStatus.FAIL,
+                    notes="Pipeline cancelled by user request",
+                    failure_reason="cancelled",
+                )
+                await self._emit(
+                    PIPELINE_COMPLETE,
+                    {
+                        "status": "cancelled",
+                        "total_nodes_executed": len(self.completed_nodes),
+                        "duration_ms": (time.monotonic() - pipeline_start_time) * 1000,
+                    },
+                )
+                return cancelled_outcome
 
             # Step 1: Check for terminal node (exit)
             if current_node.is_exit_node():
@@ -261,6 +285,23 @@ class PipelineEngine:
                     hooks=self.hooks,
                 )
             node_duration_ms = (time.monotonic() - node_start_time) * 1000
+
+            # Step 2.5: Check for cancellation after node execution
+            if self._check_cancelled():
+                cancelled_outcome = Outcome(
+                    status=StageStatus.FAIL,
+                    notes=f"Pipeline cancelled after node '{current_node.id}' completed",
+                    failure_reason="cancelled",
+                )
+                await self._emit(
+                    PIPELINE_COMPLETE,
+                    {
+                        "status": "cancelled",
+                        "total_nodes_executed": len(self.completed_nodes),
+                        "duration_ms": (time.monotonic() - pipeline_start_time) * 1000,
+                    },
+                )
+                return cancelled_outcome
 
             # L-9: auto_status — override non-success to SUCCESS when enabled
             if current_node.auto_status is True and not outcome.is_success:
@@ -450,6 +491,14 @@ class PipelineEngine:
         max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
 
         for _step in range(max_steps):
+            # Check cancellation in subgraph runner too
+            if self._check_cancelled():
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    notes="Pipeline cancelled during subgraph execution",
+                    failure_reason="cancelled",
+                )
+
             # Check for terminal node (exit or fan_in)
             if current_node.is_exit_node() or current_node.shape == "tripleoctagon":
                 return last_outcome or Outcome(
