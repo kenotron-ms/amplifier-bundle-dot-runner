@@ -15,7 +15,7 @@ from ..context import PipelineContext
 def _expand_path_variables(path: str, context: PipelineContext) -> str:
     """Replace $variable tokens using context.get().
 
-    Unknown $tokens are left unchanged.
+    Unknown $tokens are left unchanged. Context values are coerced to str.
     """
 
     def _replace(match: re.Match[str]) -> str:

@@ -62,3 +62,12 @@ class TestResolveDotPath:
         ctx.set("language", "python")
         result = resolve_dot_path("plain/child.dot", source_dir="/parent", context=ctx)
         assert result == "/parent/plain/child.dot"
+
+    def test_unknown_variable_left_unchanged(self) -> None:
+        """Unknown $tokens survive expansion unchanged."""
+        ctx = PipelineContext()
+        ctx.set("language", "python")
+        result = resolve_dot_path(
+            "$unknown/$language/child.dot", source_dir="/parent", context=ctx
+        )
+        assert result == "/parent/$unknown/python/child.dot"
