@@ -272,6 +272,8 @@ class PipelineEngine:
                             "node_id": current_node.id,
                             "status": "timeout",
                             "duration_ms": node_duration_ms,
+                            "notes": outcome.notes,
+                            "failure_reason": outcome.failure_reason,
                         },
                     )
             else:
@@ -329,6 +331,8 @@ class PipelineEngine:
                     "node_id": current_node.id,
                     "status": outcome.status.value,
                     "duration_ms": node_duration_ms,
+                    "notes": outcome.notes,
+                    "failure_reason": outcome.failure_reason,
                 },
             )
 
@@ -849,6 +853,8 @@ class PipelineEngine:
                     "node_id": target_node_id,
                     "status": outcome.status.value,
                     "duration_ms": node_duration,
+                    "notes": outcome.notes,
+                    "failure_reason": outcome.failure_reason,
                 },
             )
             self._write_node_status(target_node_id, outcome, node_duration)

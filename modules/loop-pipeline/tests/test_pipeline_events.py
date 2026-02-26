@@ -401,6 +401,59 @@ class TestNodeEvents:
             assert "duration_ms" in event
             assert isinstance(event["duration_ms"], (int, float))
 
+    @pytest.mark.asyncio
+    async def test_node_complete_has_notes_and_failure_reason(self, tmp_path):
+        """pipeline:node_complete includes notes and failure_reason fields."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
+        assert len(node_completes) >= 1
+        for event in node_completes:
+            assert "notes" in event, (
+                f"'notes' missing from node_complete event: {event}"
+            )
+            assert "failure_reason" in event, (
+                f"'failure_reason' missing from node_complete event: {event}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_node_complete_failure_reason_populated_on_fail(self, tmp_path):
+        """pipeline:node_complete carries failure_reason when a node fails."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                bad [prompt="Fail"]
+                exit [shape=Msquare]
+                start -> bad [label="*"]
+                bad -> exit [label="success"]
+                bad -> exit [label="fail"]
+            }
+            """,
+            backend=FailingBackend(fail_node="bad"),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
+        bad_events = [e for e in node_completes if e["node_id"] == "bad"]
+        assert len(bad_events) >= 1
+        assert bad_events[0]["failure_reason"] == "intentional"
+
 
 # ---------------------------------------------------------------------------
 # Edge selection events
