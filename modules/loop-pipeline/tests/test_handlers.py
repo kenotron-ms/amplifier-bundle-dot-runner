@@ -204,6 +204,23 @@ async def test_codergen_uses_label_when_no_prompt(tmp_path):
     assert "Plan the implementation" in backend.last_prompt
 
 
+@pytest.mark.asyncio
+async def test_codergen_uses_llm_prompt_from_attrs(tmp_path):
+    """CodergenHandler reads llm_prompt from node.attrs as fallback."""
+    backend = MockBackend("ok")
+    handler = CodergenHandler(backend=backend)
+    # No prompt set, but llm_prompt in attrs (as DOT files like semport.dot use)
+    node = Node(
+        id="test",
+        label="TestNode",
+        prompt="",
+        attrs={"llm_prompt": "Do the thing in detail"},
+    )
+    await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
+    # Should use llm_prompt, NOT fall back to label
+    assert backend.last_prompt == "Do the thing in detail"
+
+
 # --- ToolHandler ---
 
 
