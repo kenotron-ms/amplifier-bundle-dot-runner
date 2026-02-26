@@ -226,3 +226,99 @@ class TestPipelineHandlerExecute:
         # Parent context should NOT have child engine's internal keys
         # (like graph.goal which is set by engine._initialize_context)
         assert context.get("outcome") is None
+
+
+# ---------------------------------------------------------------------------
+# PipelineHandler observability tests
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineHandlerObservability:
+    """Tests for subgraph observability — _subgraph_runs capture and event emission."""
+
+    @pytest.mark.asyncio
+    async def test_populates_subgraph_runs(self, tmp_path):
+        """After execution, handler._subgraph_runs['sub'] contains all expected keys."""
+        graph = _make_parent_graph(tmp_path)
+        node = graph.nodes["sub"]
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler()
+        await handler.execute(node, context, graph, logs_root)
+
+        assert "sub" in handler._subgraph_runs
+        run = handler._subgraph_runs["sub"]
+        expected_keys = {
+            "dot_file",
+            "dot_source",
+            "pipeline_id",
+            "goal",
+            "status",
+            "execution_path",
+            "node_outcomes",
+            "total_elapsed_ms",
+            "nodes_completed",
+            "nodes_total",
+        }
+        assert expected_keys.issubset(run.keys())
+        assert run["status"] == "success"
+        assert isinstance(run["total_elapsed_ms"], float)
+        assert isinstance(run["nodes_completed"], int)
+        assert isinstance(run["nodes_total"], int)
+        assert run["nodes_completed"] > 0
+
+    @pytest.mark.asyncio
+    async def test_emits_subgraph_start_event(self, tmp_path):
+        """hooks.emit is called with 'pipeline:subgraph_start' including node_id."""
+        from unittest.mock import AsyncMock
+
+        hooks = AsyncMock()
+        graph = _make_parent_graph(tmp_path)
+        node = graph.nodes["sub"]
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler(hooks=hooks)
+        await handler.execute(node, context, graph, logs_root)
+
+        # Find the pipeline:subgraph_start call
+        start_calls = [
+            c for c in hooks.emit.call_args_list if c[0][0] == "pipeline:subgraph_start"
+        ]
+        assert len(start_calls) == 1
+        data = start_calls[0][0][1]
+        assert data["node_id"] == "sub"
+        assert "dot_file" in data
+        assert "pipeline_id" in data
+        assert "goal" in data
+
+    @pytest.mark.asyncio
+    async def test_emits_subgraph_complete_event(self, tmp_path):
+        """hooks.emit is called with 'pipeline:subgraph_complete' including node_id, status, duration_ms."""
+        from unittest.mock import AsyncMock
+
+        hooks = AsyncMock()
+        graph = _make_parent_graph(tmp_path)
+        node = graph.nodes["sub"]
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler(hooks=hooks)
+        await handler.execute(node, context, graph, logs_root)
+
+        # Find the pipeline:subgraph_complete call
+        complete_calls = [
+            c
+            for c in hooks.emit.call_args_list
+            if c[0][0] == "pipeline:subgraph_complete"
+        ]
+        assert len(complete_calls) == 1
+        data = complete_calls[0][0][1]
+        assert data["node_id"] == "sub"
+        assert data["status"] == "success"
+        assert "duration_ms" in data
+        assert isinstance(data["duration_ms"], float)
+        assert "pipeline_id" in data
+        assert "nodes_completed" in data
+        assert "nodes_total" in data

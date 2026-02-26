@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from typing import Any
 
 from ..context import PipelineContext
@@ -72,6 +73,12 @@ class PipelineHandler:
         self._handler_registry_factory = handler_registry_factory
         self._cancel_event = cancel_event
         self._hooks = hooks
+        self._subgraph_runs: dict[str, Any] = {}
+
+    async def _emit(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit an event via hooks, if provided."""
+        if self._hooks is not None:
+            await self._hooks.emit(event_name, data)
 
     async def execute(
         self,
@@ -159,7 +166,20 @@ class PipelineHandler:
         # (10) Determine child goal
         child_goal = child_graph.goal or context.get("graph.goal")
 
+        # (10b) Emit pipeline:subgraph_start event
+        pipeline_id = child_graph.name or ""
+        await self._emit(
+            "pipeline:subgraph_start",
+            {
+                "node_id": node.id,
+                "dot_file": dot_file,
+                "pipeline_id": pipeline_id,
+                "goal": child_goal or "",
+            },
+        )
+
         # (11) Run child engine
+        subgraph_start_time = time.monotonic()
         try:
             outcome = await child_engine.run(goal=child_goal)
         except Exception as exc:
@@ -168,6 +188,41 @@ class PipelineHandler:
                 status=StageStatus.FAIL,
                 failure_reason=f"Child pipeline exception: {exc}",
             )
+        subgraph_elapsed_ms = (time.monotonic() - subgraph_start_time) * 1000
+
+        # (11b) Populate _subgraph_runs with observability data
+        self._subgraph_runs[node.id] = {
+            "dot_file": dot_file,
+            "dot_source": dot_source,
+            "pipeline_id": pipeline_id,
+            "goal": child_goal or "",
+            "status": outcome.status.value,
+            "execution_path": list(child_engine.completed_nodes),
+            "node_outcomes": {
+                nid: {
+                    "status": o.status.value,
+                    "notes": o.notes,
+                    "failure_reason": o.failure_reason,
+                }
+                for nid, o in child_engine.node_outcomes.items()
+            },
+            "total_elapsed_ms": subgraph_elapsed_ms,
+            "nodes_completed": len(child_engine.completed_nodes),
+            "nodes_total": len(child_graph.nodes),
+        }
+
+        # (11c) Emit pipeline:subgraph_complete event
+        await self._emit(
+            "pipeline:subgraph_complete",
+            {
+                "node_id": node.id,
+                "pipeline_id": pipeline_id,
+                "status": outcome.status.value,
+                "duration_ms": subgraph_elapsed_ms,
+                "nodes_completed": len(child_engine.completed_nodes),
+                "nodes_total": len(child_graph.nodes),
+            },
+        )
 
         # (12) Return child outcome
         return outcome
