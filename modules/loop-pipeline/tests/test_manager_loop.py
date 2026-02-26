@@ -27,6 +27,7 @@ from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
 def _make_graph(
     *,
     manager_attrs: dict | None = None,
+    graph_attrs: dict | None = None,
     has_child_edge: bool = True,
 ) -> Graph:
     """Build a minimal graph with a manager node and optional child target."""
@@ -47,7 +48,12 @@ def _make_graph(
     if has_child_edge:
         edges.append(Edge(from_node="manager", to_node="child_task"))
     edges.append(Edge(from_node="child_task", to_node="exit"))
-    return Graph(name="test_manager", nodes=nodes, edges=edges)
+    return Graph(
+        name="test_manager",
+        nodes=nodes,
+        edges=edges,
+        graph_attrs=graph_attrs or {},
+    )
 
 
 def _make_runner(outcomes: list[Outcome]) -> AsyncMock:
@@ -491,38 +497,6 @@ class TestManagerHandlerRegistration:
 # ---------------------------------------------------------------------------
 
 
-def _make_graph_with_graph_attrs(
-    *,
-    manager_attrs: dict | None = None,
-    graph_attrs: dict | None = None,
-    has_child_edge: bool = True,
-) -> Graph:
-    """Build a minimal graph with optional graph_attrs."""
-    nodes = {
-        "start": Node(id="start", shape="Mdiamond"),
-        "manager": Node(
-            id="manager",
-            shape="house",
-            label="Sprint Manager",
-            attrs=manager_attrs or {},
-        ),
-        "child_task": Node(id="child_task", shape="box", label="Do work"),
-        "exit": Node(id="exit", shape="Msquare"),
-    }
-    edges = [
-        Edge(from_node="start", to_node="manager"),
-    ]
-    if has_child_edge:
-        edges.append(Edge(from_node="manager", to_node="child_task"))
-    edges.append(Edge(from_node="child_task", to_node="exit"))
-    return Graph(
-        name="test_manager",
-        nodes=nodes,
-        edges=edges,
-        graph_attrs=graph_attrs or {},
-    )
-
-
 class TestManagerChildDotfile:
     """stack.child_dotfile routes manager to external DOT engine execution."""
 
@@ -542,7 +516,7 @@ class TestManagerChildDotfile:
 
         inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
         handler = ManagerLoopHandler(subgraph_runner=inline_runner)
-        graph = _make_graph_with_graph_attrs(
+        graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "1",
                 "stack.child_dotfile": str(child_dot),
@@ -556,6 +530,9 @@ class TestManagerChildDotfile:
 
         # External DOT runs; inline runner is NOT called
         assert inline_runner.call_count == 0
+        # Accept either status: the test verifies routing (inline runner skipped),
+        # not child pipeline outcome — the child DOT's box handler may or may not
+        # produce SUCCESS in the test environment.
         assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)
 
     @pytest.mark.asyncio
@@ -573,7 +550,7 @@ class TestManagerChildDotfile:
 
         inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
         handler = ManagerLoopHandler(subgraph_runner=inline_runner)
-        graph = _make_graph_with_graph_attrs(
+        graph = _make_graph(
             manager_attrs={"manager.max_cycles": "1"},
             graph_attrs={"stack.child_dotfile": str(child_dot)},
             has_child_edge=True,
@@ -584,6 +561,9 @@ class TestManagerChildDotfile:
         )
 
         assert inline_runner.call_count == 0
+        # Accept either status: the test verifies routing (inline runner skipped),
+        # not child pipeline outcome — the child DOT's box handler may or may not
+        # produce SUCCESS in the test environment.
         assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)
 
     @pytest.mark.asyncio
@@ -624,7 +604,7 @@ class TestManagerChildDotfile:
 
         inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
         handler = ManagerLoopHandler(subgraph_runner=inline_runner)
-        graph = _make_graph_with_graph_attrs(
+        graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "1",
                 "stack.child_dotfile": str(node_dot),
@@ -639,4 +619,7 @@ class TestManagerChildDotfile:
 
         # Node-level wins; inline runner NOT called
         assert inline_runner.call_count == 0
+        # Accept either status: the test verifies routing (node-level priority),
+        # not child pipeline outcome — the child DOT's box handler may or may not
+        # produce SUCCESS in the test environment.
         assert result.status in (StageStatus.SUCCESS, StageStatus.FAIL)
