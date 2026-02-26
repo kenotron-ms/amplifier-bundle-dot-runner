@@ -97,6 +97,31 @@ class HandlerRegistry:
                 handler_type = SHAPE_TO_HANDLER.get(node.shape, "codergen")
         return self._handlers.get(handler_type, self._handlers["codergen"])
 
+    def clone_for_branch(self) -> HandlerRegistry:
+        """Create a branch-isolated copy of this registry.
+
+        Shallow-copies the handlers dict and replaces the codergen handler
+        with a new instance backed by a cloned backend.  All other handlers
+        are shared (they are stateless).
+
+        Used by ``_execute_parallel_fan_out`` so each concurrent branch
+        gets its own backend mutable state.
+        """
+        from .codergen import CodergenHandler
+
+        new = HandlerRegistry.__new__(HandlerRegistry)
+        new._hooks = self._hooks
+        new._handlers = dict(self._handlers)
+
+        # Replace codergen with a clone that has its own backend state
+        original_codergen = self._handlers.get("codergen")
+        if original_codergen is not None and hasattr(original_codergen, "_backend"):
+            backend = original_codergen._backend
+            cloned_backend = backend.clone() if backend is not None else None
+            new._handlers["codergen"] = CodergenHandler(backend=cloned_backend)
+
+        return new
+
     def register(self, handler_type: str, handler: NodeHandler) -> None:
         """Register a custom handler for a handler type."""
         self._handlers[handler_type] = handler
