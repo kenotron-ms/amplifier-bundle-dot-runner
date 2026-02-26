@@ -774,6 +774,12 @@ class PipelineEngine:
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
 
+        # Write graph.dot for dashboard visualization
+        if self.graph.dot_source:
+            dot_path = os.path.join(self.logs_root, "graph.dot")
+            with open(dot_path, "w") as f:
+                f.write(self.graph.dot_source)
+
     def _write_node_status(
         self, node_id: str, outcome: Outcome, duration_ms: float
     ) -> None:
