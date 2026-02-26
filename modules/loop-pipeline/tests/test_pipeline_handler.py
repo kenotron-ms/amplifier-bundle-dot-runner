@@ -5,6 +5,7 @@ Spec coverage: resolve_dot_path, _expand_path_variables, PipelineHandler.execute
 
 import json
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -271,8 +272,6 @@ class TestPipelineHandlerObservability:
     @pytest.mark.asyncio
     async def test_emits_subgraph_start_event(self, tmp_path):
         """hooks.emit is called with 'pipeline:subgraph_start' including node_id."""
-        from unittest.mock import AsyncMock
-
         hooks = AsyncMock()
         graph = _make_parent_graph(tmp_path)
         node = graph.nodes["sub"]
@@ -296,8 +295,6 @@ class TestPipelineHandlerObservability:
     @pytest.mark.asyncio
     async def test_emits_subgraph_complete_event(self, tmp_path):
         """hooks.emit is called with 'pipeline:subgraph_complete' including node_id, status, duration_ms."""
-        from unittest.mock import AsyncMock
-
         hooks = AsyncMock()
         graph = _make_parent_graph(tmp_path)
         node = graph.nodes["sub"]

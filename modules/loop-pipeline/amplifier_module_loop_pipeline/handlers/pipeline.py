@@ -168,6 +168,10 @@ class PipelineHandler:
 
         # (10b) Emit pipeline:subgraph_start event
         pipeline_id = child_graph.name or ""
+        if not pipeline_id:
+            logger.debug(
+                "Child graph for node '%s' has no name; pipeline_id is empty", node.id
+            )
         await self._emit(
             "pipeline:subgraph_start",
             {
