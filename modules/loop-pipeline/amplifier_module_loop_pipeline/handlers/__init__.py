@@ -53,6 +53,7 @@ class HandlerRegistry:
         from .human import HumanGateHandler
         from .manager_loop import ManagerLoopHandler
         from .parallel import ParallelHandler
+        from .pipeline import PipelineHandler
         from .start import StartHandler
         from .tool import ToolHandler
 
@@ -76,6 +77,10 @@ class HandlerRegistry:
                 hooks=self._hooks,
             ),
             "parallel.fan_in": FanInHandler(),
+            "pipeline": PipelineHandler(
+                hooks=self._hooks,
+                cancel_event=kwargs.get("cancel_event"),
+            ),
         }
 
     def get(self, node: Node) -> NodeHandler:
@@ -108,6 +113,7 @@ class HandlerRegistry:
         gets its own backend mutable state.
         """
         from .codergen import CodergenHandler
+        from .pipeline import PipelineHandler
 
         new = HandlerRegistry.__new__(HandlerRegistry)
         new._hooks = self._hooks
@@ -120,6 +126,14 @@ class HandlerRegistry:
             if backend is not None and hasattr(backend, "clone"):
                 cloned_backend = backend.clone()
                 new._handlers["codergen"] = CodergenHandler(backend=cloned_backend)
+
+        # Replace pipeline handler with a fresh instance (has mutable _subgraph_runs)
+        original_pipeline = self._handlers.get("pipeline")
+        if isinstance(original_pipeline, PipelineHandler):
+            new._handlers["pipeline"] = PipelineHandler(
+                hooks=original_pipeline._hooks,
+                cancel_event=original_pipeline._cancel_event,
+            )
 
         return new
 

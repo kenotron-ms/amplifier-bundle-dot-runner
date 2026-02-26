@@ -319,3 +319,30 @@ class TestPipelineHandlerObservability:
         assert "pipeline_id" in data
         assert "nodes_completed" in data
         assert "nodes_total" in data
+
+
+# ---------------------------------------------------------------------------
+# PipelineHandler registration in HandlerRegistry
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineHandlerRegistration:
+    """Tests for PipelineHandler registration in HandlerRegistry."""
+
+    def test_registry_resolves_pipeline_handler(self) -> None:
+        """Node with shape=folder resolves to PipelineHandler instance."""
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+
+        registry = HandlerRegistry()
+        node = Node(id="sub", shape="folder")
+        handler = registry.get(node)
+        assert isinstance(handler, PipelineHandler)
+
+    def test_registry_resolves_explicit_type(self) -> None:
+        """Node with type='pipeline' resolves to PipelineHandler instance."""
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+
+        registry = HandlerRegistry()
+        node = Node(id="sub", shape="box", type="pipeline")
+        handler = registry.get(node)
+        assert isinstance(handler, PipelineHandler)

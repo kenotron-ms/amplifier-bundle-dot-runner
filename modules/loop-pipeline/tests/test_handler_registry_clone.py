@@ -41,13 +41,15 @@ class TestHandlerRegistryCloneForBranch:
         mock_backend.clone.assert_called_once()
 
     def test_non_codergen_handlers_are_shared(self):
-        """Non-codergen handlers are the same objects (shared identity)."""
+        """Non-codergen/pipeline handlers are the same objects (shared identity)."""
         registry, _, _ = _make_registry_with_mock_backend()
 
         branch_registry = registry.clone_for_branch()
 
+        # codergen and pipeline are replaced with fresh instances in clone_for_branch
+        cloned_types = {"codergen", "pipeline"}
         for key in registry._handlers:
-            if key == "codergen":
+            if key in cloned_types:
                 continue
             assert branch_registry._handlers[key] is registry._handlers[key], (
                 f"Handler '{key}' should be shared (same identity)"
