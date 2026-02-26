@@ -92,6 +92,29 @@ class AmplifierBackend:
         self._completed_nodes: dict[str, Outcome] = {}
         self._last_node_id: str | None = None
 
+    def clone(self) -> AmplifierBackend:
+        """Create a clone with shared immutable refs but fresh mutable state.
+
+        Used for parallel branch isolation so concurrent branches don't
+        corrupt each other's session pools or completion tracking.
+        """
+        new = AmplifierBackend.__new__(AmplifierBackend)
+        # Shared immutable refs
+        new._coordinator = self._coordinator
+        new._profiles = self._profiles
+        new._provider = self._provider
+        new._unified_client = self._unified_client
+        new._hooks = self._hooks
+        # Shallow-copy tools (tool objects shared, dict independent)
+        new._tools = dict(self._tools)
+        # Fresh mutable state
+        new._spawn_fn = None
+        new._spawn_checked = False
+        new._session_pool = {}
+        new._completed_nodes = {}
+        new._last_node_id = None
+        return new
+
     async def run(
         self,
         node: Node,
