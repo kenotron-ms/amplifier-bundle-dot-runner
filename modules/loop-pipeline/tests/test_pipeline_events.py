@@ -126,6 +126,20 @@ class TestEventConstants:
     def test_pipeline_error_constant(self):
         assert PIPELINE_ERROR == "pipeline:error"
 
+    def test_subgraph_start_event_exists(self):
+        from amplifier_module_loop_pipeline.pipeline_events import (
+            PIPELINE_SUBGRAPH_START,
+        )
+
+        assert PIPELINE_SUBGRAPH_START == "pipeline:subgraph_start"
+
+    def test_subgraph_complete_event_exists(self):
+        from amplifier_module_loop_pipeline.pipeline_events import (
+            PIPELINE_SUBGRAPH_COMPLETE,
+        )
+
+        assert PIPELINE_SUBGRAPH_COMPLETE == "pipeline:subgraph_complete"
+
 
 def test_all_spec_event_constants_exist():
     """All spec Section 9.6 event types must have constants defined."""

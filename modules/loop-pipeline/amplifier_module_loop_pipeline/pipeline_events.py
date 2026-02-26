@@ -68,3 +68,9 @@ PIPELINE_STAGE_FAILED: str = "pipeline:stage_failed"
 PROVIDER_REQUEST: str = "provider:request"
 PROVIDER_RESPONSE: str = "provider:response"
 PROVIDER_ERROR: str = "provider:error"
+
+# ---------------------------------------------------------------------------
+# Subgraph execution (nested pipeline nodes)
+# ---------------------------------------------------------------------------
+PIPELINE_SUBGRAPH_START: str = "pipeline:subgraph_start"
+PIPELINE_SUBGRAPH_COMPLETE: str = "pipeline:subgraph_complete"
