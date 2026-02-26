@@ -46,8 +46,7 @@ class TestRequestTranslation:
             ],
         )
         kwargs = adapter._translate_request(request)
-        assert "system_instruction" in kwargs
-        assert kwargs["system_instruction"] == "You are helpful"
+        assert kwargs["config"]["system_instruction"] == "You are helpful"
         # System should NOT appear in contents
         for content in kwargs["contents"]:
             assert content["role"] != "system"
@@ -69,8 +68,8 @@ class TestRequestTranslation:
             ],
         )
         kwargs = adapter._translate_request(request)
-        assert "System instructions" in kwargs["system_instruction"]
-        assert "Dev instructions" in kwargs["system_instruction"]
+        assert "System instructions" in kwargs["config"]["system_instruction"]
+        assert "Dev instructions" in kwargs["config"]["system_instruction"]
 
     def test_user_message_translated(self) -> None:
         """User messages → 'user' role with text parts."""
@@ -330,16 +329,12 @@ class TestRequestTranslation:
             messages=[Message.user("Hi")],
             provider_options={
                 "gemini": {
-                    "safety_settings": [
-                        {"category": "HARM", "threshold": "NONE"}
-                    ],
+                    "safety_settings": [{"category": "HARM", "threshold": "NONE"}],
                 }
             },
         )
         kwargs = adapter._translate_request(request)
-        assert kwargs["safety_settings"] == [
-            {"category": "HARM", "threshold": "NONE"}
-        ]
+        assert kwargs["safety_settings"] == [{"category": "HARM", "threshold": "NONE"}]
 
     def test_tool_choice_auto(self) -> None:
         adapter = _make_adapter()
@@ -351,9 +346,7 @@ class TestRequestTranslation:
         )
         kwargs = adapter._translate_request(request)
         config = kwargs.get("config", {})
-        fc_config = config.get("tool_config", {}).get(
-            "function_calling_config", {}
-        )
+        fc_config = config.get("tool_config", {}).get("function_calling_config", {})
         assert fc_config.get("mode") == "AUTO"
 
     def test_tool_choice_none(self) -> None:
@@ -366,9 +359,7 @@ class TestRequestTranslation:
         )
         kwargs = adapter._translate_request(request)
         config = kwargs.get("config", {})
-        fc_config = config.get("tool_config", {}).get(
-            "function_calling_config", {}
-        )
+        fc_config = config.get("tool_config", {}).get("function_calling_config", {})
         assert fc_config.get("mode") == "NONE"
 
     def test_tool_choice_required(self) -> None:
@@ -381,9 +372,7 @@ class TestRequestTranslation:
         )
         kwargs = adapter._translate_request(request)
         config = kwargs.get("config", {})
-        fc_config = config.get("tool_config", {}).get(
-            "function_calling_config", {}
-        )
+        fc_config = config.get("tool_config", {}).get("function_calling_config", {})
         assert fc_config.get("mode") == "ANY"
 
     def test_name_property(self) -> None:
@@ -523,9 +512,7 @@ class TestResponseTranslation:
             parts=[
                 SimpleNamespace(
                     text=None,
-                    function_call=SimpleNamespace(
-                        name="search", args={"q": "test"}
-                    ),
+                    function_call=SimpleNamespace(name="search", args={"q": "test"}),
                 ),
             ],
             finish_reason="STOP",
@@ -576,9 +563,7 @@ class TestResponseTranslation:
                 SimpleNamespace(text="Let me search", function_call=None),
                 SimpleNamespace(
                     text=None,
-                    function_call=SimpleNamespace(
-                        name="search", args={"q": "test"}
-                    ),
+                    function_call=SimpleNamespace(name="search", args={"q": "test"}),
                 ),
             ],
             finish_reason="STOP",
@@ -639,7 +624,9 @@ class TestErrorTranslation:
     def test_400_invalid_request(self) -> None:
         """400 → InvalidRequestError."""
         adapter = _make_adapter()
-        exc = _make_genai_client_error(400, status="INVALID_ARGUMENT", message="Bad request")
+        exc = _make_genai_client_error(
+            400, status="INVALID_ARGUMENT", message="Bad request"
+        )
         result = adapter._translate_error(exc)
         assert isinstance(result, E.InvalidRequestError)
         assert result.retryable is False
@@ -647,7 +634,9 @@ class TestErrorTranslation:
     def test_401_authentication(self) -> None:
         """401 → AuthenticationError."""
         adapter = _make_adapter()
-        exc = _make_genai_client_error(401, status="UNAUTHENTICATED", message="Invalid API key")
+        exc = _make_genai_client_error(
+            401, status="UNAUTHENTICATED", message="Invalid API key"
+        )
         result = adapter._translate_error(exc)
         assert isinstance(result, E.AuthenticationError)
         assert result.retryable is False
@@ -655,7 +644,9 @@ class TestErrorTranslation:
     def test_403_access_denied(self) -> None:
         """403 → AccessDeniedError."""
         adapter = _make_adapter()
-        exc = _make_genai_client_error(403, status="PERMISSION_DENIED", message="Forbidden")
+        exc = _make_genai_client_error(
+            403, status="PERMISSION_DENIED", message="Forbidden"
+        )
         result = adapter._translate_error(exc)
         assert isinstance(result, E.AccessDeniedError)
         assert result.retryable is False
@@ -663,14 +654,18 @@ class TestErrorTranslation:
     def test_404_not_found(self) -> None:
         """404 → NotFoundError."""
         adapter = _make_adapter()
-        exc = _make_genai_client_error(404, status="NOT_FOUND", message="Model not found")
+        exc = _make_genai_client_error(
+            404, status="NOT_FOUND", message="Model not found"
+        )
         result = adapter._translate_error(exc)
         assert isinstance(result, E.NotFoundError)
 
     def test_429_rate_limit(self) -> None:
         """429 → RateLimitError."""
         adapter = _make_adapter()
-        exc = _make_genai_client_error(429, status="RESOURCE_EXHAUSTED", message="Rate limited")
+        exc = _make_genai_client_error(
+            429, status="RESOURCE_EXHAUSTED", message="Rate limited"
+        )
         result = adapter._translate_error(exc)
         assert isinstance(result, E.RateLimitError)
         assert result.retryable is True
@@ -686,7 +681,9 @@ class TestErrorTranslation:
     def test_503_server_error(self) -> None:
         """503 → ServerError."""
         adapter = _make_adapter()
-        exc = _make_genai_server_error(503, status="UNAVAILABLE", message="Service unavailable")
+        exc = _make_genai_server_error(
+            503, status="UNAVAILABLE", message="Service unavailable"
+        )
         result = adapter._translate_error(exc)
         assert isinstance(result, E.ServerError)
         assert result.retryable is True
@@ -842,9 +839,9 @@ class TestCompleteIntegration:
 
             call_kwargs = mock_models.generate_content.call_args[1]
             assert call_kwargs["model"] == "gemini-2.0-flash"
-            assert "system_instruction" in call_kwargs
             assert "contents" in call_kwargs
             config = call_kwargs.get("config", {})
+            assert "system_instruction" in config
             assert config.get("temperature") == 0.5
             assert config.get("max_output_tokens") == 1024
 
@@ -1051,9 +1048,7 @@ class TestStreamingTranslation:
     def test_text_stream_event_sequence(self) -> None:
         """Text stream: TEXT_START → TEXT_DELTA*2 → FINISH."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_text("Hello"),
             _make_stream_chunk_text(
@@ -1074,9 +1069,7 @@ class TestStreamingTranslation:
     def test_text_deltas_contain_text(self) -> None:
         """TEXT_DELTA events carry the delta text."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_text("Hello"),
             _make_stream_chunk_text(" world", finish_reason="STOP"),
@@ -1090,9 +1083,7 @@ class TestStreamingTranslation:
     def test_finish_event_has_usage(self) -> None:
         """FINISH event carries usage and finish_reason."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_text(
                 "Hello",
@@ -1114,9 +1105,7 @@ class TestStreamingTranslation:
     def test_function_call_stream_events(self) -> None:
         """Function call: TOOL_CALL_START → TOOL_CALL_END (complete in one chunk)."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_function_call(
                 "get_weather", {"city": "SF"}, finish_reason="STOP"
@@ -1132,9 +1121,7 @@ class TestStreamingTranslation:
     def test_tool_call_end_has_parsed_args(self) -> None:
         """TOOL_CALL_END carries the complete parsed tool call."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_function_call(
                 "get_weather", {"city": "SF"}, finish_reason="STOP"
@@ -1151,9 +1138,7 @@ class TestStreamingTranslation:
     def test_tool_call_finish_reason(self) -> None:
         """Tool call stream: FINISH has reason='tool_calls'."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_function_call(
                 "search", {"q": "test"}, finish_reason="STOP"
@@ -1168,14 +1153,10 @@ class TestStreamingTranslation:
     def test_stream_error_translated(self) -> None:
         """Stream errors are caught and translated to unified errors."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
 
         exc = _make_genai_server_error(500, message="Server error")
-        adapter._client.aio.models.generate_content_stream = AsyncMock(
-            side_effect=exc
-        )
+        adapter._client.aio.models.generate_content_stream = AsyncMock(side_effect=exc)
 
         with pytest.raises(E.ServerError):
 
@@ -1188,9 +1169,7 @@ class TestStreamingTranslation:
     def test_text_end_emitted(self) -> None:
         """TEXT_END is emitted when finish_reason is present after text."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_text("Hello"),
             _make_stream_chunk_text(" world", finish_reason="STOP"),
@@ -1203,9 +1182,7 @@ class TestStreamingTranslation:
     def test_finish_has_response_object(self) -> None:
         """FINISH event carries a Response object."""
         adapter = _make_adapter()
-        request = Request(
-            model="gemini-2.0-flash", messages=[Message.user("Hi")]
-        )
+        request = Request(model="gemini-2.0-flash", messages=[Message.user("Hi")])
         chunks = [
             _make_stream_chunk_text("Hi", finish_reason="STOP"),
         ]

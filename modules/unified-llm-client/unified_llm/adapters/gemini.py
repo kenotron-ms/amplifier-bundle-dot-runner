@@ -227,15 +227,15 @@ class GeminiAdapter:
             "contents": contents,
         }
 
-        if system_parts:
-            kwargs["system_instruction"] = "\n\n".join(system_parts)
-
         # Tools
         if request.tools:
             kwargs["tools"] = self._translate_tools(request.tools)
 
         # Generation config
         config: dict[str, Any] = {}
+
+        if system_parts:
+            config["system_instruction"] = "\n\n".join(system_parts)
         if request.temperature is not None:
             config["temperature"] = request.temperature
         if request.top_p is not None:

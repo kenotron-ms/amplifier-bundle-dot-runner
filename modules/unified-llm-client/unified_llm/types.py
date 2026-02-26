@@ -139,6 +139,11 @@ class Message:
     name: str | None = None
     tool_call_id: str | None = None
 
+    def __post_init__(self) -> None:
+        """Auto-normalize string content to list[ContentPart]."""
+        if isinstance(self.content, str):
+            self.content = [ContentPart(kind=ContentKind.TEXT, text=self.content)]
+
     @property
     def text(self) -> str:
         """Concatenate text from all TEXT content parts. Returns '' if none."""
