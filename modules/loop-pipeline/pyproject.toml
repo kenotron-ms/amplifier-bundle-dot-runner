@@ -24,7 +24,8 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
-
+[tool.uv.sources]
+unified-llm-client = { path = "../unified-llm-client" }
 
 [tool.hatch.build.targets.wheel]
 packages = [
