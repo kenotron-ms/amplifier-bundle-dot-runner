@@ -114,6 +114,7 @@ class PipelineEngine:
                 "node_count": len(self.graph.nodes),
                 "edge_count": len(self.graph.edges),
                 "goal": self.graph.goal or goal or "",
+                "dot_source": self.graph.dot_source,
             },
         )
 

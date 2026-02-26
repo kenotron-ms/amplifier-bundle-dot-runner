@@ -215,6 +215,29 @@ class TestPipelineLifecycleEvents:
         assert start_events[0]["goal"] == "build auth"
 
     @pytest.mark.asyncio
+    async def test_start_event_has_dot_source(self, tmp_path):
+        """pipeline:start includes the raw DOT source used to build the graph."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                exit [shape=Msquare]
+                start -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        start_events = hooks.get(PIPELINE_START)
+        assert len(start_events) == 1
+        assert "dot_source" in start_events[0]
+        assert start_events[0]["dot_source"] != ""
+        assert "digraph" in start_events[0]["dot_source"]
+
+    @pytest.mark.asyncio
     async def test_emits_pipeline_complete(self, tmp_path):
         """pipeline:complete is emitted when the engine finishes successfully."""
         hooks = MockHooks()

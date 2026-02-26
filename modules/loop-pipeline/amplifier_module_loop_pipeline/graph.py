@@ -287,6 +287,7 @@ class Graph:
     nodes: dict[str, Node]
     edges: list[Edge]
     goal: str = ""
+    dot_source: str = ""
     default_max_retry: int = 50
     model_stylesheet: str = ""
     graph_attrs: dict[str, str] = field(default_factory=dict)

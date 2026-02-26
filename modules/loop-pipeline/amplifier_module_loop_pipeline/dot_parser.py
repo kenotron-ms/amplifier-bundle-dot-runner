@@ -127,6 +127,7 @@ def parse_dot(source: str) -> Graph:
         nodes=ctx.nodes,
         edges=ctx.edges,
         goal=ctx.graph_fields.get("goal", ""),
+        dot_source=source,
         default_max_retry=ctx.graph_fields.get("default_max_retry", 50),
         model_stylesheet=ctx.graph_fields.get("model_stylesheet", ""),
         max_pipeline_duration=ctx.graph_fields.get("max_pipeline_duration"),
