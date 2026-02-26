@@ -68,7 +68,10 @@ def _resolve_key(
     Spec Section 10.4: Variable Resolution.
     """
     if key == "outcome":
-        return outcome.status.value
+        # preferred_label carries custom outcome values from the agent
+        # (e.g., "yes", "process", "done") set via report_outcome tool.
+        # Fall back to the status enum value for standard routing.
+        return outcome.preferred_label or outcome.status.value
 
     if key == "preferred_label":
         return outcome.preferred_label or ""

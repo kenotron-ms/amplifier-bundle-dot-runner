@@ -147,12 +147,13 @@ def test_outcome_status_values():
 
 def test_three_clauses_all_true():
     """Three AND-joined clauses, all true."""
+    # With preferred_label set, outcome resolves to preferred_label value
     outcome = Outcome(status=StageStatus.SUCCESS, preferred_label="go")
     ctx = PipelineContext()
     ctx.set("ready", "true")
     assert (
         evaluate_condition(
-            "outcome=success && preferred_label=go && context.ready=true",
+            "outcome=go && preferred_label=go && context.ready=true",
             outcome,
             ctx,
         )
@@ -167,7 +168,7 @@ def test_three_clauses_one_false():
     ctx.set("ready", "false")
     assert (
         evaluate_condition(
-            "outcome=success && preferred_label=go && context.ready=true",
+            "outcome=go && preferred_label=go && context.ready=true",
             outcome,
             ctx,
         )
@@ -249,3 +250,27 @@ def test_bare_key_outcome():
     outcome = Outcome(status=StageStatus.SUCCESS)
     ctx = PipelineContext()
     assert evaluate_condition("outcome", outcome, ctx) is True
+
+
+# --- outcome key resolves preferred_label for custom routing ---
+
+
+def test_outcome_resolves_preferred_label_custom_value():
+    """outcome=yes matches when preferred_label='yes' (custom routing)."""
+    outcome = Outcome(status=StageStatus.SUCCESS, preferred_label="yes")
+    ctx = PipelineContext()
+    assert evaluate_condition("outcome=yes", outcome, ctx) is True
+
+
+def test_outcome_resolves_status_when_no_preferred_label():
+    """outcome=success still works when preferred_label is None."""
+    outcome = Outcome(status=StageStatus.SUCCESS, preferred_label=None)
+    ctx = PipelineContext()
+    assert evaluate_condition("outcome=success", outcome, ctx) is True
+
+
+def test_outcome_resolves_status_fail_when_no_preferred_label():
+    """outcome=fail matches standard status when preferred_label is None."""
+    outcome = Outcome(status=StageStatus.FAIL, preferred_label=None)
+    ctx = PipelineContext()
+    assert evaluate_condition("outcome=fail", outcome, ctx) is True

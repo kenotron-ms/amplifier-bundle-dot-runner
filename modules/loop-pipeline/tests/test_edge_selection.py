@@ -209,8 +209,11 @@ def test_all_conditions_false_fallback_to_weight():
 
 def test_condition_beats_preferred_label():
     """Condition match (step 1) beats preferred label (step 2)."""
+    # With preferred_label set, outcome resolves to preferred_label value.
+    # Edge B's condition matches via outcome=go_here (condition step).
+    # Edge C's label would match via preferred_label step, but condition wins.
     edges = [
-        Edge("A", "B", condition="outcome=success"),
+        Edge("A", "B", condition="outcome=go_here"),
         Edge("A", "C", label="go_here"),
     ]
     graph = _make_graph(edges)
