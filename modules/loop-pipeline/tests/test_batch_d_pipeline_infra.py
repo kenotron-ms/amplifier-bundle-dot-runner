@@ -452,7 +452,7 @@ class TestM23CheckpointFidelityDegradation:
 
     @pytest.mark.asyncio
     async def test_full_fidelity_degraded_on_resume(self, tmp_path):
-        """When checkpoint has full fidelity, it's degraded to summary:high."""
+        """When checkpoint has full fidelity, it degrades to summary:high for one hop then restores."""
         # Create a checkpoint with full fidelity in context
         cp = Checkpoint(
             current_node="plan",
@@ -486,10 +486,9 @@ class TestM23CheckpointFidelityDegradation:
             logs_root=str(tmp_path),
         )
         await engine.run()
-        # After resume, the fidelity should have been degraded
-        # Check context reflects the degradation
+        # After resume, fidelity is degraded for the first hop then restored to full
         fidelity = engine.context.get("graph.default_fidelity")
-        assert fidelity == "summary:high"
+        assert fidelity == "full"
 
     @pytest.mark.asyncio
     async def test_non_full_fidelity_not_degraded_on_resume(self, tmp_path):
@@ -528,6 +527,55 @@ class TestM23CheckpointFidelityDegradation:
         await engine.run()
         fidelity = engine.context.get("graph.default_fidelity")
         assert fidelity == "compact"
+
+    @pytest.mark.asyncio
+    async def test_fidelity_restored_after_first_node(self, tmp_path):
+        """Fidelity degraded to summary:high for first post-resume node, then restored to full."""
+        fidelities_seen: list[str] = []
+
+        class FidelityCapturingBackend:
+            async def run(self, node, prompt, context):
+                fidelity = context.get("graph.default_fidelity")
+                fidelities_seen.append(fidelity)
+                return "done"
+
+        cp = Checkpoint(
+            current_node="plan",
+            completed_nodes={"start": "success", "plan": "success"},
+            context_snapshot={
+                "graph.goal": "build auth",
+                "outcome": "success",
+                "graph.default_fidelity": "full",
+            },
+            node_outcomes={
+                "start": {"status": "success"},
+                "plan": {"status": "success"},
+            },
+            timestamp="2025-01-01T00:00:00Z",
+        )
+        save_checkpoint(cp, str(tmp_path / "checkpoint.json"))
+
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                goal = "build auth"
+                default_fidelity = "full"
+                start [shape=Mdiamond]
+                plan [prompt="Plan"]
+                implement [prompt="Build"]
+                review [prompt="Review"]
+                exit [shape=Msquare]
+                start -> plan -> implement -> review -> exit
+            }
+            """,
+            backend=FidelityCapturingBackend(),
+            logs_root=str(tmp_path),
+        )
+        await engine.run()
+        # First post-resume node (implement) should run at degraded fidelity
+        assert fidelities_seen[0] == "summary:high"
+        # Second post-resume node (review) should run at restored full fidelity
+        assert fidelities_seen[1] == "full"
 
 
 # ===========================================================================

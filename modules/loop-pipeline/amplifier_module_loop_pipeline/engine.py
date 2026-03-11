@@ -73,6 +73,7 @@ class PipelineEngine:
         self.node_outcomes: dict[str, Outcome] = {}
         self.completed_nodes: list[str] = []
         self.iteration_count: int = 0
+        self._fidelity_degraded_hop: bool = False
         self._checkpoint_path = os.path.join(logs_root, "checkpoint.json")
         self.artifact_store = ArtifactStore(base_dir=logs_root)
 
@@ -325,6 +326,16 @@ class PipelineEngine:
             self.completed_nodes.append(current_node.id)
             self.node_outcomes[current_node.id] = outcome
             logger.debug("Node %s completed: %s", current_node.id, outcome.status.value)
+
+            # M-23: One-hop fidelity restoration
+            if self._fidelity_degraded_hop:
+                self.context.set("graph.default_fidelity", "full")
+                self._fidelity_degraded_hop = False
+                logger.info(
+                    "Checkpoint resume: restored fidelity to 'full' "
+                    "after one-hop degradation (node '%s')",
+                    current_node.id,
+                )
 
             await self._emit(
                 PIPELINE_NODE_COMPLETE,
@@ -696,9 +707,11 @@ class PipelineEngine:
         restored_fidelity = self.context.get("graph.default_fidelity")
         if restored_fidelity == "full":
             self.context.set("graph.default_fidelity", "summary:high")
+            self._fidelity_degraded_hop = True
             logger.info(
                 "Checkpoint resume: degraded fidelity from 'full' to "
-                "'summary:high' (full session context unavailable)"
+                "'summary:high' (full session context unavailable); "
+                "will restore after first node"
             )
 
         # Restore completed nodes and outcomes
