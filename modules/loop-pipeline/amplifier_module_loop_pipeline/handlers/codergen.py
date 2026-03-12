@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
-from ..transforms import expand_goal_variable
+from ..transforms import expand_goal_variable, expand_params
 
 
 @runtime_checkable
@@ -101,6 +101,8 @@ def _expand_variables(prompt: str, graph: Graph, context: PipelineContext) -> st
     L-17: Delegates to the shared expand_goal_variable utility for $goal.
     Runtime variable: $context resolves to the previous node's response
     (stored as ``last_response`` in the pipeline context).
+    P7: Plain context keys (no "." in name) are expanded as $param tokens,
+    enabling context.* attrs injected by parent folder/house nodes.
 
     Spec Section 4.5: Variable expansion.
     """
@@ -112,6 +114,15 @@ def _expand_variables(prompt: str, graph: Graph, context: PipelineContext) -> st
     if "$context" in result:
         last_response = context.get("last_response", "") or ""
         result = result.replace("$context", str(last_response))
+
+    # P7: Expand plain context keys injected via context.* parent node attrs.
+    # Only expands keys without "." (namespaced keys like graph.goal are excluded).
+    if "$" in result:
+        plain_params = {
+            k: str(v) for k, v in context.snapshot().items() if "." not in k
+        }
+        if plain_params:
+            result = expand_params(result, plain_params)
 
     return result
 

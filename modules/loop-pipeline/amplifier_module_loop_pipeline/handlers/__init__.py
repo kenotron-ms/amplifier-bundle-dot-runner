@@ -71,6 +71,9 @@ class HandlerRegistry:
             ),
             "stack.manager_loop": ManagerLoopHandler(
                 subgraph_runner=kwargs.get("subgraph_runner"),
+                backend=kwargs.get("backend"),
+                hooks=self._hooks,
+                cancel_event=kwargs.get("cancel_event"),
             ),
             "parallel": ParallelHandler(
                 subgraph_runner=kwargs.get("subgraph_runner"),
@@ -80,6 +83,7 @@ class HandlerRegistry:
             "pipeline": PipelineHandler(
                 hooks=self._hooks,
                 cancel_event=kwargs.get("cancel_event"),
+                backend=kwargs.get("backend"),
             ),
         }
 
@@ -133,6 +137,7 @@ class HandlerRegistry:
             new._handlers["pipeline"] = PipelineHandler(
                 hooks=original_pipeline._hooks,
                 cancel_event=original_pipeline._cancel_event,
+                backend=original_pipeline._backend,
             )
 
         return new

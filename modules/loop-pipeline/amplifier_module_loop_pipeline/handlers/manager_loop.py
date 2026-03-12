@@ -102,8 +102,17 @@ class ManagerLoopHandler:
     delegating child execution to the provided subgraph_runner.
     """
 
-    def __init__(self, subgraph_runner: SubgraphRunner | None = None) -> None:
+    def __init__(
+        self,
+        subgraph_runner: SubgraphRunner | None = None,
+        backend: Any = None,
+        hooks: Any = None,
+        cancel_event: Any = None,
+    ) -> None:
         self._runner = subgraph_runner
+        self._backend = backend
+        self._hooks = hooks
+        self._cancel_event = cancel_event
         self._subgraph_runs: dict[str, dict[str, Any]] = {}
 
     async def execute(
@@ -168,6 +177,13 @@ class ManagerLoopHandler:
         for cycle in range(1, max_cycles + 1):
             # 1. OBSERVE — build child context and run child subgraph
             child_context = context.clone()
+
+            # (1b) Inject context.* attributes from this house node into child context.
+            for attr_key, attr_value in node.attrs.items():
+                if attr_key.startswith("context."):
+                    child_key = attr_key[len("context.") :]
+                    child_context.set(child_key, str(attr_value))
+
             if "steer" in actions and last_outcome is not None:
                 # M-15: Structured steering with full cycle context
                 steering = _build_steering_message(
@@ -295,7 +311,11 @@ class ManagerLoopHandler:
         os.makedirs(child_logs, exist_ok=True)
 
         # Create child HandlerRegistry and PipelineEngine
-        child_registry = HandlerRegistry()
+        child_registry = HandlerRegistry(
+            backend=self._backend,
+            hooks=self._hooks,
+            cancel_event=self._cancel_event,
+        )
         child_engine = PipelineEngine(
             graph=child_graph,
             context=child_context,

@@ -69,10 +69,12 @@ class PipelineHandler:
         handler_registry_factory: Any = None,
         cancel_event: Any = None,
         hooks: Any = None,
+        backend: Any = None,
     ) -> None:
         self._handler_registry_factory = handler_registry_factory
         self._cancel_event = cancel_event
         self._hooks = hooks
+        self._backend = backend
         self._subgraph_runs: dict[str, Any] = {}
 
     async def _emit(self, event_name: str, data: dict[str, Any]) -> None:
@@ -143,6 +145,12 @@ class PipelineHandler:
         # (6) Clone parent context
         child_context = context.clone()
 
+        # (6b) Inject context.* attributes from this folder node into child context.
+        for attr_key, attr_value in node.attrs.items():
+            if attr_key.startswith("context."):
+                child_key = attr_key[len("context.") :]
+                child_context.set(child_key, str(attr_value))
+
         # (7) Create child logs dir
         child_logs = os.path.join(logs_root, f"subgraph_{node.id}")
         os.makedirs(child_logs, exist_ok=True)
@@ -151,7 +159,11 @@ class PipelineHandler:
         if self._handler_registry_factory is not None:
             child_registry = self._handler_registry_factory()
         else:
-            child_registry = HandlerRegistry()
+            child_registry = HandlerRegistry(
+                backend=self._backend,
+                hooks=self._hooks,
+                cancel_event=self._cancel_event,
+            )
 
         # (9) Create child PipelineEngine
         child_engine = PipelineEngine(
