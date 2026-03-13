@@ -322,6 +322,28 @@ class PipelineEngine:
                     suggested_next_ids=outcome.suggested_next_ids,
                 )
 
+            # continue_on_fail: override FAIL to SUCCESS for routing, log the failure
+            if (
+                current_node.attrs.get("continue_on_fail") == "true"
+                and outcome.status == StageStatus.FAIL
+            ):
+                logger.warning(
+                    "Node '%s' failed but continue_on_fail=true; overriding to SUCCESS "
+                    "(failure: %s)",
+                    current_node.id,
+                    outcome.failure_reason or outcome.notes or "no reason given",
+                )
+                outcome = Outcome(
+                    status=StageStatus.SUCCESS,
+                    notes=(
+                        f"continue_on_fail override (was FAIL: "
+                        f"{outcome.failure_reason or outcome.notes})"
+                    ),
+                    context_updates=outcome.context_updates,
+                    preferred_label=outcome.preferred_label,
+                    suggested_next_ids=outcome.suggested_next_ids,
+                )
+
             # Step 3: Record completion
             self.completed_nodes.append(current_node.id)
             self.node_outcomes[current_node.id] = outcome
