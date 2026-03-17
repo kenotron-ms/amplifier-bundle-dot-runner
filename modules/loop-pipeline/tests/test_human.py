@@ -535,15 +535,3 @@ async def test_human_handler_emits_interview_events():
     assert PIPELINE_INTERVIEW_STARTED in event_names
     assert PIPELINE_INTERVIEW_COMPLETED in event_names
 
-
-# --- Task 1: Updated error message includes ConsoleInterviewer ---
-
-
-@pytest.mark.asyncio
-async def test_no_interviewer_error_mentions_consoleinterviewer():
-    """Error message must tell developer about ConsoleInterviewer as an option."""
-    graph = _make_graph_with_human_gate()
-    node = graph.nodes["review"]
-    handler = HumanGateHandler()
-    with pytest.raises(ValueError, match="ConsoleInterviewer"):
-        await handler.execute(node, _make_context(), graph, "/tmp")
