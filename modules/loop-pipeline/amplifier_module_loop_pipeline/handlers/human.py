@@ -15,7 +15,6 @@ from ..graph import Graph, Node
 from ..interviewer import (
     Answer,
     AnswerValue,
-    AutoApproveInterviewer,
     Interviewer,
     Option,
     Question,
@@ -93,8 +92,8 @@ class HumanGateHandler:
         if self._interviewer is None:
             raise ValueError(
                 "HumanGateHandler requires an Interviewer but none was provided. "
-                "Pass interviewer=AutoApproveInterviewer() explicitly if you want "
-                "auto-approve behavior for CI/testing."
+                "Pass interviewer=AutoApproveInterviewer() explicitly for auto-approve, "
+                "or interviewer=ConsoleInterviewer() for interactive use."
             )
         # 1. Derive choices from outgoing edges and build label-to-node mapping
         edges = graph.outgoing_edges(node.id)
