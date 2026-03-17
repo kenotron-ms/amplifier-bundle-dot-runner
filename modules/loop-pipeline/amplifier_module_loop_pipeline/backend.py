@@ -547,10 +547,9 @@ def _parse_outcome(output: str) -> Outcome:
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    # Fall back to plain text → SUCCESS
     return Outcome(
-        status=StageStatus.SUCCESS,
-        notes=output[:200] if output else "No output",
+        status=StageStatus.FAIL,
+        notes=f"Non-structured response (expected JSON with 'status' key): {output[:200] if output else 'No output'}",
     )
 
 

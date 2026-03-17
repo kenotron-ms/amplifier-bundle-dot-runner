@@ -273,7 +273,7 @@ def _make_context() -> PipelineContext:
 async def test_backend_spawns_session():
     """Backend uses coordinator session.spawn to create child session."""
     coordinator = MockCoordinator(
-        spawn_result={"output": "done", "session_id": "child-1"}
+        spawn_result={"output": json.dumps({"status": "success", "notes": "done"}), "session_id": "child-1"}
     )
     backend = AmplifierBackend(
         coordinator=coordinator,
@@ -422,8 +422,8 @@ async def test_backend_parses_json_outcome():
 
 
 @pytest.mark.asyncio
-async def test_backend_wraps_plain_text_as_success():
-    """If child returns plain text, wrap it in a SUCCESS outcome."""
+async def test_backend_plain_text_returns_fail():
+    """If child returns plain text (non-JSON), return FAIL — not silent SUCCESS."""
     coordinator = MockCoordinator(
         spawn_result={"output": "Implementation complete", "session_id": "c-1"}
     )
@@ -434,7 +434,8 @@ async def test_backend_wraps_plain_text_as_success():
     node = _make_node(attrs={"llm_provider": "anthropic"})
     result = await backend.run(node, "task", _make_context())
     assert isinstance(result, Outcome)
-    assert result.status == StageStatus.SUCCESS
+    assert result.status == StageStatus.FAIL
+    assert "Non-structured response" in (result.notes or "")
 
 
 @pytest.mark.asyncio
@@ -530,7 +531,7 @@ async def test_backend_forwards_model():
 async def test_backend_falls_back_to_tool_loop():
     """When spawn is unavailable but provider is given, uses direct tool loop."""
     coordinator = NoSpawnCoordinator()
-    mock_client = _MockUnifiedClient([_make_text_response("done")])
+    mock_client = _MockUnifiedClient([_make_text_response(json.dumps({"status": "success", "notes": "done"}))])
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
@@ -554,8 +555,8 @@ async def test_tool_loop_executes_tools_then_returns():
             _make_tool_call_response(
                 [{"id": "tc-1", "name": "write_file", "args": {"path": "a.py"}}]
             ),
-            # Round 2: model returns text only (done)
-            _make_text_response("All done"),
+            # Round 2: model returns JSON outcome (done)
+            _make_text_response(json.dumps({"status": "success", "notes": "All done"})),
         ]
     )
     coordinator = NoSpawnCoordinator()
@@ -652,7 +653,7 @@ async def test_reasoning_effort_passed_to_tool_loop(monkeypatch):
 
     async def _fake_generate(**kwargs):
         captured_kwargs.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result(json.dumps({"status": "success"}))
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -676,7 +677,7 @@ async def test_reasoning_effort_defaults_to_none(monkeypatch):
 
     async def _fake_generate(**kwargs):
         captured_kwargs.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result(json.dumps({"status": "success"}))
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -691,3 +692,18 @@ async def test_reasoning_effort_defaults_to_none(monkeypatch):
 
     assert result.status == StageStatus.SUCCESS
     assert captured_kwargs.get("reasoning_effort") is None
+
+
+# ---------------------------------------------------------------------------
+# Task 4: _parse_outcome returns FAIL for non-JSON responses
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parse_outcome_plain_text_returns_fail():
+    """_parse_outcome must return FAIL for non-JSON responses, not silent SUCCESS."""
+    from amplifier_module_loop_pipeline.backend import _parse_outcome
+
+    result = _parse_outcome("I finished the task successfully")
+    assert result.status == StageStatus.FAIL
+    assert "Non-structured response" in (result.notes or "")
