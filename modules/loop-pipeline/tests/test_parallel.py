@@ -608,3 +608,28 @@ async def test_fan_in_falls_back_to_heuristic_without_prompt():
 
     assert outcome.is_success
     assert context.get("parallel.fan_in.best_id") == "b1"
+
+
+# --- Task 3: ParallelHandler returns FAIL when no subgraph_runner ---
+
+
+@pytest.mark.asyncio
+async def test_parallel_no_runner_branch_returns_fail():
+    """ParallelHandler with no runner returns FAIL outcomes for branches — no silent simulation."""
+    handler = ParallelHandler(subgraph_runner=None)
+    par_node = Node(id="parallel", shape="component")
+    graph = _make_graph(
+        nodes={
+            "parallel": par_node,
+            "branch_a": Node(id="branch_a", prompt="A"),
+        },
+        edges=[Edge(from_node="parallel", to_node="branch_a")],
+    )
+    context = _make_context()
+    outcome = await handler.execute(par_node, context, graph, "/tmp")
+    # With no runner, the branch should fail — not silently succeed
+    results = context.get("parallel.results")
+    assert results is not None
+    assert len(results) == 1
+    assert results[0]["status"] == "fail"
+    assert "subgraph_runner" in (results[0]["notes"] or "")

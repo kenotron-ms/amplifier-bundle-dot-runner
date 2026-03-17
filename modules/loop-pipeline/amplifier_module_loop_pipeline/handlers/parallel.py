@@ -116,10 +116,13 @@ class ParallelHandler:
                             target_node_id, branch_context, graph, logs_root
                         )
                     else:
-                        outcome = Outcome(
-                            status=StageStatus.SUCCESS,
-                            notes=f"Simulated branch: {target_node_id}",
-                        )
+                        return {
+                            "node_id": target_node_id,
+                            "status": StageStatus.FAIL.value,
+                            "notes": f"ParallelHandler requires a subgraph_runner but none was provided for branch '{target_node_id}'.",
+                            "failure_reason": None,
+                            "context_updates": None,
+                        }
                 except Exception as e:
                     logger.warning("Branch %s raised exception: %s", target_node_id, e)
                     outcome = Outcome(
