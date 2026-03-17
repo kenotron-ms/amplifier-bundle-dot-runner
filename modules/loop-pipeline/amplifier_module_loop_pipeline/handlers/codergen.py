@@ -51,7 +51,7 @@ class CodergenHandler:
 
         1. Build prompt (expand $goal)
         2. Write prompt to logs
-        3. Call backend (or simulate)
+        3. Call backend
         4. Write response and status to logs
         5. Return outcome
         """
