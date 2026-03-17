@@ -169,14 +169,12 @@ async def test_codergen_status_json_content(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codergen_simulation_mode(tmp_path):
-    """No backend = simulation mode with simulated response."""
+async def test_codergen_no_backend_raises(tmp_path):
+    """No backend raises ValueError — simulation mode no longer silently succeeds."""
     handler = CodergenHandler(backend=None)
     node = Node(id="sim_step", prompt="Do it")
-    outcome = await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
-    assert outcome.status == StageStatus.SUCCESS
-    response = (tmp_path / "sim_step" / "response.md").read_text()
-    assert "Simulated" in response
+    with pytest.raises(ValueError, match="CodergenHandler requires a backend"):
+        await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
 
 
 @pytest.mark.asyncio
@@ -504,3 +502,15 @@ def test_registry_register_replaces_existing():
     registry.register("start", NewStart())
     replaced = registry.get(Node(id="s", shape="Mdiamond"))
     assert isinstance(replaced, NewStart)
+
+
+# --- Task 2: CodergenHandler raises when no backend ---
+
+
+@pytest.mark.asyncio
+async def test_codergen_no_backend_raises_valueerror(tmp_path):
+    """CodergenHandler requires a backend — raises ValueError when none provided."""
+    handler = CodergenHandler(backend=None)
+    node = Node(id="step", prompt="Do work")
+    with pytest.raises(ValueError, match="CodergenHandler requires a backend"):
+        await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))

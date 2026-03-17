@@ -77,7 +77,10 @@ class CodergenHandler:
                 _write_status(stage_dir, outcome)
                 return outcome
         else:
-            response_text = f"[Simulated] Response for stage: {node.id}"
+            raise ValueError(
+                "CodergenHandler requires a backend but none was provided. "
+                "Pass a configured AmplifierBackend, or backend=MockBackend() for testing."
+            )
 
         # 4. Write response to logs
         _write_file(os.path.join(stage_dir, "response.md"), response_text)
