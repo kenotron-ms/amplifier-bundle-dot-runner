@@ -65,22 +65,21 @@ class CodergenHandler:
         _write_file(os.path.join(stage_dir, "prompt.md"), prompt)
 
         # 3. Call LLM backend
-        if self._backend is not None:
-            try:
-                result = await self._backend.run(node, prompt, context)
-                if isinstance(result, Outcome):
-                    _write_status(stage_dir, result)
-                    return result
-                response_text = str(result)
-            except Exception as e:
-                outcome = Outcome(status=StageStatus.FAIL, failure_reason=str(e))
-                _write_status(stage_dir, outcome)
-                return outcome
-        else:
+        if self._backend is None:
             raise ValueError(
                 "CodergenHandler requires a backend but none was provided. "
-                "Pass a configured AmplifierBackend, or backend=MockBackend() for testing."
+                "Pass backend=MockBackend() explicitly if you want simulated responses for testing."
             )
+        try:
+            result = await self._backend.run(node, prompt, context)
+            if isinstance(result, Outcome):
+                _write_status(stage_dir, result)
+                return result
+            response_text = str(result)
+        except Exception as e:
+            outcome = Outcome(status=StageStatus.FAIL, failure_reason=str(e))
+            _write_status(stage_dir, outcome)
+            return outcome
 
         # 4. Write response to logs
         _write_file(os.path.join(stage_dir, "response.md"), response_text)

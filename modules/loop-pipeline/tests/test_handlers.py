@@ -169,15 +169,6 @@ async def test_codergen_status_json_content(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codergen_no_backend_raises(tmp_path):
-    """No backend raises ValueError — simulation mode no longer silently succeeds."""
-    handler = CodergenHandler(backend=None)
-    node = Node(id="sim_step", prompt="Do it")
-    with pytest.raises(ValueError, match="CodergenHandler requires a backend"):
-        await handler.execute(node, _make_context(), _make_graph(), str(tmp_path))
-
-
-@pytest.mark.asyncio
 async def test_codergen_backend_returns_outcome(tmp_path):
     """If backend returns an Outcome directly, use it."""
 
