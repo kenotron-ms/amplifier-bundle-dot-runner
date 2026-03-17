@@ -108,11 +108,13 @@ class ManagerLoopHandler:
         backend: Any = None,
         hooks: Any = None,
         cancel_event: Any = None,
+        handler_registry_factory: Any | None = None,
     ) -> None:
         self._runner = subgraph_runner
         self._backend = backend
         self._hooks = hooks
         self._cancel_event = cancel_event
+        self._handler_registry_factory = handler_registry_factory
         self._subgraph_runs: dict[str, dict[str, Any]] = {}
 
     async def execute(
@@ -311,11 +313,14 @@ class ManagerLoopHandler:
         os.makedirs(child_logs, exist_ok=True)
 
         # Create child HandlerRegistry and PipelineEngine
-        child_registry = HandlerRegistry(
-            backend=self._backend,
-            hooks=self._hooks,
-            cancel_event=self._cancel_event,
-        )
+        if self._handler_registry_factory is not None:
+            child_registry = self._handler_registry_factory()
+        else:
+            child_registry = HandlerRegistry(
+                backend=self._backend,
+                hooks=self._hooks,
+                cancel_event=self._cancel_event,
+            )
         child_engine = PipelineEngine(
             graph=child_graph,
             context=child_context,

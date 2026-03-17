@@ -636,6 +636,7 @@ class TestManagerChildDotfileObservability:
     @pytest.mark.asyncio
     async def test_cycle_indexed_subgraph_runs(self, tmp_path):
         """After child dotfile execution, _subgraph_runs has cycle-indexed entry."""
+        import json as _json
         child_dot = tmp_path / "child.dot"
         child_dot.write_text(
             "digraph child {\n"
@@ -646,7 +647,16 @@ class TestManagerChildDotfileObservability:
             "}\n"
         )
 
-        handler = ManagerLoopHandler()
+        class _MockBackend:
+            async def run(self, node, prompt, context):
+                return _json.dumps({"status": "success", "notes": f"mock: {node.id}"})
+
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+
+        def _registry_factory():
+            return HandlerRegistry(backend=_MockBackend())
+
+        handler = ManagerLoopHandler(handler_registry_factory=_registry_factory)
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "2",
