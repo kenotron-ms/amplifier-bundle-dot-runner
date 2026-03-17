@@ -259,7 +259,7 @@ def _make_node(**kwargs: Any) -> Node:
 async def test_amplifier_backend_emits_provider_request():
     """AmplifierBackend emits provider:request before unified_llm.generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -287,7 +287,7 @@ async def test_amplifier_backend_emits_provider_request():
 async def test_amplifier_backend_emits_provider_response():
     """AmplifierBackend emits provider:response after successful generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -315,7 +315,7 @@ async def test_amplifier_backend_emits_provider_response():
 async def test_amplifier_backend_response_includes_step_count():
     """provider:response includes the number of tool loop steps."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -418,7 +418,7 @@ from amplifier_module_loop_pipeline import DirectProviderBackend
 async def test_direct_backend_emits_provider_request():
     """DirectProviderBackend emits provider:request before generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -439,7 +439,7 @@ async def test_direct_backend_emits_provider_request():
 async def test_direct_backend_emits_provider_response():
     """DirectProviderBackend emits provider:response after generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -510,7 +510,7 @@ async def test_direct_backend_deny_hook_aborts_llm_call():
 @pytest.mark.asyncio
 async def test_amplifier_backend_works_without_hooks():
     """AmplifierBackend still works when hooks is None (backward compat)."""
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -529,7 +529,7 @@ async def test_amplifier_backend_works_without_hooks():
 @pytest.mark.asyncio
 async def test_direct_backend_works_without_hooks():
     """DirectProviderBackend still works when hooks is None."""
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -547,7 +547,7 @@ async def test_direct_backend_works_without_hooks():
 async def test_event_ordering_request_before_response():
     """provider:request is emitted before provider:response."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response("done")])
+    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),

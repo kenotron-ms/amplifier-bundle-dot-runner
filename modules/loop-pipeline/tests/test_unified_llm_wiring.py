@@ -237,7 +237,7 @@ def _make_graph_with_fidelity(fidelity: str = "compact") -> Graph:
 @pytest.mark.asyncio
 async def test_backend_tool_loop_uses_unified_client():
     """Path B tool loop delegates to unified_llm via the injected client."""
-    mock_client = _MockUnifiedClient([_make_text_response("All done")])
+    mock_client = _MockUnifiedClient([_make_text_response('{"status": "success", "notes": "All done"}')])
 
     coordinator = NoSpawnCoordinator()
     backend = AmplifierBackend(
@@ -281,7 +281,7 @@ async def test_backend_tool_loop_executes_tools_via_unified():
             _make_tool_call_response(
                 [{"id": "tc-1", "name": "write_file", "args": {"path": "a.py"}}]
             ),
-            _make_text_response("File written"),
+            _make_text_response('{"status": "success", "notes": "File written"}'),
         ]
     )
     tool = _MockTool("write_file", result="file created")
@@ -334,7 +334,7 @@ async def test_backend_tool_loop_parses_json_outcome():
 @pytest.mark.asyncio
 async def test_direct_backend_uses_unified_client():
     """DirectProviderBackend delegates to unified_llm via the injected client."""
-    mock_client = _MockUnifiedClient([_make_text_response("Done")])
+    mock_client = _MockUnifiedClient([_make_text_response('{"status": "success", "notes": "Done"}')])
 
     backend = DirectProviderBackend(
         provider=object(),  # truthy sentinel

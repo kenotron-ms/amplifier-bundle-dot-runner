@@ -15,7 +15,24 @@ from amplifier_module_loop_pipeline.handlers.pipeline import (
     PipelineHandler,
     resolve_dot_path,
 )
-from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+
+
+class _MockBackend:
+    """Minimal mock backend — returns JSON success outcome for any node."""
+
+    async def run(self, node, prompt, context):
+        return json.dumps({"status": "success", "notes": f"mock: {node.id}"})
+
+
+def _make_registry_factory():
+    """Return a HandlerRegistry factory that wires in a mock backend."""
+    from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+
+    def factory():
+        return HandlerRegistry(backend=_MockBackend())
+
+    return factory
 
 
 class TestResolveDotPath:
@@ -154,7 +171,7 @@ class TestPipelineHandlerExecute:
         context = PipelineContext()
         logs_root = str(tmp_path / "logs")
 
-        handler = PipelineHandler()
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
         outcome = await handler.execute(node, context, graph, logs_root)
 
         assert outcome.status == StageStatus.SUCCESS
@@ -280,7 +297,7 @@ class TestPipelineHandlerExecute:
         context.set("lang", "python")
         logs_root = str(tmp_path / "logs")
 
-        handler = PipelineHandler()
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
         outcome = await handler.execute(graph.nodes["sub"], context, graph, logs_root)
 
         assert outcome.status == StageStatus.SUCCESS
@@ -302,7 +319,7 @@ class TestPipelineHandlerObservability:
         context = PipelineContext()
         logs_root = str(tmp_path / "logs")
 
-        handler = PipelineHandler()
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
         await handler.execute(node, context, graph, logs_root)
 
         assert "sub" in handler._subgraph_runs
@@ -358,7 +375,7 @@ class TestPipelineHandlerObservability:
         context = PipelineContext()
         logs_root = str(tmp_path / "logs")
 
-        handler = PipelineHandler(hooks=hooks)
+        handler = PipelineHandler(hooks=hooks, handler_registry_factory=_make_registry_factory())
         await handler.execute(node, context, graph, logs_root)
 
         # Find the pipeline:subgraph_complete call
@@ -430,7 +447,7 @@ class TestPipelineHandlerE2E:
         graph.source_dir = FIXTURES_DIR
 
         context = PipelineContext()
-        registry = HandlerRegistry()
+        registry = HandlerRegistry(backend=_MockBackend())
         logs_root = str(tmp_path / "logs")
 
         engine = PipelineEngine(

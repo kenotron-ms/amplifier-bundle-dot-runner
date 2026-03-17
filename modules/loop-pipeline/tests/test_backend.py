@@ -57,6 +57,20 @@ if "amplifier_core" not in sys.modules:
 
 import unified_llm
 
+# Provide a minimal amplifier_foundation stub so the backend's ProviderPreference
+# import works in the test environment where amplifier_foundation is not installed.
+if "amplifier_foundation" not in sys.modules:
+    from dataclasses import dataclass as _dc
+
+    @_dc
+    class _StubProviderPreference:
+        provider: str = ""
+        model: str = ""
+
+    _stub_foundation = types.ModuleType("amplifier_foundation")
+    _stub_foundation.ProviderPreference = _StubProviderPreference  # type: ignore[attr-defined]
+    sys.modules["amplifier_foundation"] = _stub_foundation
+
 from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Node
@@ -707,3 +721,31 @@ async def test_parse_outcome_plain_text_returns_fail():
     result = _parse_outcome("I finished the task successfully")
     assert result.status == StageStatus.FAIL
     assert "Non-structured response" in (result.notes or "")
+
+
+# ---------------------------------------------------------------------------
+# Task 5: ProviderPreference import raises helpful error when foundation missing
+# ---------------------------------------------------------------------------
+
+
+def test_provider_preference_import_raises_helpful_error_when_missing(monkeypatch):
+    """When amplifier_foundation is unavailable, backend raises a helpful ImportError."""
+    import importlib
+    import sys
+
+    # Remove the module from the cache so re-import triggers the except branch
+    monkeypatch.delitem(sys.modules, "amplifier_foundation", raising=False)
+    monkeypatch.delitem(sys.modules, "amplifier_module_loop_pipeline.backend", raising=False)
+
+    # Block the import so the except branch fires
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+
+    def _blocking_import(name, *args, **kwargs):
+        if name == "amplifier_foundation":
+            raise ImportError("mocked missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _blocking_import)
+
+    with pytest.raises(ImportError, match="amplifier.foundation is required"):
+        importlib.import_module("amplifier_module_loop_pipeline.backend")

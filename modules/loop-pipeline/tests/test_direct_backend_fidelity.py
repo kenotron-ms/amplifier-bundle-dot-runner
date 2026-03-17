@@ -133,8 +133,8 @@ async def test_direct_backend_compact_fidelity_prepends_preamble():
     """With compact fidelity, the prompt should include a preamble after first node."""
     mock_client = _MockUnifiedClient(
         [
-            _make_text_response("Step completed successfully"),
-            _make_text_response("Step 2 done"),
+            _make_text_response('{"status": "success", "notes": "Step completed successfully"}'),
+            _make_text_response('{"status": "success", "notes": "Step 2 done"}'),
         ]
     )
     backend = DirectProviderBackend(
@@ -183,8 +183,8 @@ async def test_direct_backend_truncate_fidelity_minimal_preamble():
     """With truncate fidelity, preamble should be minimal (just goal + run ID)."""
     mock_client = _MockUnifiedClient(
         [
-            _make_text_response("Done"),
-            _make_text_response("Done 2"),
+            _make_text_response('{"status": "success", "notes": "Done"}'),
+            _make_text_response('{"status": "success", "notes": "Done 2"}'),
         ]
     )
     backend = DirectProviderBackend(
@@ -261,7 +261,7 @@ async def test_direct_backend_full_fidelity_reuses_messages():
 @pytest.mark.asyncio
 async def test_direct_backend_without_graph_falls_back_gracefully():
     """When graph/edge not provided, backend works like before (no fidelity)."""
-    mock_client = _MockUnifiedClient([_make_text_response("ok")])
+    mock_client = _MockUnifiedClient([_make_text_response('{"status": "success", "notes": "ok"}')])
     backend = DirectProviderBackend(
         provider=object(),
         unified_client=mock_client,

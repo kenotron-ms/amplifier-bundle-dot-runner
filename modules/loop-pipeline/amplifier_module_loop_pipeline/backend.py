@@ -21,8 +21,11 @@ from typing import Any
 
 try:
     from amplifier_foundation import ProviderPreference as _ProviderPreference
-except ImportError:  # pragma: no cover — fallback when foundation not installed
-    from types import SimpleNamespace as _ProviderPreference  # type: ignore[assignment,misc]
+except ImportError:
+    raise ImportError(
+        "amplifier_foundation is required for ProviderPreference. "
+        "Install it with: pip install amplifier-foundation"
+    ) from None
 
 from .context import PipelineContext
 from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key

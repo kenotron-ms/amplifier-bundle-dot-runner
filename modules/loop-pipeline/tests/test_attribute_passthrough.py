@@ -194,7 +194,7 @@ async def test_tool_loop_passes_reasoning_effort_all_values(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -220,7 +220,7 @@ async def test_tool_loop_reasoning_effort_defaults_to_none(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -252,7 +252,7 @@ async def test_direct_backend_passes_reasoning_effort_all_values(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -279,7 +279,7 @@ async def test_direct_backend_reasoning_effort_defaults_to_none(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -343,7 +343,7 @@ async def test_tool_loop_passes_max_agent_turns(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -369,7 +369,7 @@ async def test_tool_loop_max_agent_turns_defaults_to_constant(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -400,7 +400,7 @@ async def test_direct_backend_passes_max_agent_turns(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 
@@ -427,7 +427,7 @@ async def test_direct_backend_max_agent_turns_defaults_to_constant(
 
     async def _fake_generate(**kwargs: Any) -> unified_llm.GenerateResult:
         captured.update(kwargs)
-        return _make_generate_result("done")
+        return _make_generate_result('{"status": "success", "notes": "done"}')
 
     monkeypatch.setattr(unified_llm, "generate", _fake_generate)
 

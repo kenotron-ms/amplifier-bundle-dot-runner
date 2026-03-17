@@ -543,7 +543,7 @@ async def test_end_to_end_middleware_with_real_client():
         name = "test"
 
         async def complete(self, request):
-            return _make_response("Implementation complete")
+            return _make_response('{"status": "success", "notes": "Implementation complete"}')
 
         def stream(self, request):
             raise NotImplementedError
