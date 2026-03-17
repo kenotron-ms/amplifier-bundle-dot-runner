@@ -721,6 +721,26 @@ async def test_parse_outcome_plain_text_returns_fail():
     result = _parse_outcome("I finished the task successfully")
     assert result.status == StageStatus.FAIL
     assert "Non-structured response" in (result.notes or "")
+    assert result.failure_reason == "Unstructured LLM response"
+
+
+def test_parse_outcome_valid_json_still_works():
+    """_parse_outcome returns SUCCESS when valid JSON with status key is given."""
+    from amplifier_module_loop_pipeline.backend import _parse_outcome
+
+    result = _parse_outcome('{"status": "success", "notes": "done"}')
+    assert result.status == StageStatus.SUCCESS
+    assert result.notes == "done"
+
+
+def test_parse_outcome_empty_string_returns_fail():
+    """_parse_outcome returns FAIL with No output from LLM for empty string."""
+    from amplifier_module_loop_pipeline.backend import _parse_outcome
+
+    result = _parse_outcome("")
+    assert result.status == StageStatus.FAIL
+    assert result.notes == "No output from LLM"
+    assert result.failure_reason == "Unstructured LLM response"
 
 
 # ---------------------------------------------------------------------------

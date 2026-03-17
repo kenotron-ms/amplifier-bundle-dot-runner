@@ -528,8 +528,8 @@ def _build_unified_tools(pipeline_tools: dict[str, Any]) -> list[Any]:
 def _parse_outcome(output: str) -> Outcome:
     """Parse an outcome from child session output.
 
-    Tries JSON first (from tool-report-outcome), falls back to
-    wrapping plain text as SUCCESS.
+    Tries JSON first (from tool-report-outcome). Non-JSON responses
+    return FAIL — an unparseable result is not a confirmed success.
     """
     # Try to parse JSON outcome
     stripped = output.strip()
@@ -552,7 +552,10 @@ def _parse_outcome(output: str) -> Outcome:
 
     return Outcome(
         status=StageStatus.FAIL,
-        notes=f"Non-structured response (expected JSON with 'status' key): {output[:200] if output else 'No output'}",
+        notes=f"Non-structured response (expected JSON with 'status' key): {output[:200]}"
+        if output
+        else "No output from LLM",
+        failure_reason="Unstructured LLM response",
     )
 
 
