@@ -346,15 +346,13 @@ class TestHumanGateHandler:
         assert outcome.status == StageStatus.SUCCESS
 
     @pytest.mark.asyncio
-    async def test_default_interviewer_is_auto_approve(self):
-        """When no interviewer is provided, handler uses AutoApprove."""
+    async def test_no_interviewer_raises_valueerror(self):
+        """When no interviewer is provided, execute() raises ValueError."""
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
         handler = HumanGateHandler()  # No interviewer arg
-        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
-        assert outcome.status == StageStatus.SUCCESS
-        # M-12: "Approve" maps to "deploy" target node
-        assert outcome.suggested_next_ids == ["deploy"]
+        with pytest.raises(ValueError, match="HumanGateHandler requires an Interviewer"):
+            await handler.execute(node, _make_context(), graph, "/tmp")
 
     @pytest.mark.asyncio
     async def test_sets_context_updates_with_spec_keys(self):

@@ -59,8 +59,8 @@ class HumanGateHandler:
     multiple-choice question to the interviewer, and returns
     an Outcome with suggested_next_ids for unambiguous routing.
 
-    Falls back to AutoApproveInterviewer when no interviewer
-    is provided (e.g. in automated/CI environments).
+    Requires an explicit Interviewer instance. Pass
+    AutoApproveInterviewer() for CI/testing environments.
     """
 
     def __init__(
@@ -68,7 +68,7 @@ class HumanGateHandler:
         interviewer: Interviewer | None = None,
         hooks: object | None = None,
     ) -> None:
-        self._interviewer = interviewer or AutoApproveInterviewer()
+        self._interviewer = interviewer
         self._hooks = hooks
 
     async def _emit(self, event_name: str, data: dict) -> None:  # type: ignore[type-arg]
@@ -90,6 +90,12 @@ class HumanGateHandler:
         3. Ask the interviewer.
         4. Map the answer to suggested_next_ids for edge selection.
         """
+        if self._interviewer is None:
+            raise ValueError(
+                "HumanGateHandler requires an Interviewer but none was provided. "
+                "Pass interviewer=AutoApproveInterviewer() explicitly if you want "
+                "auto-approve behavior for CI/testing."
+            )
         # 1. Derive choices from outgoing edges and build label-to-node mapping
         edges = graph.outgoing_edges(node.id)
         choices: list[str] = []
