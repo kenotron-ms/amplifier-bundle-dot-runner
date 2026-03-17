@@ -52,7 +52,7 @@ class ParallelHandler:
             subgraph_runner: Async callable that executes a subgraph
                 starting from a given node ID. Signature:
                 (node_id, context, graph, logs_root) -> Outcome.
-                If None, branches return SUCCESS (simulation mode).
+                If None, branches return FAIL with an explicit error.
             hooks: Optional hooks object for event emission.
         """
         self._runner = subgraph_runner
@@ -110,25 +110,25 @@ class ParallelHandler:
                     {"node_id": node.id, "branch_node_id": target_node_id},
                 )
                 branch_context = context.clone()
-                try:
-                    if self._runner is not None:
+                if self._runner is None:
+                    outcome = Outcome(
+                        status=StageStatus.FAIL,
+                        notes=f"ParallelHandler requires a subgraph_runner. Branch '{target_node_id}' cannot execute.",
+                        failure_reason="No subgraph_runner configured",
+                    )
+                else:
+                    try:
                         outcome = await self._runner(
                             target_node_id, branch_context, graph, logs_root
                         )
-                    else:
-                        return {
-                            "node_id": target_node_id,
-                            "status": StageStatus.FAIL.value,
-                            "notes": f"ParallelHandler requires a subgraph_runner but none was provided for branch '{target_node_id}'.",
-                            "failure_reason": None,
-                            "context_updates": None,
-                        }
-                except Exception as e:
-                    logger.warning("Branch %s raised exception: %s", target_node_id, e)
-                    outcome = Outcome(
-                        status=StageStatus.FAIL,
-                        failure_reason=str(e),
-                    )
+                    except Exception as e:
+                        logger.warning(
+                            "Branch %s raised exception: %s", target_node_id, e
+                        )
+                        outcome = Outcome(
+                            status=StageStatus.FAIL,
+                            failure_reason=str(e),
+                        )
 
                 await self._emit(
                     PIPELINE_PARALLEL_BRANCH_COMPLETED,

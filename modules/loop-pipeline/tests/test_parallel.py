@@ -614,6 +614,33 @@ async def test_fan_in_falls_back_to_heuristic_without_prompt():
 
 
 @pytest.mark.asyncio
+async def test_parallel_no_runner_returns_fail():
+    """ParallelHandler with no runner returns FAIL outcome — no silent simulation."""
+    handler = ParallelHandler(subgraph_runner=None)
+    par_node = Node(
+        id="parallel",
+        shape="component",
+        attrs={"join_policy": "first_success"},
+    )
+    graph = _make_graph(
+        nodes={
+            "parallel": par_node,
+            "branch_a": Node(id="branch_a", prompt="A"),
+        },
+        edges=[Edge(from_node="parallel", to_node="branch_a")],
+    )
+    context = _make_context()
+    outcome = await handler.execute(par_node, context, graph, "/tmp")
+    assert outcome.status == StageStatus.FAIL
+    results = context.get("parallel.results") or []
+    failure_text = " ".join(
+        str(r.get("notes") or "") + " " + str(r.get("failure_reason") or "")
+        for r in results
+    )
+    assert "subgraph_runner" in failure_text
+
+
+@pytest.mark.asyncio
 async def test_parallel_no_runner_branch_returns_fail():
     """ParallelHandler with no runner returns FAIL outcomes for branches — no silent simulation."""
     handler = ParallelHandler(subgraph_runner=None)
@@ -626,7 +653,7 @@ async def test_parallel_no_runner_branch_returns_fail():
         edges=[Edge(from_node="parallel", to_node="branch_a")],
     )
     context = _make_context()
-    outcome = await handler.execute(par_node, context, graph, "/tmp")
+    await handler.execute(par_node, context, graph, "/tmp")
     # With no runner, the branch should fail — not silently succeed
     results = context.get("parallel.results")
     assert results is not None
