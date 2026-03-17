@@ -22,10 +22,15 @@ from typing import Any
 try:
     from amplifier_foundation import ProviderPreference as _ProviderPreference
 except ImportError:
-    raise ImportError(
-        "amplifier_foundation is required for ProviderPreference. "
-        "Install it with: pip install amplifier-foundation"
-    ) from None
+
+    class _ProviderPreference:  # type: ignore[no-redef]
+        """Placeholder raised when amplifier_foundation is not installed."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError(
+                "amplifier_foundation is required for ProviderPreference but is not installed. "
+                "Install it with: pip install amplifier-foundation"
+            )
 
 from .context import PipelineContext
 from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key

@@ -744,12 +744,16 @@ def test_parse_outcome_empty_string_returns_fail():
 
 
 # ---------------------------------------------------------------------------
-# Task 5: ProviderPreference import raises helpful error when foundation missing
+# Task 5: ProviderPreference import — lazy placeholder when foundation missing
 # ---------------------------------------------------------------------------
 
 
-def test_provider_preference_import_raises_helpful_error_when_missing(monkeypatch):
-    """When amplifier_foundation is unavailable, backend raises a helpful ImportError."""
+def test_provider_preference_module_imports_when_foundation_missing(monkeypatch):
+    """Module import must succeed even if amplifier_foundation is unavailable.
+
+    Only *instantiation* of _ProviderPreference should raise ImportError,
+    not the module-level import itself.
+    """
     import importlib
     import sys
 
@@ -767,5 +771,35 @@ def test_provider_preference_import_raises_helpful_error_when_missing(monkeypatc
 
     monkeypatch.setattr("builtins.__import__", _blocking_import)
 
+    # Import must succeed — no ImportError at module level
+    backend_module = importlib.import_module("amplifier_module_loop_pipeline.backend")
+    assert backend_module is not None
+
+
+def test_provider_preference_placeholder_raises_on_instantiation(monkeypatch):
+    """When amplifier_foundation is missing, instantiating _ProviderPreference raises ImportError."""
+    import importlib
+    import sys
+
+    monkeypatch.delitem(sys.modules, "amplifier_foundation", raising=False)
+    monkeypatch.delitem(sys.modules, "amplifier_module_loop_pipeline.backend", raising=False)
+
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+
+    def _blocking_import(name, *args, **kwargs):
+        if name == "amplifier_foundation":
+            raise ImportError("mocked missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _blocking_import)
+
+    # Import succeeds
+    importlib.import_module("amplifier_module_loop_pipeline.backend")
+
+    # Re-import to get the freshly loaded module's _ProviderPreference
+    import amplifier_module_loop_pipeline.backend as backend_mod
+    _PP = backend_mod._ProviderPreference  # type: ignore[attr-defined]
+
+    # Instantiation must raise a helpful ImportError
     with pytest.raises(ImportError, match="amplifier.foundation is required"):
-        importlib.import_module("amplifier_module_loop_pipeline.backend")
+        _PP(provider="anthropic", model="test")
