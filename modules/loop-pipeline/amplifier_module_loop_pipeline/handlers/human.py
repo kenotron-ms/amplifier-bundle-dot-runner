@@ -95,6 +95,9 @@ class HumanGateHandler:
                 "Pass interviewer=AutoApproveInterviewer() explicitly if you want "
                 "auto-approve behavior for CI/testing."
             )
+        # Freeform mode: text input instead of edge-derived choices
+        if node.attrs.get("mode") == "freeform":
+            return await self._execute_freeform(node, context, graph)
         # 1. Derive choices from outgoing edges and build label-to-node mapping
         edges = graph.outgoing_edges(node.id)
         choices: list[str] = []
@@ -201,6 +204,87 @@ class HumanGateHandler:
                 "human.gate.label": node.label,
             },
             notes=f"Human gate '{node.id}': selected '{selected}'",
+        )
+
+    async def _execute_freeform(
+        self,
+        node: Node,
+        context: PipelineContext,
+        graph: Graph,
+    ) -> Outcome:
+        """Handle a freeform text input gate (mode='freeform').
+
+        Instead of deriving choices from outgoing edges, presents a text
+        input question.  Stores the human's text in ``context_updates`` as
+        ``human.gate.text`` for downstream agent injection.
+        """
+        from ..pipeline_events import (
+            PIPELINE_INTERVIEW_COMPLETED,
+            PIPELINE_INTERVIEW_STARTED,
+            PIPELINE_INTERVIEW_TIMEOUT,
+        )
+
+        prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
+        question = Question(
+            text=prompt,
+            type=QuestionType.FREEFORM,
+            stage=node.id,
+        )
+
+        await self._emit(
+            PIPELINE_INTERVIEW_STARTED,
+            {"node_id": node.id, "question": question.text},
+        )
+
+        if hasattr(self._interviewer, "async_ask"):
+            answer = await self._interviewer.async_ask(question)
+        else:
+            answer = self._interviewer.ask(question)
+
+        await self._emit(
+            PIPELINE_INTERVIEW_COMPLETED,
+            {
+                "node_id": node.id,
+                "answer": answer.text if answer.text else str(answer.value),
+            },
+        )
+
+        # Handle TIMEOUT
+        if (
+            isinstance(answer.value, AnswerValue)
+            and answer.value == AnswerValue.TIMEOUT
+        ):
+            await self._emit(
+                PIPELINE_INTERVIEW_TIMEOUT,
+                {"node_id": node.id, "prompt": prompt, "timeout": True},
+            )
+
+        # Handle SKIPPED — return FAIL per spec M-13
+        if (
+            isinstance(answer.value, AnswerValue)
+            and answer.value == AnswerValue.SKIPPED
+        ):
+            return Outcome(
+                status=StageStatus.FAIL,
+                context_updates={
+                    "human.gate.text": None,
+                    "human.gate.label": node.label,
+                },
+                notes=f"Human gate '{node.id}': interaction was skipped",
+            )
+
+        # Route via outgoing edges (freeform gates typically have a single edge)
+        edges = graph.outgoing_edges(node.id)
+        target_ids = [edge.to_node for edge in edges]
+
+        return Outcome(
+            status=StageStatus.SUCCESS,
+            suggested_next_ids=target_ids if target_ids else None,
+            context_updates={
+                "human.gate.text": answer.text,
+                "human.gate.label": node.label,
+            },
+            notes=f"Human gate '{node.id}': freeform response received",
         )
 
     def _resolve_selection(

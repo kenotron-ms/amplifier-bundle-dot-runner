@@ -615,3 +615,59 @@ class TestHumanGateHandlerAsyncAsk:
         assert len(captured) == 1
         assert captured[0].stage == "review"
         assert captured[0].type == QuestionType.MULTIPLE_CHOICE
+
+
+class TestHumanGateFreeformMode:
+    """Freeform mode: mode='freeform' generates FREEFORM question, stores human.gate.text."""
+
+    @pytest.mark.asyncio
+    async def test_freeform_mode_generates_freeform_question(self):
+        """mode='freeform' on hexagon node generates FREEFORM question and stores human.gate.text."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "brainstorm": Node(
+                    id="brainstorm",
+                    shape="hexagon",
+                    label="Brainstorm with Human",
+                    attrs={"mode": "freeform"},
+                ),
+                "refine": Node(id="refine", shape="box"),
+            },
+            edges=[
+                Edge(from_node="brainstorm", to_node="refine"),
+            ],
+        )
+
+        captured_questions: list[Question] = []
+
+        class FreeformInterviewer:
+            def ask(self, question: Question) -> Answer:
+                raise AssertionError("ask() must NOT be called when async_ask is present")
+
+            async def async_ask(self, question: Question) -> Answer:
+                captured_questions.append(question)
+                return Answer(
+                    value="I think we should focus on the API",
+                    text="I think we should focus on the API",
+                )
+
+        handler = HumanGateHandler(interviewer=FreeformInterviewer())
+        outcome = await handler.execute(
+            graph.nodes["brainstorm"], _make_context(), graph, "/tmp"
+        )
+
+        # Verify FREEFORM question was generated
+        assert len(captured_questions) == 1
+        assert captured_questions[0].type == QuestionType.FREEFORM
+        assert captured_questions[0].text == "Brainstorm with Human"
+        assert captured_questions[0].stage == "brainstorm"
+
+        # Verify outcome
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["refine"]
+
+        # Verify context_updates include human.gate.text
+        assert outcome.context_updates is not None
+        assert outcome.context_updates["human.gate.text"] == "I think we should focus on the API"
+        assert outcome.context_updates["human.gate.label"] == "Brainstorm with Human"
