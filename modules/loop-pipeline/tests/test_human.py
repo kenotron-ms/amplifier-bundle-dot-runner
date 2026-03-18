@@ -671,3 +671,38 @@ class TestHumanGateFreeformMode:
         assert outcome.context_updates is not None
         assert outcome.context_updates["human.gate.text"] == "I think we should focus on the API"
         assert outcome.context_updates["human.gate.label"] == "Brainstorm with Human"
+
+    @pytest.mark.asyncio
+    async def test_no_mode_attribute_still_generates_multiple_choice(self):
+        """Hexagon node without mode attribute generates MULTIPLE_CHOICE (no regression)."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+
+        captured_questions: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, question: Question) -> Answer:
+                raise AssertionError("ask() must NOT be called when async_ask is present")
+
+            async def async_ask(self, question: Question) -> Answer:
+                captured_questions.append(question)
+                return Answer(
+                    value="Approve",
+                    selected_option=Option(key="Approve", label="Approve"),
+                )
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
+
+        # Verify MULTIPLE_CHOICE question was generated (not FREEFORM)
+        assert len(captured_questions) == 1
+        assert captured_questions[0].type == QuestionType.MULTIPLE_CHOICE
+
+        # Verify outcome uses standard routing
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["deploy"]
+
+        # Verify context_updates do NOT include human.gate.text
+        assert outcome.context_updates is not None
+        assert "human.gate.text" not in outcome.context_updates
+        assert "human.gate.selected" in outcome.context_updates
