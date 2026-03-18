@@ -836,3 +836,28 @@ async def test_backend_injects_human_gate_text_into_instruction():
 
     # Verify consume-once: key should be cleared after injection
     assert context.get("human.gate.text") is None
+
+
+@pytest.mark.asyncio
+async def test_backend_no_injection_without_human_gate_text():
+    """When context lacks human.gate.text, backend runs normally without injection."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": json.dumps({"status": "success"}), "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    context = _make_context()
+    # No human.gate.text set — this is the normal path for all non-freeform flows
+
+    node = _make_node(attrs={"llm_provider": "anthropic"})
+    await backend.run(node, "Do the work", context)
+
+    # Instruction should NOT contain injection prefix
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    assert "Human response at gate" not in instruction
+
+    # human.gate.text should still be None (never set, never cleared)
+    assert context.get("human.gate.text") is None
