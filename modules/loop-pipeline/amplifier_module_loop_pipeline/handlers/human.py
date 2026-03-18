@@ -21,13 +21,18 @@ from ..interviewer import (
     QuestionType,
 )
 from ..outcome import Outcome, StageStatus
+from ..pipeline_events import (
+    PIPELINE_INTERVIEW_COMPLETED,
+    PIPELINE_INTERVIEW_STARTED,
+    PIPELINE_INTERVIEW_TIMEOUT,
+)
 
 # L-11: Patterns for accelerator key extraction from edge labels.
 # Matches: "[Y] Yes", "[OK] Okay", "1) Option One", "2. Option Two"
 import re
 
 _BRACKET_KEY_RE = re.compile(r"^\[([^\]]+)\]\s+")
-_NUMBER_KEY_RE = re.compile(r"^(\d+)[).]\s+")
+_NUMBER_KEY_RE = re.compile(r"^(\d+)[.)]\s+")
 
 
 def _parse_accelerator_key(label: str) -> str:
@@ -74,6 +79,66 @@ class HumanGateHandler:
         """Emit an event via hooks, if provided."""
         if self._hooks is not None:
             await self._hooks.emit(event_name, data)  # type: ignore[union-attr]
+
+    async def _dispatch_ask(self, question: Question) -> Answer:
+        """Ask the interviewer, preferring async_ask to avoid sync/async bridge deadlock.
+
+        Prefers ``async_ask`` when present to avoid the sync/async bridge
+        deadlock caused by ``nest_asyncio`` not being installed in the worker
+        container.  Falls back to the synchronous ``ask`` otherwise.
+        """
+        assert self._interviewer is not None  # guaranteed by execute() guard
+        if hasattr(self._interviewer, "async_ask"):
+            return await self._interviewer.async_ask(question)  # type: ignore[attr-defined]
+        return self._interviewer.ask(question)
+
+    async def _check_special_answer(
+        self,
+        answer: Answer,
+        node: Node,
+        text_key: str,
+        prompt: str,
+    ) -> Outcome | None:
+        """Handle TIMEOUT and SKIPPED answers, returning a terminal Outcome or None.
+
+        Emits ``PIPELINE_INTERVIEW_TIMEOUT`` for TIMEOUT answers, then returns
+        ``None`` so the caller falls through to the normal success path.
+
+        Returns a FAIL ``Outcome`` for SKIPPED answers per spec M-13.
+
+        Returns ``None`` if no special handling is needed.
+
+        Args:
+            answer:   The answer received from the interviewer.
+            node:     The current pipeline node (used for node_id / label).
+            text_key: The context-update key for ``None`` on SKIPPED
+                      (``"human.gate.selected"`` or ``"human.gate.text"``).
+            prompt:   The prompt text sent to the interviewer (used in TIMEOUT payload).
+        """
+        if (
+            isinstance(answer.value, AnswerValue)
+            and answer.value == AnswerValue.TIMEOUT
+        ):
+            await self._emit(
+                PIPELINE_INTERVIEW_TIMEOUT,
+                {"node_id": node.id, "prompt": prompt, "timeout": True},
+            )
+            return None
+
+        if (
+            isinstance(answer.value, AnswerValue)
+            and answer.value == AnswerValue.SKIPPED
+        ):
+            return Outcome(
+                status=StageStatus.FAIL,
+                context_updates={
+                    text_key: None,
+                    "human.gate.label": node.label,
+                },
+                notes=f"Human gate '{node.id}': interaction was skipped",
+            )
+
+        return None
 
     async def execute(
         self,
@@ -135,24 +200,13 @@ class HumanGateHandler:
             )
 
         # 3. Emit interview started event
-        from ..pipeline_events import (
-            PIPELINE_INTERVIEW_COMPLETED,
-            PIPELINE_INTERVIEW_STARTED,
-            PIPELINE_INTERVIEW_TIMEOUT,
-        )
-
         await self._emit(
             PIPELINE_INTERVIEW_STARTED,
             {"node_id": node.id, "question": question.text},
         )
 
-        # 4. Ask the interviewer — prefer async_ask when available to avoid
-        # the sync/async bridge deadlock caused by nest_asyncio not being
-        # installed in the worker container.
-        if hasattr(self._interviewer, "async_ask"):
-            answer = await self._interviewer.async_ask(question)
-        else:
-            answer = self._interviewer.ask(question)
+        # 4. Ask the interviewer
+        answer = await self._dispatch_ask(question)
 
         await self._emit(
             PIPELINE_INTERVIEW_COMPLETED,
@@ -164,35 +218,14 @@ class HumanGateHandler:
             },
         )
 
-        # 5. Emit timeout event if the interviewer timed out
-        if (
-            isinstance(answer.value, AnswerValue)
-            and answer.value == AnswerValue.TIMEOUT
-        ):
-            await self._emit(
-                PIPELINE_INTERVIEW_TIMEOUT,
-                {
-                    "node_id": node.id,
-                    "prompt": prompt,
-                    "timeout": True,
-                },
-            )
+        # 5. Handle TIMEOUT and SKIPPED answers
+        special = await self._check_special_answer(
+            answer, node, "human.gate.selected", prompt
+        )
+        if special is not None:
+            return special
 
-        # 6. M-13: SKIPPED answer returns FAIL per spec
-        if (
-            isinstance(answer.value, AnswerValue)
-            and answer.value == AnswerValue.SKIPPED
-        ):
-            return Outcome(
-                status=StageStatus.FAIL,
-                context_updates={
-                    "human.gate.selected": None,
-                    "human.gate.label": node.label,
-                },
-                notes=f"Human gate '{node.id}': interaction was skipped",
-            )
-
-        # 7. Determine the selected label and map to target node IDs (M-12)
+        # 6. Determine the selected label and map to target node IDs (M-12)
         selected = self._resolve_selection(answer, choices, key_to_label)
         target_ids = label_to_targets.get(selected or "", []) if selected else []
 
@@ -218,11 +251,7 @@ class HumanGateHandler:
         input question.  Stores the human's text in ``context_updates`` as
         ``human.gate.text`` for downstream agent injection.
         """
-        from ..pipeline_events import (
-            PIPELINE_INTERVIEW_COMPLETED,
-            PIPELINE_INTERVIEW_STARTED,
-            PIPELINE_INTERVIEW_TIMEOUT,
-        )
+        assert self._interviewer is not None  # guaranteed by execute() guard
 
         prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
         question = Question(
@@ -236,10 +265,7 @@ class HumanGateHandler:
             {"node_id": node.id, "question": question.text},
         )
 
-        if hasattr(self._interviewer, "async_ask"):
-            answer = await self._interviewer.async_ask(question)
-        else:
-            answer = self._interviewer.ask(question)
+        answer = await self._dispatch_ask(question)
 
         await self._emit(
             PIPELINE_INTERVIEW_COMPLETED,
@@ -249,29 +275,12 @@ class HumanGateHandler:
             },
         )
 
-        # Handle TIMEOUT
-        if (
-            isinstance(answer.value, AnswerValue)
-            and answer.value == AnswerValue.TIMEOUT
-        ):
-            await self._emit(
-                PIPELINE_INTERVIEW_TIMEOUT,
-                {"node_id": node.id, "prompt": prompt, "timeout": True},
-            )
-
-        # Handle SKIPPED — return FAIL per spec M-13
-        if (
-            isinstance(answer.value, AnswerValue)
-            and answer.value == AnswerValue.SKIPPED
-        ):
-            return Outcome(
-                status=StageStatus.FAIL,
-                context_updates={
-                    "human.gate.text": None,
-                    "human.gate.label": node.label,
-                },
-                notes=f"Human gate '{node.id}': interaction was skipped",
-            )
+        # Handle TIMEOUT and SKIPPED answers
+        special = await self._check_special_answer(
+            answer, node, "human.gate.text", prompt
+        )
+        if special is not None:
+            return special
 
         # Route via outgoing edges (freeform gates typically have a single edge)
         edges = graph.outgoing_edges(node.id)
