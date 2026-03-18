@@ -535,3 +535,83 @@ async def test_human_handler_emits_interview_events():
     assert PIPELINE_INTERVIEW_STARTED in event_names
     assert PIPELINE_INTERVIEW_COMPLETED in event_names
 
+
+# --- async_ask: HumanGateHandler uses async_ask when available ---
+
+
+class TestHumanGateHandlerAsyncAsk:
+    """HumanGateHandler.execute() uses async_ask when interviewer exposes it.
+
+    Verifies that the deadlock-safe code path is taken when the interviewer
+    provides async_ask (e.g. InputRequestInterviewer) instead of falling back
+    to the blocking ask() call that requires nest_asyncio.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uses_async_ask_when_available(self):
+        """execute() awaits async_ask when interviewer has the method."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+
+        async_ask_called = []
+
+        class AsyncCapableInterviewer:
+            """Interviewer that exposes async_ask — simulates InputRequestInterviewer."""
+
+            def ask(self, question: Question) -> Answer:
+                raise AssertionError("ask() must NOT be called when async_ask is present")
+
+            async def async_ask(self, question: Question) -> Answer:
+                async_ask_called.append(question)
+                return Answer(
+                    value="Approve",
+                    selected_option=Option(key="Approve", label="Approve"),
+                )
+
+        handler = HumanGateHandler(interviewer=AsyncCapableInterviewer())
+        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
+
+        assert len(async_ask_called) == 1
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["deploy"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_ask_when_no_async_ask(self):
+        """execute() calls ask() when interviewer does not have async_ask."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+
+        # AutoApproveInterviewer only has ask() — no async_ask
+        handler = HumanGateHandler(interviewer=AutoApproveInterviewer())
+        assert not hasattr(AutoApproveInterviewer(), "async_ask")
+
+        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
+
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["deploy"]
+
+    @pytest.mark.asyncio
+    async def test_async_ask_receives_correct_question_stage(self):
+        """async_ask receives a Question with stage matching the node id."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+
+        captured: list[Question] = []
+
+        class AsyncCapableInterviewer:
+            def ask(self, question: Question) -> Answer:
+                raise AssertionError("ask() must NOT be called")
+
+            async def async_ask(self, question: Question) -> Answer:
+                captured.append(question)
+                return Answer(
+                    value="Approve",
+                    selected_option=Option(key="Approve", label="Approve"),
+                )
+
+        handler = HumanGateHandler(interviewer=AsyncCapableInterviewer())
+        await handler.execute(node, _make_context(), graph, "/tmp")
+
+        assert len(captured) == 1
+        assert captured[0].stage == "review"
+        assert captured[0].type == QuestionType.MULTIPLE_CHOICE

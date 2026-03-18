@@ -143,8 +143,13 @@ class HumanGateHandler:
             {"node_id": node.id, "question": question.text},
         )
 
-        # 4. Ask the interviewer
-        answer = self._interviewer.ask(question)
+        # 4. Ask the interviewer — prefer async_ask when available to avoid
+        # the sync/async bridge deadlock caused by nest_asyncio not being
+        # installed in the worker container.
+        if hasattr(self._interviewer, "async_ask"):
+            answer = await self._interviewer.async_ask(question)
+        else:
+            answer = self._interviewer.ask(question)
 
         await self._emit(
             PIPELINE_INTERVIEW_COMPLETED,
