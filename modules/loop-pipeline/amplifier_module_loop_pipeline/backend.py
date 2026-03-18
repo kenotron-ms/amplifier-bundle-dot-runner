@@ -179,7 +179,26 @@ class AmplifierBackend:
             preamble = build_preamble(fidelity, context, self._completed_nodes)
             instruction = f"{preamble}\n\n---\n\n{prompt}" if preamble else prompt
 
-        # 5. Route to Path A (spawn) or Path B (direct tool loop)
+        # 5. Inject human gate response if present (consume-once)
+        #
+        # When a freeform hexagon gate precedes this node, the human's text
+        # is stored in context as "human.gate.text".  We prepend it to the
+        # instruction so it becomes part of the user message in the session's
+        # conversation history.  With fidelity=full and session reuse, the
+        # instruction IS a durable user turn in the persistent session record
+        # — all future nodes on the same thread inherit it.
+        gate_text = context.get("human.gate.text")
+        if gate_text is not None:
+            gate_label = context.get("human.gate.label", "")
+            gate_section = (
+                f'Human response at gate "{gate_label}":\n'
+                f"{gate_text}\n\n---\n\n"
+            )
+            instruction = gate_section + instruction
+            # Consume-once: clear so subsequent nodes don't re-inject
+            context.set("human.gate.text", None)
+
+        # 6. Route to Path A (spawn) or Path B (direct tool loop)
         if self._spawn_fn is not None:
             outcome = await self._run_with_spawn(
                 node,

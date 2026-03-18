@@ -803,3 +803,36 @@ def test_provider_preference_placeholder_raises_on_instantiation(monkeypatch):
     # Instantiation must raise a helpful ImportError
     with pytest.raises(ImportError, match="amplifier.foundation is required"):
         _PP(provider="anthropic", model="test")
+
+
+# ---------------------------------------------------------------------------
+# Human gate text injection (consume-once)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_injects_human_gate_text_into_instruction():
+    """When context has human.gate.text, backend prepends it to instruction and clears the key."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": json.dumps({"status": "success"}), "session_id": "c-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+
+    context = _make_context()
+    context.set("human.gate.text", "I think we should focus on the API")
+    context.set("human.gate.label", "Brainstorm with Human")
+
+    node = _make_node(attrs={"llm_provider": "anthropic"})
+    await backend.run(node, "Refine the understanding", context)
+
+    # Verify the human's text was injected into the instruction
+    instruction = coordinator.last_spawn_kwargs.get("instruction", "")
+    assert "I think we should focus on the API" in instruction
+    assert "Brainstorm with Human" in instruction
+    assert "Refine the understanding" in instruction
+
+    # Verify consume-once: key should be cleared after injection
+    assert context.get("human.gate.text") is None
