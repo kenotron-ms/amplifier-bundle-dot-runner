@@ -32,6 +32,7 @@ except ImportError:
                 "Install it with: pip install amplifier-foundation"
             )
 
+
 from .context import PipelineContext
 from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key
 from .graph import Edge, Graph, Node
@@ -191,8 +192,7 @@ class AmplifierBackend:
         if gate_text is not None:
             gate_label = context.get("human.gate.label", "")
             gate_section = (
-                f'Human response at gate "{gate_label}":\n'
-                f"{gate_text}\n\n---\n\n"
+                f'Human response at gate "{gate_label}":\n{gate_text}\n\n---\n\n'
             )
             instruction = gate_section + instruction
             # Consume-once: clear so subsequent nodes don't re-inject
@@ -581,115 +581,3 @@ def _parse_outcome(output: str) -> Outcome:
         else "No output from LLM",
         failure_reason="Unstructured LLM response",
     )
-
-
-def _build_tool_specs(tools: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build ChatRequest-compatible tool specs from mounted tools."""
-    specs: list[dict[str, Any]] = []
-    for tool in tools.values():
-        schema = getattr(tool, "parameters", None) or getattr(tool, "schema", None)
-        if schema is None:
-            schema = {"type": "object", "properties": {}}
-        specs.append(
-            {
-                "name": getattr(tool, "name", str(tool)),
-                "description": getattr(tool, "description", ""),
-                "parameters": schema if isinstance(schema, dict) else {},
-            }
-        )
-    return specs
-
-
-def _extract_text(response: Any) -> str:
-    """Extract concatenated text from response content blocks."""
-    text = ""
-    content = getattr(response, "content", None)
-    if content:
-        for block in content:
-            if hasattr(block, "text"):
-                text += block.text
-    return text
-
-
-def _extract_tool_calls(response: Any, provider: Any) -> list[Any]:
-    """Extract tool calls from a provider response.
-
-    Prefers ``response.tool_calls``; falls back to ``provider.parse_tool_calls``.
-    """
-    calls = getattr(response, "tool_calls", None)
-    if calls:
-        return list(calls)
-    if hasattr(provider, "parse_tool_calls"):
-        return provider.parse_tool_calls(response)
-    return []
-
-
-def _build_assistant_message(response: Any) -> Any:
-    """Build an assistant Message from a ChatResponse for the tool loop.
-
-    Separates text content into ``Message.content`` (string) and tool calls
-    into ``Message.tool_calls`` (list of dicts).  This avoids a type mismatch
-    when the provider later serializes the message — putting ToolCallBlock
-    objects directly in ``content`` caused serialization failures.
-    """
-    from amplifier_core import Message
-
-    text_parts: list[str] = []
-    tool_calls_list: list[dict[str, Any]] = []
-
-    # Collect text and tool-call blocks from response.content
-    content = getattr(response, "content", None)
-    if content:
-        for block in content:
-            if hasattr(block, "text"):
-                text_parts.append(block.text)
-            elif hasattr(block, "tool_call_id") or hasattr(block, "id"):
-                # Tool-call block — extract into a plain dict
-                tc_id = getattr(block, "tool_call_id", None) or getattr(block, "id", "")
-                tc_name = (
-                    getattr(block, "tool_name", None)
-                    or getattr(block, "name", None)
-                    or ""
-                )
-                if not tc_name:
-                    continue  # Skip tool calls with no name — can't serialize
-                tc_args = getattr(block, "arguments", None) or getattr(
-                    block, "input", {}
-                )
-                tool_calls_list.append(
-                    {
-                        "id": tc_id,
-                        "name": tc_name,
-                        "arguments": tc_args if isinstance(tc_args, dict) else {},
-                    }
-                )
-
-    # Also pick up tool calls from response.tool_calls (some providers
-    # surface them there instead of inline in content)
-    resp_tool_calls = getattr(response, "tool_calls", None)
-    if resp_tool_calls:
-        existing_ids = {tc["id"] for tc in tool_calls_list}
-        for tc in resp_tool_calls:
-            tc_id = getattr(tc, "id", "")
-            if tc_id in existing_ids:
-                continue
-            tc_name = getattr(tc, "name", None) or getattr(tc, "tool_name", None) or ""
-            if not tc_name:
-                continue  # Skip tool calls with no name — can't serialize
-            tool_calls_list.append(
-                {
-                    "id": tc_id,
-                    "name": tc_name,
-                    "arguments": getattr(tc, "arguments", {}),
-                }
-            )
-
-    text = "\n".join(text_parts) if text_parts else ""
-    msg = Message(role="assistant", content=text)
-
-    if tool_calls_list:
-        # Message uses extra="allow", so this dynamic attribute is accepted.
-        # The provider's _convert_messages() picks up msg.tool_calls.
-        msg.tool_calls = tool_calls_list  # type: ignore[attr-defined]
-
-    return msg

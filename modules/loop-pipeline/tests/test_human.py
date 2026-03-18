@@ -13,13 +13,12 @@ from amplifier_module_loop_pipeline.interviewer import (
     AnswerValue,
     AutoApproveInterviewer,
     CallbackInterviewer,
-    Interviewer,
     Option,
     Question,
     QuestionType,
     QueueInterviewer,
 )
-from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.outcome import StageStatus
 
 
 def _make_graph_with_human_gate() -> Graph:
@@ -198,10 +197,12 @@ class TestInterviewerAskMultiple:
         assert answers[1].value == AnswerValue.YES
 
     def test_queue_ask_multiple(self):
-        interviewer = QueueInterviewer([
-            Answer(value=AnswerValue.YES),
-            Answer(value=AnswerValue.NO),
-        ])
+        interviewer = QueueInterviewer(
+            [
+                Answer(value=AnswerValue.YES),
+                Answer(value=AnswerValue.NO),
+            ]
+        )
         questions = [
             Question(text="Q1", type=QuestionType.YES_NO),
             Question(text="Q2", type=QuestionType.YES_NO),
@@ -276,9 +277,13 @@ class TestHumanGateHandler:
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
         # Queue an answer that matches the second option ("Reject")
-        interviewer = QueueInterviewer([
-            Answer(value="Reject", selected_option=Option(key="Reject", label="Reject")),
-        ])
+        interviewer = QueueInterviewer(
+            [
+                Answer(
+                    value="Reject", selected_option=Option(key="Reject", label="Reject")
+                ),
+            ]
+        )
         handler = HumanGateHandler(interviewer=interviewer)
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.status == StageStatus.SUCCESS
@@ -317,12 +322,17 @@ class TestHumanGateHandler:
 
         def capture_callback(q: Question) -> Answer:
             captured_questions.append(q)
-            return Answer(value="Approve", selected_option=Option(key="Approve", label="Approve"))
+            return Answer(
+                value="Approve", selected_option=Option(key="Approve", label="Approve")
+            )
 
         handler = HumanGateHandler(interviewer=CallbackInterviewer(capture_callback))
         await handler.execute(node, _make_context(), graph, "/tmp")
         assert len(captured_questions) == 1
-        assert "approve" in captured_questions[0].text.lower() or "code" in captured_questions[0].text.lower()
+        assert (
+            "approve" in captured_questions[0].text.lower()
+            or "code" in captured_questions[0].text.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_no_outgoing_edges_returns_success(self):
@@ -351,7 +361,9 @@ class TestHumanGateHandler:
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
         handler = HumanGateHandler()  # No interviewer arg
-        with pytest.raises(ValueError, match="HumanGateHandler requires an Interviewer"):
+        with pytest.raises(
+            ValueError, match="HumanGateHandler requires an Interviewer"
+        ):
             await handler.execute(node, _make_context(), graph, "/tmp")
 
     @pytest.mark.asyncio
@@ -394,9 +406,13 @@ class TestHumanGateSuggestedNextIds:
         """Selecting 'Reject' maps to the fix node via suggested_next_ids."""
         graph = _make_graph_with_human_gate()
         node = graph.nodes["review"]
-        interviewer = QueueInterviewer([
-            Answer(value="Reject", selected_option=Option(key="Reject", label="Reject")),
-        ])
+        interviewer = QueueInterviewer(
+            [
+                Answer(
+                    value="Reject", selected_option=Option(key="Reject", label="Reject")
+                ),
+            ]
+        )
         handler = HumanGateHandler(interviewer=interviewer)
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.status == StageStatus.SUCCESS
@@ -432,26 +448,32 @@ class TestAcceleratorKeyParsing:
 
     def test_bracket_key_extracted(self):
         from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+
         assert _parse_accelerator_key("[Y] Yes") == "Y"
 
     def test_bracket_multi_char_key(self):
         from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+
         assert _parse_accelerator_key("[OK] Okay") == "OK"
 
     def test_number_paren_key_extracted(self):
         from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+
         assert _parse_accelerator_key("1) Option One") == "1"
 
     def test_number_dot_key_extracted(self):
         from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+
         assert _parse_accelerator_key("2. Option Two") == "2"
 
     def test_plain_label_returns_full_label(self):
         from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+
         assert _parse_accelerator_key("Approve") == "Approve"
 
     def test_empty_label_returns_empty(self):
         from amplifier_module_loop_pipeline.handlers.human import _parse_accelerator_key
+
         assert _parse_accelerator_key("") == ""
 
     @pytest.mark.asyncio
@@ -517,9 +539,7 @@ async def test_human_handler_emits_interview_events():
         async def emit(self, event_name, data):
             emitted.append((event_name, data))
 
-    handler = HumanGateHandler(
-        interviewer=AutoApproveInterviewer(), hooks=MockHooks()
-    )
+    handler = HumanGateHandler(interviewer=AutoApproveInterviewer(), hooks=MockHooks())
 
     node = Node(id="gate", shape="hexagon", label="Approve?")
     graph = Graph(
@@ -559,7 +579,9 @@ class TestHumanGateHandlerAsyncAsk:
             """Interviewer that exposes async_ask — simulates InputRequestInterviewer."""
 
             def ask(self, question: Question) -> Answer:
-                raise AssertionError("ask() must NOT be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must NOT be called when async_ask is present"
+                )
 
             async def async_ask(self, question: Question) -> Answer:
                 async_ask_called.append(question)
@@ -643,7 +665,9 @@ class TestHumanGateFreeformMode:
 
         class FreeformInterviewer:
             def ask(self, question: Question) -> Answer:
-                raise AssertionError("ask() must NOT be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must NOT be called when async_ask is present"
+                )
 
             async def async_ask(self, question: Question) -> Answer:
                 captured_questions.append(question)
@@ -669,7 +693,10 @@ class TestHumanGateFreeformMode:
 
         # Verify context_updates include human.gate.text
         assert outcome.context_updates is not None
-        assert outcome.context_updates["human.gate.text"] == "I think we should focus on the API"
+        assert (
+            outcome.context_updates["human.gate.text"]
+            == "I think we should focus on the API"
+        )
         assert outcome.context_updates["human.gate.label"] == "Brainstorm with Human"
 
     @pytest.mark.asyncio
@@ -682,7 +709,9 @@ class TestHumanGateFreeformMode:
 
         class CapturingInterviewer:
             def ask(self, question: Question) -> Answer:
-                raise AssertionError("ask() must NOT be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must NOT be called when async_ask is present"
+                )
 
             async def async_ask(self, question: Question) -> Answer:
                 captured_questions.append(question)

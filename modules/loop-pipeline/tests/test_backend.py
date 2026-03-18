@@ -287,7 +287,10 @@ def _make_context() -> PipelineContext:
 async def test_backend_spawns_session():
     """Backend uses coordinator session.spawn to create child session."""
     coordinator = MockCoordinator(
-        spawn_result={"output": json.dumps({"status": "success", "notes": "done"}), "session_id": "child-1"}
+        spawn_result={
+            "output": json.dumps({"status": "success", "notes": "done"}),
+            "session_id": "child-1",
+        }
     )
     backend = AmplifierBackend(
         coordinator=coordinator,
@@ -545,7 +548,9 @@ async def test_backend_forwards_model():
 async def test_backend_falls_back_to_tool_loop():
     """When spawn is unavailable but provider is given, uses direct tool loop."""
     coordinator = NoSpawnCoordinator()
-    mock_client = _MockUnifiedClient([_make_text_response(json.dumps({"status": "success", "notes": "done"}))])
+    mock_client = _MockUnifiedClient(
+        [_make_text_response(json.dumps({"status": "success", "notes": "done"}))]
+    )
     backend = AmplifierBackend(
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
@@ -759,10 +764,14 @@ def test_provider_preference_module_imports_when_foundation_missing(monkeypatch)
 
     # Remove the module from the cache so re-import triggers the except branch
     monkeypatch.delitem(sys.modules, "amplifier_foundation", raising=False)
-    monkeypatch.delitem(sys.modules, "amplifier_module_loop_pipeline.backend", raising=False)
+    monkeypatch.delitem(
+        sys.modules, "amplifier_module_loop_pipeline.backend", raising=False
+    )
 
     # Block the import so the except branch fires
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+    real_import = (
+        __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+    )
 
     def _blocking_import(name, *args, **kwargs):
         if name == "amplifier_foundation":
@@ -782,9 +791,13 @@ def test_provider_preference_placeholder_raises_on_instantiation(monkeypatch):
     import sys
 
     monkeypatch.delitem(sys.modules, "amplifier_foundation", raising=False)
-    monkeypatch.delitem(sys.modules, "amplifier_module_loop_pipeline.backend", raising=False)
+    monkeypatch.delitem(
+        sys.modules, "amplifier_module_loop_pipeline.backend", raising=False
+    )
 
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+    real_import = (
+        __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+    )
 
     def _blocking_import(name, *args, **kwargs):
         if name == "amplifier_foundation":
@@ -798,6 +811,7 @@ def test_provider_preference_placeholder_raises_on_instantiation(monkeypatch):
 
     # Re-import to get the freshly loaded module's _ProviderPreference
     import amplifier_module_loop_pipeline.backend as backend_mod
+
     _PP = backend_mod._ProviderPreference  # type: ignore[attr-defined]
 
     # Instantiation must raise a helpful ImportError
