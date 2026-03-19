@@ -714,19 +714,18 @@ async def test_reasoning_effort_defaults_to_none(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Task 4: _parse_outcome returns FAIL for non-JSON responses
+# Task 4: _parse_outcome returns SUCCESS for plain string responses (spec 4.5)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_parse_outcome_plain_text_returns_fail():
-    """_parse_outcome must return FAIL for non-JSON responses, not silent SUCCESS."""
+async def test_parse_outcome_plain_text_returns_success():
+    """Spec 4.5: when backend.run() returns a plain string, the handler unconditionally returns Outcome(status=SUCCESS)."""
     from amplifier_module_loop_pipeline.backend import _parse_outcome
 
     result = _parse_outcome("I finished the task successfully")
-    assert result.status == StageStatus.FAIL
-    assert "Non-structured response" in (result.notes or "")
-    assert result.failure_reason == "Unstructured LLM response"
+    assert result.status == StageStatus.SUCCESS
+    assert result.notes is not None
 
 
 def test_parse_outcome_valid_json_still_works():
