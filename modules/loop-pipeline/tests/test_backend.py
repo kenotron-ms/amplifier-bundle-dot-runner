@@ -439,8 +439,8 @@ async def test_backend_parses_json_outcome():
 
 
 @pytest.mark.asyncio
-async def test_backend_plain_text_returns_fail():
-    """If child returns plain text (non-JSON), return FAIL — not silent SUCCESS."""
+async def test_backend_plain_text_returns_success():
+    """Per spec Section 4.5: plain text (non-JSON) child output returns SUCCESS."""
     coordinator = MockCoordinator(
         spawn_result={"output": "Implementation complete", "session_id": "c-1"}
     )
@@ -451,8 +451,8 @@ async def test_backend_plain_text_returns_fail():
     node = _make_node(attrs={"llm_provider": "anthropic"})
     result = await backend.run(node, "task", _make_context())
     assert isinstance(result, Outcome)
-    assert result.status == StageStatus.FAIL
-    assert "Non-structured response" in (result.notes or "")
+    assert result.status == StageStatus.SUCCESS
+    assert "Plain text response" in (result.notes or "")
 
 
 @pytest.mark.asyncio
@@ -743,7 +743,7 @@ def test_parse_outcome_empty_string_returns_fail():
     result = _parse_outcome("")
     assert result.status == StageStatus.FAIL
     assert result.notes == "No output from LLM"
-    assert result.failure_reason == "Unstructured LLM response"
+    assert result.failure_reason == "Empty LLM response"
 
 
 # ---------------------------------------------------------------------------
