@@ -719,7 +719,7 @@ async def test_reasoning_effort_defaults_to_none(monkeypatch):
 
 
 def test_parse_outcome_plain_text_returns_success():
-    """Spec 4.5: when backend.run() returns a plain string, the handler unconditionally returns Outcome(status=SUCCESS)."""
+    """Spec 4.5: `_parse_outcome` should return `Outcome(status=SUCCESS)` for plain (non-JSON) string input."""
     from amplifier_module_loop_pipeline.backend import _parse_outcome
 
     result = _parse_outcome("I finished the task successfully")
