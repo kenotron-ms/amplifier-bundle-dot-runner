@@ -718,8 +718,7 @@ async def test_reasoning_effort_defaults_to_none(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_parse_outcome_plain_text_returns_success():
+def test_parse_outcome_plain_text_returns_success():
     """Spec 4.5: when backend.run() returns a plain string, the handler unconditionally returns Outcome(status=SUCCESS)."""
     from amplifier_module_loop_pipeline.backend import _parse_outcome
 
