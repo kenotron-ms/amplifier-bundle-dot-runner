@@ -735,3 +735,310 @@ class TestHumanGateFreeformMode:
         assert outcome.context_updates is not None
         assert "human.gate.text" not in outcome.context_updates
         assert "human.gate.selected" in outcome.context_updates
+
+
+# ---------------------------------------------------------------------------
+# TestHumanGateFreeformRichAttachments — rich input request metadata
+# ---------------------------------------------------------------------------
+
+
+class TestHumanGateFreeformRichAttachments:
+    """Rich input request: description, attachments_inline, attachments_ref populate Question.metadata."""
+
+    @pytest.mark.asyncio
+    async def test_description_expanded_into_metadata(self, tmp_path):
+        """description attribute with $variable token is expanded and stored in metadata."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review",
+                    attrs={"mode": "freeform", "description": "Review: $last_response"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        ctx = PipelineContext()
+        ctx.update({"last_response": "The analysis is complete."})
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="ok", text="ok")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        outcome = await handler.execute(graph.nodes["review"], ctx, graph, "/tmp")
+
+        assert len(captured) == 1
+        q = captured[0]
+        assert "description" in q.metadata
+        assert "The analysis is complete." in q.metadata["description"]
+        assert outcome.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_attachments_inline_resolved_to_envelopes(self, tmp_path):
+        """attachments_inline glob is resolved to file envelopes in Question.metadata."""
+        ai_dir = tmp_path / ".ai"
+        ai_dir.mkdir()
+        (ai_dir / "analysis.md").write_text("# Analysis\n\nTest content.")
+
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review",
+                    attrs={"mode": "freeform", "attachments_inline": ".ai/analysis.md"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="ok", text="ok")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+
+        q = captured[0]
+        assert "attachments_inline" in q.metadata
+        assert len(q.metadata["attachments_inline"]) == 1
+        env = q.metadata["attachments_inline"][0]
+        assert env["filename"] == "analysis.md"
+        assert env["path"] == ".ai/analysis.md"
+        assert "Test content." in env["content"]
+        assert env["directory"] == ".ai"
+
+    @pytest.mark.asyncio
+    async def test_glob_wildcard_resolves_multiple_ref_files(self, tmp_path):
+        """Glob wildcard in attachments_ref resolves all matching files."""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "a.md").write_text("File A")
+        (docs / "b.md").write_text("File B")
+        (docs / "c.txt").write_text("Not a markdown file")
+
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review",
+                    attrs={"mode": "freeform", "attachments_ref": "docs/*.md"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="ok", text="ok")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+
+        q = captured[0]
+        assert "attachments_ref" in q.metadata
+        assert len(q.metadata["attachments_ref"]) == 2
+        filenames = {e["filename"] for e in q.metadata["attachments_ref"]}
+        assert filenames == {"a.md", "b.md"}
+
+    @pytest.mark.asyncio
+    async def test_recursive_glob_resolves_subdirectories(self, tmp_path):
+        """Recursive ** glob finds files in nested subdirectories."""
+        ai = tmp_path / ".ai"
+        ai.mkdir()
+        sub = ai / "sub"
+        sub.mkdir()
+        (ai / "top.md").write_text("Top level")
+        (sub / "nested.md").write_text("Nested content")
+
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review",
+                    attrs={"mode": "freeform", "attachments_ref": ".ai/**/*.md"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="ok", text="ok")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+
+        q = captured[0]
+        assert "attachments_ref" in q.metadata
+        filenames = {e["filename"] for e in q.metadata["attachments_ref"]}
+        assert "top.md" in filenames
+        assert "nested.md" in filenames
+
+    @pytest.mark.asyncio
+    async def test_no_matching_files_gives_no_attachment_key(self, tmp_path):
+        """When glob matches nothing, attachment key is absent from metadata."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review",
+                    attrs={"mode": "freeform", "attachments_inline": "nonexistent/*.md"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="ok", text="ok")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        outcome = await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+
+        q = captured[0]
+        assert "attachments_inline" not in q.metadata
+        assert outcome.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_node_without_new_attrs_has_empty_metadata(self, tmp_path):
+        """Hexagon freeform node without description/attachments has empty metadata (backward compat)."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review",
+                    attrs={"mode": "freeform"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="ok", text="ok")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        outcome = await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+
+        q = captured[0]
+        assert "description" not in q.metadata
+        assert "attachments_inline" not in q.metadata
+        assert "attachments_ref" not in q.metadata
+        assert outcome.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_all_three_attrs_together(self, tmp_path):
+        """description + attachments_inline + attachments_ref all appear in metadata."""
+        ai_dir = tmp_path / ".ai"
+        ai_dir.mkdir()
+        (ai_dir / "analysis.md").write_text("# Analysis\n\nResults here.")
+        (ai_dir / "backlog.md").write_text("# Backlog\n\n- Item 1")
+        (ai_dir / "steering.md").write_text("# Steering\n\nDirection notes.")
+
+        graph = Graph(
+            name="test",
+            nodes={
+                "review": Node(
+                    id="review",
+                    shape="hexagon",
+                    label="Review Analysis",
+                    attrs={
+                        "mode": "freeform",
+                        "description": "Please review. Context: $last_response",
+                        "attachments_inline": ".ai/analysis.md",
+                        "attachments_ref": ".ai/backlog.md,.ai/steering.md",
+                    },
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="review", to_node="next")],
+        )
+        graph.source_dir = str(tmp_path)
+
+        ctx = PipelineContext()
+        ctx.update({"last_response": "step done"})
+
+        captured: list[Question] = []
+
+        class CapturingInterviewer:
+            def ask(self, q: Question) -> Answer:
+                raise AssertionError("ask() must not be called when async_ask is present")
+
+            async def async_ask(self, q: Question) -> Answer:
+                captured.append(q)
+                return Answer(value="lgtm", text="lgtm")
+
+        handler = HumanGateHandler(interviewer=CapturingInterviewer())
+        outcome = await handler.execute(graph.nodes["review"], ctx, graph, "/tmp")
+
+        q = captured[0]
+        assert "step done" in q.metadata["description"]
+        assert len(q.metadata["attachments_inline"]) == 1
+        assert q.metadata["attachments_inline"][0]["filename"] == "analysis.md"
+        assert len(q.metadata["attachments_ref"]) == 2
+        ref_names = {e["filename"] for e in q.metadata["attachments_ref"]}
+        assert ref_names == {"backlog.md", "steering.md"}
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.context_updates["human.gate.text"] == "lgtm"

@@ -10,6 +10,11 @@ Spec coverage: HUMAN-001–008, Section 4.10.
 
 from __future__ import annotations
 
+import logging
+import pathlib
+import re
+from typing import Any
+
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..interviewer import (
@@ -26,10 +31,118 @@ from ..pipeline_events import (
     PIPELINE_INTERVIEW_STARTED,
     PIPELINE_INTERVIEW_TIMEOUT,
 )
+from ..transforms import expand_goal_variable, expand_params
+
+logger = logging.getLogger(__name__)
+
+# Maximum bytes read from any single attachment file before truncating.
+_MAX_ATTACHMENT_BYTES = 100_000  # 100 KB
+
+
+def _expand_description(description: str, graph: Graph, context: PipelineContext) -> str:
+    """Expand $variable tokens in a description string.
+
+    Uses the same expansion as codergen prompts: $goal, $context / $last_response,
+    and all plain (dot-free) context keys such as $task, $spec, $message_summary.
+
+    Args:
+        description: Raw description string from the node attribute.
+        graph: The pipeline graph (provides graph.goal).
+        context: Current pipeline context (provides runtime values).
+
+    Returns:
+        Description with all resolvable $tokens replaced.
+    """
+    context_goal = context.get("graph.goal") or ""
+    result = expand_goal_variable(description, graph.goal, context_goal)
+
+    # $context — runtime alias for last_response
+    if "$context" in result:
+        last_response = context.get("last_response", "") or ""
+        result = result.replace("$context", str(last_response))
+
+    # All plain (dot-free) context keys: $last_response, $task, $spec, etc.
+    if "$" in result:
+        plain_params = {
+            k: str(v) for k, v in context.snapshot().items() if "." not in k
+        }
+        if plain_params:
+            result = expand_params(result, plain_params)
+
+    return result
+
+
+def _resolve_attachments(patterns_str: str, workspace_dir: str) -> list[dict[str, Any]]:
+    """Resolve comma-separated glob patterns to file envelope dicts.
+
+    Each envelope contains: path, filename, directory, size, content.
+    Files larger than _MAX_ATTACHMENT_BYTES are truncated with a [truncated] marker.
+    Unreadable files are logged and skipped.
+
+    Args:
+        patterns_str: Comma-separated glob patterns, e.g. ".ai/*.md,.ai/**/*.txt"
+        workspace_dir: Absolute path to resolve globs against.  Falls back to
+                       the current working directory when empty.
+
+    Returns:
+        List of file envelope dicts, sorted by path within each pattern.
+        Empty list when patterns_str is blank or no files match.
+    """
+    if not patterns_str.strip():
+        return []
+
+    workspace = pathlib.Path(workspace_dir) if workspace_dir else pathlib.Path(".")
+    envelopes: list[dict[str, Any]] = []
+
+    for pattern in patterns_str.split(","):
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        try:
+            matches = sorted(workspace.glob(pattern))
+        except Exception as exc:
+            logger.warning("Skipping invalid glob pattern %r: %s", pattern, exc)
+            continue
+
+        for match in matches:
+            if not match.is_file():
+                continue
+            try:
+                raw = match.read_bytes()
+                if len(raw) > _MAX_ATTACHMENT_BYTES:
+                    content = (
+                        raw[:_MAX_ATTACHMENT_BYTES].decode("utf-8", errors="replace")
+                        + "\n\n[truncated]"
+                    )
+                else:
+                    content = raw.decode("utf-8", errors="replace")
+
+                try:
+                    rel = match.relative_to(workspace)
+                    path_str = str(rel)
+                    parent = rel.parent
+                    dir_str = str(parent) if str(parent) != "." else "."
+                except ValueError:
+                    path_str = str(match)
+                    dir_str = str(match.parent)
+
+                envelopes.append(
+                    {
+                        "path": path_str,
+                        "filename": match.name,
+                        "directory": dir_str,
+                        "size": match.stat().st_size,
+                        "content": content,
+                    }
+                )
+            except Exception as exc:
+                logger.warning("Skipping unreadable attachment %s: %s", match, exc)
+
+    return envelopes
+
 
 # L-11: Patterns for accelerator key extraction from edge labels.
 # Matches: "[Y] Yes", "[OK] Okay", "1) Option One", "2. Option Two"
-import re
 
 _BRACKET_KEY_RE = re.compile(r"^\[([^\]]+)\]\s+")
 _NUMBER_KEY_RE = re.compile(r"^(\d+)[.)]\s+")
@@ -250,14 +363,45 @@ class HumanGateHandler:
         Instead of deriving choices from outgoing edges, presents a text
         input question.  Stores the human's text in ``context_updates`` as
         ``human.gate.text`` for downstream agent injection.
+
+        When the node defines ``description``, ``attachments_inline``, or
+        ``attachments_ref`` attributes, the Question is enriched with a
+        ``metadata`` dict so that the Interviewer (e.g.
+        InputRequestInterviewer) can build a rich three-zone A2UI schema:
+        instructions, file attachments for review, and a text input area.
         """
         assert self._interviewer is not None  # guaranteed by execute() guard
 
         prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
+
+        # --- Rich input request: read new attributes ---
+        description = node.attrs.get("description", "")
+        inline_patterns = node.attrs.get("attachments_inline", "")
+        ref_patterns = node.attrs.get("attachments_ref", "")
+
+        # Expand $variables in description (same pattern as codergen._expand_variables)
+        if description:
+            description = _expand_description(description, graph, context)
+
+        # Resolve glob patterns to file envelopes (point-in-time snapshots)
+        workspace_dir = graph.source_dir or ""
+        inline_envelopes = _resolve_attachments(inline_patterns, workspace_dir)
+        ref_envelopes = _resolve_attachments(ref_patterns, workspace_dir)
+
+        # Build metadata dict — only include keys that have values
+        metadata: dict[str, Any] = {}
+        if description:
+            metadata["description"] = description
+        if inline_envelopes:
+            metadata["attachments_inline"] = inline_envelopes
+        if ref_envelopes:
+            metadata["attachments_ref"] = ref_envelopes
+
         question = Question(
             text=prompt,
             type=QuestionType.FREEFORM,
             stage=node.id,
+            metadata=metadata,
         )
 
         await self._emit(
