@@ -188,6 +188,23 @@ class HumanGateHandler:
         self._interviewer = interviewer
         self._hooks = hooks
 
+    def _get_stage_id(self, node: Node, context: PipelineContext) -> str:
+        """Return a unique stage ID for this node, incrementing per re-entrant call.
+
+        First invocation returns ``node.id`` unchanged (e.g. ``"HumanBrainstorm"``)
+        for backward compatibility.  Subsequent invocations in the same pipeline
+        run return ``"{node.id}-{n}"`` (e.g. ``"HumanBrainstorm-2"``,
+        ``"HumanBrainstorm-3"``).
+
+        The iteration count is stored in context under the key
+        ``_gate_iter.{node.id}`` so it persists across loop re-entries and is
+        visible to downstream nodes via the context snapshot.
+        """
+        iter_key = f"_gate_iter.{node.id}"
+        iteration = int(context.get(iter_key) or 0) + 1
+        context.set(iter_key, iteration)
+        return node.id if iteration == 1 else f"{node.id}-{iteration}"
+
     async def _emit(self, event_name: str, data: dict) -> None:  # type: ignore[type-arg]
         """Emit an event via hooks, if provided."""
         if self._hooks is not None:
@@ -297,19 +314,20 @@ class HumanGateHandler:
             key_to_label[key] = c
             options.append(Option(key=key, label=c))
 
+        stage_id = self._get_stage_id(node, context)
         if choices:
             question = Question(
                 text=prompt,
                 type=QuestionType.MULTIPLE_CHOICE,
                 options=options,
-                stage=node.id,
+                stage=stage_id,
             )
         else:
             # No labeled edges — use a simple confirmation
             question = Question(
                 text=prompt,
                 type=QuestionType.CONFIRMATION,
-                stage=node.id,
+                stage=stage_id,
             )
 
         # 3. Emit interview started event
@@ -400,10 +418,11 @@ class HumanGateHandler:
         if ref_envelopes:
             metadata["attachments_ref"] = ref_envelopes
 
+        stage_id = self._get_stage_id(node, context)
         question = Question(
             text=prompt,
             type=QuestionType.FREEFORM,
-            stage=node.id,
+            stage=stage_id,
             metadata=metadata,
         )
 
