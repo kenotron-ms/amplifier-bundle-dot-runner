@@ -383,8 +383,11 @@ class HumanGateHandler:
         if description:
             description = _expand_description(description, graph, context)
 
-        # Resolve glob patterns to file envelopes (point-in-time snapshots)
-        workspace_dir = graph.source_dir or ""
+        # Resolve glob patterns to file envelopes (point-in-time snapshots).
+        # Prefer context.target_dir (the session's actual working directory, e.g.
+        # /workspace/project/) over graph.source_dir (the DOT file's parent, which
+        # is empty for built-in pipelines like "quick").
+        workspace_dir = context.get("context.target_dir") or graph.source_dir or ""
         inline_envelopes = _resolve_attachments(inline_patterns, workspace_dir)
         ref_envelopes = _resolve_attachments(ref_patterns, workspace_dir)
 
