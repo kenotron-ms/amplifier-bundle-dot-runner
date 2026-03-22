@@ -54,6 +54,11 @@ def resolve_dot_path(dot_file: str, source_dir: str, context: PipelineContext) -
     if source_dir:
         return os.path.join(source_dir, expanded)
 
+    # Try context.target_dir before falling back to os.getcwd()
+    target_dir = context.get("context.target_dir") if context else None
+    if target_dir:
+        return os.path.join(target_dir, expanded)
+
     return os.path.join(os.getcwd(), expanded)
 
 
