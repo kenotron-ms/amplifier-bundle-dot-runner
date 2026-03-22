@@ -190,13 +190,15 @@ class AmplifierBackend:
         # — all future nodes on the same thread inherit it.
         gate_text = context.get("human.gate.text")
         if gate_text is not None:
-            gate_label = context.get("human.gate.label", "")
-            gate_section = (
-                f'Human response at gate "{gate_label}":\n{gate_text}\n\n---\n\n'
-            )
-            instruction = gate_section + instruction
-            # Consume-once: clear so subsequent nodes don't re-inject
+            # Consume-once: always clear after the first LLM node following a
+            # human gate, regardless of whether the text was empty.
             context.set("human.gate.text", None)
+            if gate_text:  # Only inject if the human actually typed something
+                gate_label = context.get("human.gate.label", "")
+                gate_section = (
+                    f'Human response at gate "{gate_label}":\n{gate_text}\n\n---\n\n'
+                )
+                instruction = gate_section + instruction
 
         # 6. Route to Path A (spawn) or Path B (direct tool loop)
         if self._spawn_fn is not None:
