@@ -274,3 +274,87 @@ def test_outcome_resolves_status_fail_when_no_preferred_label():
     outcome = Outcome(status=StageStatus.FAIL, preferred_label=None)
     ctx = PipelineContext()
     assert evaluate_condition("outcome=fail", outcome, ctx) is True
+
+
+# --- comma as clause separator (design drift from Rust reference, DOT-BUG-001) ---
+
+
+def test_comma_separated_both_pass():
+    """Comma is a valid AND separator — matches Rust condition.rs grammar.
+
+    Real-world case: PickNextTask edge condition in dotpowers.dot
+      context.tool.output!=all_complete,context.tool.output!=no_tasks_found
+    """
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("tool.output", "next_task-task-002")
+    assert (
+        evaluate_condition(
+            "context.tool.output!=all_complete,context.tool.output!=no_tasks_found",
+            outcome,
+            ctx,
+        )
+        is True
+    )
+
+
+def test_comma_separated_first_clause_fails():
+    """First clause fails — whole condition must be False (AND semantics)."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("tool.output", "all_complete")
+    assert (
+        evaluate_condition(
+            "context.tool.output!=all_complete,context.tool.output!=no_tasks_found",
+            outcome,
+            ctx,
+        )
+        is False
+    )
+
+
+def test_comma_separated_second_clause_fails():
+    """Second clause fails — whole condition must be False.
+
+    This is the specific failure mode of the original bug: before the fix,
+    the entire condition was treated as ONE clause with a garbage comparison
+    value, which never matched any real output, so the condition was always
+    TRUE — causing ImplementTask to fire unconditionally.
+    """
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("tool.output", "no_tasks_found")
+    assert (
+        evaluate_condition(
+            "context.tool.output!=all_complete,context.tool.output!=no_tasks_found",
+            outcome,
+            ctx,
+        )
+        is False  # was True before fix — the bug
+    )
+
+
+def test_mixed_comma_and_ampersand():
+    """Comma and && separators can be mixed; all clauses must pass."""
+    outcome = Outcome(status=StageStatus.SUCCESS)
+    ctx = PipelineContext()
+    ctx.set("a", "1")
+    ctx.set("b", "2")
+    # Mixed separators: comma between first two, && before third
+    assert (
+        evaluate_condition(
+            "outcome=success,context.a=1 && context.b=2",
+            outcome,
+            ctx,
+        )
+        is True
+    )
+    ctx.set("b", "99")
+    assert (
+        evaluate_condition(
+            "outcome=success,context.a=1 && context.b=2",
+            outcome,
+            ctx,
+        )
+        is False
+    )

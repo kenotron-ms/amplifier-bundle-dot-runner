@@ -27,11 +27,17 @@ def evaluate_condition(
     if not condition or not condition.strip():
         return True
 
-    clauses = condition.split("&&")
-    for clause in clauses:
-        clause = clause.strip()
-        if not clause:
-            continue
+    # Split on '&&' first, then ',' within each piece.
+    # Both separators carry AND semantics (all clauses must pass).
+    # Matches the Rust reference grammar: Separator ::= '&&' | ','
+    raw_clauses: list[str] = []
+    for piece in condition.split("&&"):
+        for sub in piece.split(","):
+            sub = sub.strip()
+            if sub:
+                raw_clauses.append(sub)
+
+    for clause in raw_clauses:
         if not _evaluate_clause(clause, outcome, context):
             return False
     return True
