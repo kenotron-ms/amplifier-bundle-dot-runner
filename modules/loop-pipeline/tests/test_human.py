@@ -1042,3 +1042,127 @@ class TestHumanGateFreeformRichAttachments:
         assert ref_names == {"backlog.md", "steering.md"}
         assert outcome.status == StageStatus.SUCCESS
         assert outcome.context_updates["human.gate.text"] == "lgtm"
+
+
+# --- last_response propagation (so $context works in downstream nodes) ---
+
+
+class TestHumanGateLastResponsePropagation:
+    """Human gate must set last_response so $context works in subsequent nodes.
+
+    When HumanBrainstorm -> RefineUnderstanding, the prompt in RefineUnderstanding
+    uses $context which resolves to context['last_response'].  If human gate handlers
+    don't set last_response the LLM sees an empty string and says "I don't see your
+    answer."  Both code paths (freeform and choice-picker) must set it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_freeform_gate_sets_last_response(self):
+        """Freeform gate sets last_response so $context works in the next node."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "HumanBrainstorm": Node(
+                    id="HumanBrainstorm",
+                    shape="hexagon",
+                    label="What are we building?",
+                    attrs={"mode": "freeform"},
+                ),
+                "RefineUnderstanding": Node(id="RefineUnderstanding", shape="box"),
+            },
+            edges=[
+                Edge(from_node="HumanBrainstorm", to_node="RefineUnderstanding"),
+            ],
+        )
+
+        class FreeformInterviewer:
+            def ask(self, question: Question) -> Answer:
+                raise AssertionError("ask() must NOT be called when async_ask is present")
+
+            async def async_ask(self, question: Question) -> Answer:
+                return Answer(
+                    value="B - Command-line tool",
+                    text="B - Command-line tool",
+                )
+
+        handler = HumanGateHandler(interviewer=FreeformInterviewer())
+        outcome = await handler.execute(
+            graph.nodes["HumanBrainstorm"], _make_context(), graph, "/tmp"
+        )
+
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.context_updates is not None
+        # Core check: last_response must be set so $context works downstream
+        assert "last_response" in outcome.context_updates, (
+            "Freeform gate must set 'last_response' so $context works in subsequent nodes"
+        )
+        assert outcome.context_updates["last_response"] == "B - Command-line tool"[:200]
+        # last_stage should be set to match codergen convention
+        assert "last_stage" in outcome.context_updates
+        assert outcome.context_updates["last_stage"] == "HumanBrainstorm"
+        # Existing keys still present (no regression)
+        assert outcome.context_updates["human.gate.text"] == "B - Command-line tool"
+
+    @pytest.mark.asyncio
+    async def test_freeform_gate_truncates_long_response_for_last_response(self):
+        """last_response is truncated to 200 chars to match codergen convention."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "gate": Node(
+                    id="gate",
+                    shape="hexagon",
+                    label="Tell me everything",
+                    attrs={"mode": "freeform"},
+                ),
+                "next": Node(id="next", shape="box"),
+            },
+            edges=[Edge(from_node="gate", to_node="next")],
+        )
+
+        long_text = "A" * 500
+
+        class LongResponseInterviewer:
+            def ask(self, question: Question) -> Answer:
+                raise AssertionError("ask() must NOT be called")
+
+            async def async_ask(self, question: Question) -> Answer:
+                return Answer(value=long_text, text=long_text)
+
+        handler = HumanGateHandler(interviewer=LongResponseInterviewer())
+        outcome = await handler.execute(graph.nodes["gate"], _make_context(), graph, "/tmp")
+
+        assert outcome.context_updates is not None
+        assert len(outcome.context_updates["last_response"]) == 200
+        assert outcome.context_updates["last_response"] == long_text[:200]
+        # human.gate.text gets full text (not truncated)
+        assert outcome.context_updates["human.gate.text"] == long_text
+
+    @pytest.mark.asyncio
+    async def test_choice_gate_sets_last_response(self):
+        """Choice-picker gate sets last_response so $context works in the next node."""
+        graph = _make_graph_with_human_gate()
+        node = graph.nodes["review"]
+
+        interviewer = QueueInterviewer(
+            [
+                Answer(
+                    value="Approve",
+                    selected_option=Option(key="Approve", label="Approve"),
+                )
+            ]
+        )
+        handler = HumanGateHandler(interviewer=interviewer)
+        outcome = await handler.execute(node, _make_context(), graph, "/tmp")
+
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.context_updates is not None
+        # Core check: last_response must be set so $context works downstream
+        assert "last_response" in outcome.context_updates, (
+            "Choice-picker gate must set 'last_response' so $context works in subsequent nodes"
+        )
+        assert outcome.context_updates["last_response"] == "Approve"
+        assert "last_stage" in outcome.context_updates
+        assert outcome.context_updates["last_stage"] == "review"
+        # Existing keys still present (no regression)
+        assert outcome.context_updates["human.gate.selected"] == "Approve"

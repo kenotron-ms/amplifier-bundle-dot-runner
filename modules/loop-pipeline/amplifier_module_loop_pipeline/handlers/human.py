@@ -366,6 +366,10 @@ class HumanGateHandler:
             context_updates={
                 "human.gate.selected": selected,
                 "human.gate.label": node.label,
+                # Set last_response and last_stage so $context works in downstream nodes.
+                # Mirrors the codergen convention: context_updates={"last_stage": ..., "last_response": ...[:200]}
+                "last_response": (selected or "")[:200],
+                "last_stage": node.id,
             },
             notes=f"Human gate '{node.id}': selected '{selected}'",
         )
@@ -458,6 +462,10 @@ class HumanGateHandler:
             context_updates={
                 "human.gate.text": answer.text,
                 "human.gate.label": node.label,
+                # Set last_response and last_stage so $context works in downstream nodes.
+                # Mirrors the codergen convention: context_updates={"last_stage": ..., "last_response": ...[:200]}
+                "last_response": (answer.text or "")[:200],
+                "last_stage": node.id,
             },
             notes=f"Human gate '{node.id}': freeform response received",
         )
