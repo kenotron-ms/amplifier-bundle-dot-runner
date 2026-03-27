@@ -660,18 +660,26 @@ def _is_identifier(token: str) -> bool:
 
 def _has_undirected_edges(source: str) -> bool:
     """Check if the source contains undirected edges (--) outside quotes."""
-    # Simple heuristic: look for -- that isn't inside quotes
     in_string = False
     i = 0
     while i < len(source):
-        if source[i] == '"':
-            in_string = not in_string
-        elif not in_string and source[i : i + 2] == "--":
-            # Check it's not part of ->
-            if i > 0 and source[i - 1] == "<":
+        if in_string:
+            # Inside a quoted string: skip escape sequences (e.g. \", \\)
+            # so that \" is not mistaken for a closing quote.
+            if source[i] == "\\" and i + 1 < len(source):
                 i += 2
                 continue
-            return True
+            if source[i] == '"':
+                in_string = False
+        else:
+            if source[i] == '"':
+                in_string = True
+            elif source[i : i + 2] == "--":
+                # Check it's not part of ->
+                if i > 0 and source[i - 1] == "<":
+                    i += 2
+                    continue
+                return True
         i += 1
     return False
 

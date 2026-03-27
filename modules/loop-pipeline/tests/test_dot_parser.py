@@ -50,6 +50,30 @@ def test_rejects_undirected_edge():
         parse_dot("digraph { A -- B }")
 
 
+def test_allows_double_dash_in_plain_quoted_attribute():
+    """-- inside a plain quoted attribute value must not raise ValueError."""
+    graph = parse_dot('digraph test { A [label="git log --oneline"]; A -> B }')
+    assert "A" in graph.nodes
+    assert len(graph.edges) == 1
+
+
+def test_allows_double_dash_after_escaped_quote_in_string():
+    """-- after a single escaped quote in a quoted attribute must not raise ValueError.
+
+    The bug: _has_undirected_edges toggled in_string on every '"' char
+    (including backslash-escaped quotes like \"), without skipping the escape
+    sequence. A single \" before the -- causes in_string to flip False, then
+    the subsequent -- is misidentified as an undirected edge declaration.
+
+    From dotpowers.dot: tool_command="...\"$(git ...) rev-parse --show-toplevel..."
+    """
+    # DOT source: A [cmd="test \"data --flag"]
+    # The \" toggles in_string=False; then -- is seen outside-string → ValueError.
+    graph = parse_dot('digraph test { A [cmd="test \\"data --flag"]; A -> B }')
+    assert "A" in graph.nodes
+    assert len(graph.edges) == 1
+
+
 # --- Chained edges ---
 
 
