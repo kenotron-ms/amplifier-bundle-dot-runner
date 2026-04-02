@@ -1084,6 +1084,7 @@ Outcome:
     context_updates    : Map<String, Any> -- key-value pairs to merge into context
     notes              : String          -- human-readable execution summary
     failure_reason     : String          -- reason for failure (when status is FAIL or RETRY)
+    session_id         : String          -- Amplifier session ID that executed this node (optional, backend-dependent)
 ```
 
 **StageStatus values:**
@@ -1618,9 +1619,11 @@ The engine emits typed events during execution for UI, logging, and metrics inte
 
 **Stage lifecycle events:**
 - `StageStarted(name, index)` -- stage begins
-- `StageCompleted(name, index, duration)` -- stage succeeded
+- `StageCompleted(name, index, duration, session_id)` -- stage succeeded; `session_id` is the child Amplifier session that executed the node (optional, backend-dependent)
 - `StageFailed(name, index, error, will_retry)` -- stage failed
 - `StageRetrying(name, index, attempt, delay)` -- stage retrying
+
+> **Implementation note:** The reference implementation emits these events using `pipeline:*` names (e.g., `pipeline:node_start`, `pipeline:node_complete`). The `pipeline:node_complete` payload includes: `node_id`, `status`, `duration_ms`, `notes`, `failure_reason`, and `session_id`.
 
 **Parallel execution events:**
 - `ParallelStarted(branch_count)` -- parallel block started
@@ -2056,7 +2059,8 @@ Each non-terminal node writes a `status.json` file in its stage directory. This 
         "key": "value",
         "nested.key": "value"
     },
-    "notes": "Human-readable execution summary"
+    "notes": "Human-readable execution summary",
+    "session_id": "uuid-of-child-session | null"
 }
 ```
 
@@ -2067,6 +2071,7 @@ Each non-terminal node writes a `status.json` file in its stage directory. This 
 | `suggested_next_ids`   | List of Strings | No       | Fallback target node IDs if no label match. |
 | `context_updates`      | Map             | No       | Key-value pairs merged into the run context. |
 | `notes`                | String          | No       | Human-readable log entries. |
+| `session_id`           | String          | No       | Amplifier session ID that executed this node. Enables linking to full session transcripts (e.g., context-intelligence events). `null` when the backend does not provide a session. |
 
 When `auto_status=true` on a node and no `status.json` was written by the handler, the engine synthesizes: `{"outcome": "success", "notes": "auto-status: handler completed without writing status"}`.
 
