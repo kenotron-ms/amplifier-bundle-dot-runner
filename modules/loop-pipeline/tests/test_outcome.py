@@ -94,3 +94,24 @@ def test_outcome_is_success_property():
     assert Outcome(status=StageStatus.FAIL).is_success is False
     assert Outcome(status=StageStatus.RETRY).is_success is False
     assert Outcome(status=StageStatus.SKIPPED).is_success is False
+
+
+# --- session_id field ---
+
+
+def test_outcome_session_id_defaults_to_none():
+    """Outcome.session_id is None by default (backward compatible)."""
+    o = Outcome(status=StageStatus.SUCCESS)
+    assert o.session_id is None
+
+
+def test_outcome_accepts_session_id():
+    """Outcome can carry a child Amplifier session_id."""
+    o = Outcome(status=StageStatus.SUCCESS, session_id="child-session-abc")
+    assert o.session_id == "child-session-abc"
+
+
+def test_outcome_session_id_is_optional_kwarg():
+    """session_id is keyword-only and does not break existing positional usage."""
+    o = Outcome(StageStatus.SUCCESS, "label", None, None, "some notes", None, "sess-1")
+    assert o.session_id == "sess-1"

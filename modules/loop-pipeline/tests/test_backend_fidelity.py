@@ -303,3 +303,56 @@ async def test_backend_records_completed_node_outcomes():
     # Second call's preamble should mention the completed stage
     instruction = coordinator.last_spawn_kwargs.get("instruction", "")
     assert "plan" in instruction.lower()  # completed stage appears in preamble
+
+
+# ---------------------------------------------------------------------------
+# session_id capture: backend sets outcome.session_id from spawn result
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_captures_session_id_on_outcome():
+    """Backend sets outcome.session_id from spawn result (all fidelity modes)."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "child-sess-xyz"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node = _make_node(attrs={"llm_provider": "anthropic"})
+    outcome = await backend.run(node, "Do the work", _make_context())
+
+    assert outcome.session_id == "child-sess-xyz"
+
+
+@pytest.mark.asyncio
+async def test_backend_captures_session_id_for_compact_fidelity():
+    """Backend captures session_id onto outcome for compact fidelity (not just full)."""
+    coordinator = MockCoordinator(
+        spawn_result={"output": "done", "session_id": "compact-sess-1"}
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node, edge, graph = _make_graph_with_fidelity(node_fidelity="compact")
+    outcome = await backend.run(
+        node, "Do the work", _make_context(), incoming_edge=edge, graph=graph
+    )
+
+    assert outcome.session_id == "compact-sess-1"
+
+
+@pytest.mark.asyncio
+async def test_backend_session_id_none_when_not_in_result():
+    """outcome.session_id is None when spawn result has no session_id key."""
+    coordinator = MockCoordinator(spawn_result={"output": "done"})
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node = _make_node(attrs={"llm_provider": "anthropic"})
+    outcome = await backend.run(node, "Do the work", _make_context())
+
+    assert outcome.session_id is None

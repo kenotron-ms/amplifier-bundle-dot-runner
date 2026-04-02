@@ -493,6 +493,136 @@ class TestNodeEvents:
 
 
 # ---------------------------------------------------------------------------
+# session_id in node_complete events
+# ---------------------------------------------------------------------------
+
+
+class SessionBackend:
+    """Backend that returns an Outcome with a session_id for a specific node."""
+
+    def __init__(self, session_node: str, session_id: str = "child-sess-abc") -> None:
+        self._session_node = session_node
+        self._session_id = session_id
+
+    async def run(
+        self, node: Node, prompt: str, context: PipelineContext
+    ) -> str | Outcome:
+        if node.id == self._session_node:
+            return Outcome(status=StageStatus.SUCCESS, session_id=self._session_id)
+        return "ok"
+
+
+class TestNodeCompleteSessionId:
+    """Engine emits session_id in PIPELINE_NODE_COMPLETE events."""
+
+    @pytest.mark.asyncio
+    async def test_node_complete_event_has_session_id_key(self, tmp_path):
+        """pipeline:node_complete always includes a session_id key."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
+        for event in node_completes:
+            assert "session_id" in event, (
+                f"'session_id' missing from node_complete event: {event}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_node_complete_session_id_none_when_not_set(self, tmp_path):
+        """pipeline:node_complete has session_id=None when outcome has no session."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
+        work_events = [e for e in node_completes if e["node_id"] == "work"]
+        assert len(work_events) == 1
+        assert work_events[0]["session_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_node_complete_session_id_populated_when_set(self, tmp_path):
+        """pipeline:node_complete carries session_id when outcome has one."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=SessionBackend(session_node="work", session_id="child-sess-xyz"),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
+        work_events = [e for e in node_completes if e["node_id"] == "work"]
+        assert len(work_events) == 1
+        assert work_events[0]["session_id"] == "child-sess-xyz"
+
+    @pytest.mark.asyncio
+    async def test_timeout_event_has_session_id_none(self, tmp_path):
+        """pipeline:node_complete emitted on timeout has session_id=None."""
+        import asyncio
+
+        hooks = MockHooks()
+
+        class SlowBackend:
+            async def run(
+                self, node: Node, prompt: str, context: PipelineContext
+            ) -> str:
+                await asyncio.sleep(10)  # will be timed out
+                return "done"
+
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work" timeout=0.01]
+                exit [shape=Msquare]
+                start -> work [label="*"]
+                work -> exit [label="*"]
+            }
+            """,
+            backend=SlowBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+        node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
+        timeout_events = [e for e in node_completes if e.get("status") == "timeout"]
+        assert len(timeout_events) >= 1
+        for event in timeout_events:
+            assert "session_id" in event
+            assert event["session_id"] is None
+
+
+# ---------------------------------------------------------------------------
 # Edge selection events
 # ---------------------------------------------------------------------------
 

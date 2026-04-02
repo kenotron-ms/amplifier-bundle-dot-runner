@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 
 import pytest
 
@@ -227,6 +226,59 @@ class TestM19StatusJsonFields:
             data = json.load(f)
         assert "outcome" in data
 
+    @pytest.mark.asyncio
+    async def test_engine_status_json_has_session_id_key(self, tmp_path):
+        """Engine status.json always includes session_id (null when not set)."""
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+        )
+        await engine.run()
+        with open(tmp_path / "work" / "status.json") as f:
+            data = json.load(f)
+        assert "session_id" in data
+        assert data["session_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_engine_status_json_session_id_populated(self, tmp_path):
+        """Engine status.json has session_id when outcome carries one."""
+
+        class _SessionOutcomeBackend:
+            async def run(
+                self, node: Node, prompt: str, context: PipelineContext
+            ) -> Outcome:
+                if node.id == "work":
+                    return Outcome(
+                        status=StageStatus.SUCCESS,
+                        session_id="child-sess-999",
+                    )
+                return Outcome(status=StageStatus.SUCCESS)
+
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=_SessionOutcomeBackend(),
+            logs_root=str(tmp_path),
+        )
+        await engine.run()
+        with open(tmp_path / "work" / "status.json") as f:
+            data = json.load(f)
+        assert data["session_id"] == "child-sess-999"
+
 
 # ===========================================================================
 # M-20: No formal Transform interface
@@ -370,9 +422,7 @@ class TestM21ShapeNameSelectors:
         graph = Graph(
             name="test",
             nodes={
-                "n": Node(
-                    id="n", shape="box", prompt="X", attrs={"class": "special"}
-                ),
+                "n": Node(id="n", shape="box", prompt="X", attrs={"class": "special"}),
             },
             edges=[],
         )

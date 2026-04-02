@@ -276,6 +276,7 @@ class PipelineEngine:
                             "duration_ms": node_duration_ms,
                             "notes": outcome.notes,
                             "failure_reason": outcome.failure_reason,
+                            "session_id": outcome.session_id,
                         },
                     )
             else:
@@ -367,6 +368,7 @@ class PipelineEngine:
                     "duration_ms": node_duration_ms,
                     "notes": outcome.notes,
                     "failure_reason": outcome.failure_reason,
+                    "session_id": outcome.session_id,
                 },
             )
 
@@ -834,6 +836,7 @@ class PipelineEngine:
             "duration_ms": duration_ms,
             "notes": outcome.notes,
             "failure_reason": outcome.failure_reason,
+            "session_id": outcome.session_id,
         }
         status_path = os.path.join(node_dir, "status.json")
         with open(status_path, "w") as f:
@@ -898,6 +901,7 @@ class PipelineEngine:
                     "duration_ms": node_duration,
                     "notes": outcome.notes,
                     "failure_reason": outcome.failure_reason,
+                    "session_id": outcome.session_id,
                 },
             )
             self._write_node_status(target_node_id, outcome, node_duration)

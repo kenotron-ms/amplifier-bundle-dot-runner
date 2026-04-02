@@ -42,6 +42,9 @@ class Outcome:
     context_updates: dict[str, Any] | None = None
     notes: str | None = None
     failure_reason: str | None = None
+    session_id: str | None = (
+        None  # child Amplifier session ID (if executed via AmplifierBackend)
+    )
 
     @property
     def is_success(self) -> bool:

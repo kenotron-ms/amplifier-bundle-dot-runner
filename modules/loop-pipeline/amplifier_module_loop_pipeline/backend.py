@@ -334,14 +334,17 @@ class AmplifierBackend:
         output = result.get("output", "") if isinstance(result, dict) else str(result)
         outcome = _parse_outcome(output)
 
+        # Capture session_id from spawn result — always, for all fidelity modes
+        session_id = result.get("session_id") if isinstance(result, dict) else None
+        if session_id:
+            outcome.session_id = session_id
+
         # Record session_id in pool for full fidelity reuse
-        if fidelity == "full" and graph is not None:
-            session_id = result.get("session_id") if isinstance(result, dict) else None
-            if session_id:
-                thread_key = resolve_thread_key(
-                    node, incoming_edge, graph, self._last_node_id
-                )
-                self._session_pool[thread_key] = session_id
+        if fidelity == "full" and graph is not None and session_id:
+            thread_key = resolve_thread_key(
+                node, incoming_edge, graph, self._last_node_id
+            )
+            self._session_pool[thread_key] = session_id
 
         return outcome
 
