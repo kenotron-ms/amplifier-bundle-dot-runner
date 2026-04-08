@@ -235,6 +235,17 @@ class PipelineHandler:
             "nodes_total": len(child_graph.nodes),
         }
 
+        # (11b2) Merge declared outputs from child context back to parent
+        if outcome.is_success:
+            outputs_str = node.attrs.get("outputs", "")
+            output_keys = [k.strip() for k in outputs_str.split(",") if k.strip()]
+            if output_keys:
+                child_snapshot = child_context.snapshot()
+                for key in output_keys:
+                    val = child_snapshot.get(key)
+                    if val is not None:
+                        context.set(key, str(val))
+
         # (11c) Emit pipeline:subgraph_complete event
         await self._emit(
             "pipeline:subgraph_complete",
