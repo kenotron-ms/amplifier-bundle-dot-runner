@@ -669,3 +669,116 @@ digraph parent_e2e {
         outcome = await engine.run()
 
         assert outcome.status == StageStatus.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Outputs merge-back tests: declared outputs should merge back to parent
+# ---------------------------------------------------------------------------
+
+CHILD_DOT_SETS_CONTEXT = """\
+digraph child_sets_context {
+    start [shape=Mdiamond]
+    work [prompt="Do child work"]
+    done [shape=Msquare]
+    start -> work -> done
+}
+"""
+
+
+class TestOutputsMergeBack:
+    """Tests that declared outputs merge back from child context to parent context."""
+
+    @pytest.mark.asyncio
+    async def test_declared_outputs_merge_back_to_parent(self, tmp_path):
+        """Declared outputs='result,detail' merge back to parent context after child run.
+
+        The folder node declares outputs='result,detail' and pre-seeds the child
+        context with context.result='pass' and context.detail='All tests passed'.
+        After execution, both keys should be present in the PARENT context.
+
+        Expected failure: outputs attribute is currently ignored; parent context
+        remains empty after child execution.
+        """
+        dot_file = tmp_path / "child.dot"
+        dot_file.write_text(CHILD_DOT_SETS_CONTEXT)
+
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="folder",
+                    type="pipeline",
+                    attrs={
+                        "dot_file": str(dot_file),
+                        "outputs": "result,detail",
+                        "context.result": "pass",
+                        "context.detail": "All tests passed",
+                    },
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
+        await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        assert context.get("result") == "pass"
+        assert context.get("detail") == "All tests passed"
+
+    @pytest.mark.asyncio
+    async def test_undeclared_keys_do_not_merge_back(self, tmp_path):
+        """Only declared outputs merge back; undeclared keys stay isolated.
+
+        The folder node declares outputs='result' (only result) but also pre-seeds
+        context.secret='should_not_leak' into the child context. After execution,
+        result should be present in parent context (declared) but secret should NOT
+        (not declared in outputs).
+
+        Expected failure: outputs attribute is currently ignored; parent context
+        remains empty after child execution, so result assertion fails first.
+        """
+        dot_file = tmp_path / "child.dot"
+        dot_file.write_text(CHILD_DOT_SETS_CONTEXT)
+
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="folder",
+                    type="pipeline",
+                    attrs={
+                        "dot_file": str(dot_file),
+                        "outputs": "result",
+                        "context.result": "pass",
+                        "context.secret": "should_not_leak",
+                    },
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
+        await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        assert context.get("result") == "pass"  # declared, should merge back
+        assert context.get("secret") is None  # not declared, should NOT merge back
