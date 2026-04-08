@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 _MAX_ATTACHMENT_BYTES = 100_000  # 100 KB
 
 
-def _expand_description(description: str, graph: Graph, context: PipelineContext) -> str:
+def _expand_description(
+    description: str, graph: Graph, context: PipelineContext
+) -> str:
     """Expand $variable tokens in a description string.
 
     Uses the same expansion as codergen prompts: $goal, $context / $last_response,
@@ -68,6 +70,19 @@ def _expand_description(description: str, graph: Graph, context: PipelineContext
         }
         if plain_params:
             result = expand_params(result, plain_params)
+
+    # ${dotted.key} expansion — braces disambiguate dot-separated context keys
+    # This is an amplifier extension for surfacing runtime context (tool.output,
+    # last_stage, etc.) in human gate descriptions.
+    if "${" in result:
+        snapshot = context.snapshot()
+
+        def _replace_braced(m: re.Match) -> str:  # type: ignore[type-arg]
+            key = m.group(1)
+            val = snapshot.get(key)
+            return str(val) if val is not None else m.group(0)
+
+        result = re.sub(r"\$\{([^}]+)\}", _replace_braced, result)
 
     return result
 
@@ -306,6 +321,16 @@ class HumanGateHandler:
 
         # 2. Build the question with accelerator keys (L-11)
         prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
+
+        # Read description for edge-choice gates (same as freeform path)
+        description = node.attrs.get("description", "")
+        if description:
+            description = _expand_description(description, graph, context)
+
+        metadata: dict[str, Any] = {}
+        if description:
+            metadata["description"] = description
+
         # Extract accelerator keys from labels for option keys
         key_to_label: dict[str, str] = {}
         options: list[Option] = []
@@ -321,6 +346,7 @@ class HumanGateHandler:
                 type=QuestionType.MULTIPLE_CHOICE,
                 options=options,
                 stage=stage_id,
+                metadata=metadata,
             )
         else:
             # No labeled edges — use a simple confirmation
@@ -328,6 +354,7 @@ class HumanGateHandler:
                 text=prompt,
                 type=QuestionType.CONFIRMATION,
                 stage=stage_id,
+                metadata=metadata,
             )
 
         # 3. Emit interview started event
