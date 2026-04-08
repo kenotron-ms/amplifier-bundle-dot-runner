@@ -828,3 +828,88 @@ class TestOutputsMergeBack:
 
         assert outcome.status == StageStatus.FAIL
         assert context.get("result") is None
+
+    @pytest.mark.asyncio
+    async def test_empty_outputs_attribute_is_noop(self, tmp_path):
+        """Whitespace-and-comma-only outputs='  , , ' is treated as no outputs — nothing merges.
+
+        The folder node has outputs='  , , ' (no real keys after stripping) and
+        context.some_key='some_value' pre-seeded into the child context. After
+        execution, context.get('some_key') must be None because the outputs list
+        parses to empty and the merge-back loop never runs.
+        """
+        dot_file = tmp_path / "child.dot"
+        dot_file.write_text(CHILD_DOT)
+
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="folder",
+                    type="pipeline",
+                    attrs={
+                        "dot_file": str(dot_file),
+                        "outputs": "  , , ",
+                        "context.some_key": "some_value",
+                    },
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
+        await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        assert context.get("some_key") is None
+
+    @pytest.mark.asyncio
+    async def test_no_outputs_attribute_preserves_isolation(self, tmp_path):
+        """Folder node without any outputs attribute keeps full child context isolation.
+
+        The folder node has no 'outputs' attribute at all but pre-seeds
+        context.injected='value' into the child context. After execution,
+        context.get('injected') must be None because, with no outputs declared,
+        nothing is ever merged back to the parent context.
+        """
+        dot_file = tmp_path / "child.dot"
+        dot_file.write_text(CHILD_DOT)
+
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="folder",
+                    type="pipeline",
+                    attrs={
+                        "dot_file": str(dot_file),
+                        "context.injected": "value",
+                    },
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler(handler_registry_factory=_make_registry_factory())
+        await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        assert context.get("injected") is None
