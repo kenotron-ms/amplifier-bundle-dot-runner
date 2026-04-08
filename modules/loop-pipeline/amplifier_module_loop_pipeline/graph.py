@@ -210,12 +210,12 @@ class Node:
 
         Resolution order (spec Section 3.2, NLSpec line 344):
           1. shape=Mdiamond
-          2. node_type="start" attribute
+          2. type="start" attribute
           3. id matches "start" (case-insensitive)
         """
         if self.shape == "Mdiamond":
             return True
-        if self.attrs.get("node_type") == "start":
+        if self.type == "start":
             return True
         if self.id.lower() == "start":
             return True
@@ -226,14 +226,14 @@ class Node:
 
         Resolution order:
           1. shape=Msquare
-          2. node_type="exit" attribute
-          3. id matches "exit" or "done" (case-insensitive)
+          2. type="exit" attribute
+          3. id matches "exit" or "end" (case-insensitive)
         """
         if self.shape == "Msquare":
             return True
-        if self.attrs.get("node_type") == "exit":
+        if self.type == "exit":
             return True
-        if self.id.lower() in ("exit", "done"):
+        if self.id.lower() in ("exit", "end"):
             return True
         return False
 

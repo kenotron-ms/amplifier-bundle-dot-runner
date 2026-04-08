@@ -615,11 +615,11 @@ class PipelineEngine:
             if node.shape == "Mdiamond":
                 return node
 
-        # Priority 2: node_type="start" attribute
+        # Priority 2: type="start" attribute
         for node in self.graph.nodes.values():
-            if node.attrs.get("node_type") == "start":
+            if node.type == "start":
                 logger.debug(
-                    "No Mdiamond node found; using node_type='start' node '%s'",
+                    "No Mdiamond node found; using type='start' node '%s'",
                     node.id,
                 )
                 return node
@@ -628,13 +628,13 @@ class PipelineEngine:
         for node in self.graph.nodes.values():
             if node.id.lower() == "start":
                 logger.debug(
-                    "No Mdiamond/node_type node found; using id='%s' as start node",
+                    "No Mdiamond/type node found; using id='%s' as start node",
                     node.id,
                 )
                 return node
 
         raise ValueError(
-            "No start node found (no shape=Mdiamond, no node_type='start', "
+            "No start node found (no shape=Mdiamond, no type='start', "
             "and no id='start'/'Start')"
         )
 

@@ -128,7 +128,7 @@ def parse_dot(source: str) -> Graph:
         edges=ctx.edges,
         goal=ctx.graph_fields.get("goal", ""),
         dot_source=source,
-        default_max_retry=ctx.graph_fields.get("default_max_retry", 50),
+        default_max_retry=ctx.graph_fields.get("default_max_retry", 0),  # spec default: 0
         model_stylesheet=ctx.graph_fields.get("model_stylesheet", ""),
         max_pipeline_duration=ctx.graph_fields.get("max_pipeline_duration"),
         graph_attrs=ctx.graph_attrs,
@@ -433,7 +433,7 @@ def _set_graph_attr(ctx: _ParseContext, key: str, val: Any) -> None:
     """Set a graph-level attribute, promoting known fields."""
     if key == "goal":
         ctx.graph_fields["goal"] = str(val)
-    elif key == "default_max_retry":
+    elif key in ("default_max_retry", "default_max_retries"):
         ctx.graph_fields["default_max_retry"] = (
             int(val) if not isinstance(val, int) else val
         )

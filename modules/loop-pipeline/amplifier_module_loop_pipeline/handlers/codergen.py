@@ -56,7 +56,7 @@ class CodergenHandler:
         5. Return outcome
         """
         # 1. Build prompt
-        prompt = node.prompt or node.attrs.get("llm_prompt") or node.label
+        prompt = node.prompt or node.label
         prompt = _expand_variables(prompt, graph, context)
 
         # 2. Write prompt to logs

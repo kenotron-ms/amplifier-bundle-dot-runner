@@ -25,7 +25,6 @@ SHAPE_TO_HANDLER: dict[str, str] = {
     "Mdiamond": "start",
     "Msquare": "exit",
     "box": "codergen",
-    "ellipse": "codergen",
     "hexagon": "wait.human",
     "diamond": "conditional",
     "component": "parallel",
@@ -36,7 +35,7 @@ SHAPE_TO_HANDLER: dict[str, str] = {
 }
 
 # Shapes that map to LLM/codergen handler
-_LLM_SHAPES = {"box", "ellipse"}
+_LLM_SHAPES = {"box"}
 
 
 @dataclass
@@ -122,7 +121,7 @@ def validate_or_raise(graph: Graph) -> list[Diagnostic]:
 def _check_start_node(graph: Graph, diags: list[Diagnostic]) -> None:
     """LINT: start_node — exactly one start node.
 
-    Detected by: shape=Mdiamond, node_type="start" attr, or id="start".
+    Detected by: shape=Mdiamond, type="start" attr, or id="start".
     """
     start_nodes = [n for n in graph.nodes.values() if n.is_start_node()]
     if len(start_nodes) == 0:
@@ -132,9 +131,9 @@ def _check_start_node(graph: Graph, diags: list[Diagnostic]) -> None:
                 severity="ERROR",
                 message=(
                     "Pipeline must have exactly one start node "
-                    '(shape=Mdiamond, node_type="start", or id="start")'
+                    '(shape=Mdiamond, type="start", or id="start")'
                 ),
-                fix='Add a start node (shape=Mdiamond, node_type="start" attr, or id="start")',
+                fix='Add a start node (shape=Mdiamond, type="start" attr, or id="start")',
             )
         )
     elif len(start_nodes) > 1:
@@ -152,7 +151,7 @@ def _check_start_node(graph: Graph, diags: list[Diagnostic]) -> None:
 def _check_terminal_node(graph: Graph, diags: list[Diagnostic]) -> None:
     """LINT: terminal_node — exactly one exit node (M-11).
 
-    Detected by: shape=Msquare, node_type="exit" attr, or id="exit"/"done".
+    Detected by: shape=Msquare, type="exit" attr, or id="exit"/"end".
     """
     exit_nodes = [n for n in graph.nodes.values() if n.is_exit_node()]
     if len(exit_nodes) == 0:
@@ -162,9 +161,9 @@ def _check_terminal_node(graph: Graph, diags: list[Diagnostic]) -> None:
                 severity="ERROR",
                 message=(
                     "Pipeline must have exactly one exit node "
-                    '(shape=Msquare, node_type="exit", or id="exit"/"done")'
+                    '(shape=Msquare, type="exit", or id="exit"/"end")'
                 ),
-                fix='Add an exit node (shape=Msquare, node_type="exit" attr, or id="exit")',
+                fix='Add an exit node (shape=Msquare, type="exit" attr, or id="exit")',
             )
         )
     elif len(exit_nodes) > 1:
