@@ -15,7 +15,7 @@ from amplifier_module_loop_pipeline.handlers.pipeline import (
     PipelineHandler,
     resolve_dot_path,
 )
-from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.outcome import StageStatus
 
 
 class _MockBackend:
@@ -375,7 +375,9 @@ class TestPipelineHandlerObservability:
         context = PipelineContext()
         logs_root = str(tmp_path / "logs")
 
-        handler = PipelineHandler(hooks=hooks, handler_registry_factory=_make_registry_factory())
+        handler = PipelineHandler(
+            hooks=hooks, handler_registry_factory=_make_registry_factory()
+        )
         await handler.execute(node, context, graph, logs_root)
 
         # Find the pipeline:subgraph_complete call
@@ -512,6 +514,53 @@ digraph child_human {
 
 class TestInterviewerForwarding:
     """Tests that PipelineHandler forwards its interviewer to child HandlerRegistry."""
+
+    def test_registry_passes_interviewer_to_pipeline_handler(self) -> None:
+        """HandlerRegistry.__init__ passes interviewer kwarg to the PipelineHandler.
+
+        When a HandlerRegistry is created with ``interviewer=x``, the PipelineHandler
+        stored in ``_handlers["pipeline"]`` must have ``_interviewer`` set to ``x``.
+        Without this, nested pipelines routed through the registry won't forward the
+        interviewer to their child registries, causing human gate nodes to fail.
+
+        Expected failure: HandlerRegistry.__init__ creates PipelineHandler without
+        passing ``interviewer``, so ``_handlers["pipeline"]._interviewer`` is ``None``
+        instead of the supplied AutoApproveInterviewer.
+        """
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+        from amplifier_module_loop_pipeline.handlers.pipeline import PipelineHandler
+        from amplifier_module_loop_pipeline.interviewer import AutoApproveInterviewer
+
+        interviewer = AutoApproveInterviewer()
+        registry = HandlerRegistry(interviewer=interviewer)
+
+        pipeline_handler = registry._handlers["pipeline"]
+        assert isinstance(pipeline_handler, PipelineHandler)
+        assert pipeline_handler._interviewer is interviewer
+
+    def test_clone_for_branch_preserves_pipeline_interviewer(self) -> None:
+        """clone_for_branch preserves interviewer in the new PipelineHandler.
+
+        When ``clone_for_branch`` creates a fresh PipelineHandler to replace the
+        mutable original, it must forward ``original_pipeline._interviewer`` so that
+        cloned branches retain the interviewer for their nested pipelines.
+
+        Expected failure: clone_for_branch creates PipelineHandler without
+        ``interviewer=original_pipeline._interviewer``, so the cloned handler's
+        ``_interviewer`` is ``None`` instead of the supplied AutoApproveInterviewer.
+        """
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+        from amplifier_module_loop_pipeline.handlers.pipeline import PipelineHandler
+        from amplifier_module_loop_pipeline.interviewer import AutoApproveInterviewer
+
+        interviewer = AutoApproveInterviewer()
+        registry = HandlerRegistry(interviewer=interviewer)
+
+        branch_registry = registry.clone_for_branch()
+
+        branch_pipeline_handler = branch_registry._handlers["pipeline"]
+        assert isinstance(branch_pipeline_handler, PipelineHandler)
+        assert branch_pipeline_handler._interviewer is interviewer
 
     @pytest.mark.asyncio
     async def test_child_registry_receives_interviewer(self, tmp_path):

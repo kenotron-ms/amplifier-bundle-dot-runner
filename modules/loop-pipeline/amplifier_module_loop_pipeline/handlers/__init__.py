@@ -84,6 +84,7 @@ class HandlerRegistry:
                 hooks=self._hooks,
                 cancel_event=kwargs.get("cancel_event"),
                 backend=kwargs.get("backend"),
+                interviewer=kwargs.get("interviewer"),
             ),
         }
 
@@ -132,6 +133,7 @@ class HandlerRegistry:
                 hooks=original_pipeline._hooks,
                 cancel_event=original_pipeline._cancel_event,
                 backend=original_pipeline._backend,
+                interviewer=original_pipeline._interviewer,
             )
 
         return new
