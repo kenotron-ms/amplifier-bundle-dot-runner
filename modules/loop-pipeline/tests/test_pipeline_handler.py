@@ -616,3 +616,56 @@ class TestInterviewerForwarding:
         # The child pipeline should complete successfully because the interviewer
         # auto-approves the human gate node.
         assert outcome.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_e2e_human_gate_in_child_pipeline(self, tmp_path):
+        """Full engine run with human gate in child pipeline succeeds via AutoApproveInterviewer.
+
+        Uses the full PipelineEngine (not just the handler). Writes a child DOT
+        with a hexagon gate, writes a parent DOT referencing the child via a
+        folder node, parses the parent DOT, creates a HandlerRegistry with
+        AutoApproveInterviewer, and runs the engine end-to-end.
+
+        The interviewer must be forwarded from the top-level HandlerRegistry
+        through the PipelineHandler down to the child HandlerRegistry so the
+        hexagon gate node can be auto-approved.
+        """
+        from amplifier_module_loop_pipeline.dot_parser import parse_dot
+        from amplifier_module_loop_pipeline.engine import PipelineEngine
+        from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+        from amplifier_module_loop_pipeline.interviewer import AutoApproveInterviewer
+
+        # Write child DOT with hexagon gate to temp file
+        child_dot_path = tmp_path / "child_with_gate.dot"
+        child_dot_path.write_text(CHILD_DOT_WITH_HUMAN_GATE)
+
+        # Write parent DOT referencing child via folder node
+        parent_dot_source = """\
+digraph parent_e2e {
+    graph [goal="E2E test with human gate in child"]
+    start [shape=Mdiamond]
+    sub [shape=folder, dot_file="child_with_gate.dot"]
+    done [shape=Msquare]
+    start -> sub -> done
+}
+"""
+        parent_dot_path = tmp_path / "parent_e2e.dot"
+        parent_dot_path.write_text(parent_dot_source)
+
+        # Parse parent DOT and set source_dir so relative child path resolves
+        graph = parse_dot(parent_dot_path.read_text())
+        graph.source_dir = str(tmp_path)
+
+        context = PipelineContext()
+        registry = HandlerRegistry(interviewer=AutoApproveInterviewer())
+        logs_root = str(tmp_path / "logs")
+
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=registry,
+            logs_root=logs_root,
+        )
+        outcome = await engine.run()
+
+        assert outcome.status == StageStatus.SUCCESS
