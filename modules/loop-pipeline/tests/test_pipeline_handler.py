@@ -493,3 +493,77 @@ class TestPipelineHandlerE2E:
         with open(manifest_path) as f:
             manifest = json.load(f)
         assert "graph_name" in manifest
+
+
+# ---------------------------------------------------------------------------
+# Interviewer forwarding tests
+# ---------------------------------------------------------------------------
+
+CHILD_DOT_WITH_HUMAN_GATE = """\
+digraph child_human {
+    start [shape=Mdiamond]
+    gate [shape=hexagon, prompt="Approve to continue?"]
+    done [shape=Msquare]
+    start -> gate
+    gate -> done [label="Approve"]
+}
+"""
+
+
+class TestInterviewerForwarding:
+    """Tests that PipelineHandler forwards its interviewer to child HandlerRegistry."""
+
+    @pytest.mark.asyncio
+    async def test_child_registry_receives_interviewer(self, tmp_path):
+        """PipelineHandler constructed with an interviewer forwards it to child HandlerRegistry.
+
+        The child pipeline contains a hexagon (wait.human) node that requires an
+        Interviewer to run. When PipelineHandler is constructed with an
+        AutoApproveInterviewer, that interviewer must be forwarded to the child
+        HandlerRegistry so the child's wait.human handler can use it.
+
+        Expected failure: PipelineHandler does not accept an ``interviewer`` kwarg
+        (or accepts it via **kwargs but does not store or forward it), so the child
+        HandlerRegistry is created without the interviewer and the hexagon handler
+        raises ``ValueError: HumanGateHandler requires an Interviewer``, causing
+        the outcome to be FAIL rather than SUCCESS.
+        """
+        from amplifier_module_loop_pipeline.handlers.human import HumanGateHandler  # noqa: F401
+        from amplifier_module_loop_pipeline.interviewer import AutoApproveInterviewer
+
+        # Write child DOT with a hexagon (human gate) node to a temp file
+        child_dot_path = tmp_path / "child_with_gate.dot"
+        child_dot_path.write_text(CHILD_DOT_WITH_HUMAN_GATE)
+
+        # Build parent graph with a folder node pointing to the child DOT
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="folder",
+                    type="pipeline",
+                    attrs={"dot_file": str(child_dot_path)},
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+        interviewer = AutoApproveInterviewer()
+
+        # Create PipelineHandler WITH an AutoApproveInterviewer so the child
+        # pipeline's human gate can be automatically approved.
+        handler = PipelineHandler(interviewer=interviewer)
+        outcome = await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        # The child pipeline should complete successfully because the interviewer
+        # auto-approves the human gate node.
+        assert outcome.status == StageStatus.SUCCESS
