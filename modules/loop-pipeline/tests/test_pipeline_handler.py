@@ -782,3 +782,49 @@ class TestOutputsMergeBack:
 
         assert context.get("result") == "pass"  # declared, should merge back
         assert context.get("secret") is None  # not declared, should NOT merge back
+
+    @pytest.mark.asyncio
+    async def test_outputs_not_merged_on_child_failure(self, tmp_path):
+        """Outputs do not merge back to parent context when child pipeline fails.
+
+        The folder node declares outputs='result' and pre-seeds
+        context.result='should_not_leak'. The child DOT references a nonexistent
+        file, so the handler returns FAIL before the merge-back code runs.
+
+        After execution, outcome.status should be FAIL and context.get('result')
+        should be None, verifying that the merge-back code only runs on
+        outcome.is_success.
+
+        Uses default PipelineHandler() (no factory).
+        """
+        graph = Graph(
+            name="parent",
+            nodes={
+                "start": Node(id="start", shape="Mdiamond"),
+                "sub": Node(
+                    id="sub",
+                    shape="folder",
+                    type="pipeline",
+                    attrs={
+                        "dot_file": "nonexistent.dot",
+                        "outputs": "result",
+                        "context.result": "should_not_leak",
+                    },
+                ),
+                "done": Node(id="done", shape="Msquare"),
+            },
+            edges=[
+                Edge(from_node="start", to_node="sub"),
+                Edge(from_node="sub", to_node="done"),
+            ],
+            source_dir=str(tmp_path),
+        )
+
+        context = PipelineContext()
+        logs_root = str(tmp_path / "logs")
+
+        handler = PipelineHandler()
+        outcome = await handler.execute(graph.nodes["sub"], context, graph, logs_root)
+
+        assert outcome.status == StageStatus.FAIL
+        assert context.get("result") is None
