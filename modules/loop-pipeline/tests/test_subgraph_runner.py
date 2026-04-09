@@ -214,6 +214,7 @@ async def test_parallel_handler_uses_wired_subgraph_runner(tmp_path):
     }
     """
     orchestrator = PipelineOrchestrator({"dot_source": dot, "logs_root": str(tmp_path)})
+
     class _MockBackend:
         async def run(self, node, prompt, context):
             return json.dumps({"status": "success", "notes": f"mock: {node.id}"})

@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-import unified_llm
+unified_llm = pytest.importorskip("unified_llm")
 
 # ---------------------------------------------------------------------------
 # Provide a minimal amplifier_core stub (same pattern as test_backend.py)
@@ -237,7 +237,9 @@ def _make_graph_with_fidelity(fidelity: str = "compact") -> Graph:
 @pytest.mark.asyncio
 async def test_backend_tool_loop_uses_unified_client():
     """Path B tool loop delegates to unified_llm via the injected client."""
-    mock_client = _MockUnifiedClient([_make_text_response('{"status": "success", "notes": "All done"}')])
+    mock_client = _MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "All done"}')]
+    )
 
     coordinator = NoSpawnCoordinator()
     backend = AmplifierBackend(
@@ -334,7 +336,9 @@ async def test_backend_tool_loop_parses_json_outcome():
 @pytest.mark.asyncio
 async def test_direct_backend_uses_unified_client():
     """DirectProviderBackend delegates to unified_llm via the injected client."""
-    mock_client = _MockUnifiedClient([_make_text_response('{"status": "success", "notes": "Done"}')])
+    mock_client = _MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "Done"}')]
+    )
 
     backend = DirectProviderBackend(
         provider=object(),  # truthy sentinel

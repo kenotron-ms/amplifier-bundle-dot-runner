@@ -68,9 +68,7 @@ class TestKOfNJoinPolicy:
             _result("b2", "fail"),
             _result("b3", "success"),
         ]
-        outcome = _apply_join_policy(
-            results, "k_of_n", node_attrs={"min_success": "2"}
-        )
+        outcome = _apply_join_policy(results, "k_of_n", node_attrs={"min_success": "2"})
         assert outcome.status == StageStatus.SUCCESS
 
     def test_k_of_n_fails_when_threshold_not_met(self):
@@ -80,9 +78,7 @@ class TestKOfNJoinPolicy:
             _result("b2", "fail"),
             _result("b3", "fail"),
         ]
-        outcome = _apply_join_policy(
-            results, "k_of_n", node_attrs={"min_success": "2"}
-        )
+        outcome = _apply_join_policy(results, "k_of_n", node_attrs={"min_success": "2"})
         assert outcome.status == StageStatus.FAIL
         assert "1" in outcome.failure_reason  # Only 1 succeeded
         assert "2" in outcome.failure_reason  # Needed 2
@@ -102,9 +98,7 @@ class TestKOfNJoinPolicy:
             _result("b1", "partial_success"),
             _result("b2", "fail"),
         ]
-        outcome = _apply_join_policy(
-            results, "k_of_n", node_attrs={"min_success": "1"}
-        )
+        outcome = _apply_join_policy(results, "k_of_n", node_attrs={"min_success": "1"})
         assert outcome.status == StageStatus.SUCCESS
 
     def test_k_of_n_all_fail(self):
@@ -113,9 +107,7 @@ class TestKOfNJoinPolicy:
             _result("b1", "fail"),
             _result("b2", "fail"),
         ]
-        outcome = _apply_join_policy(
-            results, "k_of_n", node_attrs={"min_success": "1"}
-        )
+        outcome = _apply_join_policy(results, "k_of_n", node_attrs={"min_success": "1"})
         assert outcome.status == StageStatus.FAIL
 
     def test_k_of_n_empty_results(self):
@@ -323,6 +315,7 @@ class TestFailFastErrorPolicy:
     @pytest.mark.asyncio
     async def test_fail_fast_all_succeed(self):
         """fail_fast with all successes returns SUCCESS normally."""
+
         async def success_runner(node_id, context, graph, logs_root):
             return Outcome(status=StageStatus.SUCCESS)
 
@@ -351,6 +344,7 @@ class TestFailFastErrorPolicy:
     @pytest.mark.asyncio
     async def test_fail_fast_stores_partial_results(self):
         """fail_fast stores whatever results were collected before cancellation."""
+
         async def mixed_runner(node_id, context, graph, logs_root):
             if node_id == "b1":
                 return Outcome(status=StageStatus.FAIL, failure_reason="broken")
@@ -440,6 +434,7 @@ class TestIgnoreErrorPolicy:
     @pytest.mark.asyncio
     async def test_ignore_all_fail_returns_success_no_results(self):
         """ignore with all failures returns SUCCESS with empty results."""
+
         async def fail_runner(node_id, context, graph, logs_root):
             return Outcome(status=StageStatus.FAIL, failure_reason="all bad")
 
@@ -470,6 +465,7 @@ class TestIgnoreErrorPolicy:
     @pytest.mark.asyncio
     async def test_ignore_all_succeed(self):
         """ignore with all successes works normally."""
+
         async def success_runner(node_id, context, graph, logs_root):
             return Outcome(status=StageStatus.SUCCESS)
 
@@ -513,9 +509,7 @@ class TestPolicyEdgeCases:
             _result("b1", "success"),
             _result("b2", "success"),
         ]
-        outcome = _apply_join_policy(
-            results, "k_of_n", node_attrs={"min_success": "5"}
-        )
+        outcome = _apply_join_policy(results, "k_of_n", node_attrs={"min_success": "5"})
         assert outcome.status == StageStatus.FAIL
 
     def test_quorum_fraction_1_requires_all(self):
@@ -546,9 +540,7 @@ class TestPolicyEdgeCases:
         results = [
             _result("b1", "fail"),
         ]
-        outcome = _apply_join_policy(
-            results, "k_of_n", node_attrs={"min_success": "0"}
-        )
+        outcome = _apply_join_policy(results, "k_of_n", node_attrs={"min_success": "0"})
         assert outcome.status == StageStatus.SUCCESS
 
     def test_unknown_join_policy_defaults_to_wait_all(self):
@@ -557,8 +549,6 @@ class TestPolicyEdgeCases:
             _result("b1", "success"),
             _result("b2", "fail"),
         ]
-        outcome = _apply_join_policy(
-            results, "unknown_policy", node_attrs={}
-        )
+        outcome = _apply_join_policy(results, "unknown_policy", node_attrs={})
         # wait_all with failures => PARTIAL_SUCCESS
         assert outcome.status == StageStatus.PARTIAL_SUCCESS

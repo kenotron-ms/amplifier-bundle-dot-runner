@@ -93,12 +93,17 @@ class HandlerRegistry:
 
         Resolution order:
         1. Node's explicit ``type`` attribute if it matches a registered handler
-        2. Shape-to-handler-type mapping (lowest priority, default codergen)
+        2. ``node_type`` attribute from node.attrs if it matches a registered handler
+        3. Shape-to-handler-type mapping (lowest priority, default codergen)
         """
         if node.type and node.type in self._handlers:
             handler_type = node.type
         else:
-            handler_type = SHAPE_TO_HANDLER.get(node.shape, "codergen")
+            node_type_attr = node.attrs.get("node_type") if node.attrs else None
+            if node_type_attr and node_type_attr in self._handlers:
+                handler_type = node_type_attr
+            else:
+                handler_type = SHAPE_TO_HANDLER.get(node.shape, "codergen")
         return self._handlers.get(handler_type, self._handlers["codergen"])
 
     def clone_for_branch(self) -> HandlerRegistry:

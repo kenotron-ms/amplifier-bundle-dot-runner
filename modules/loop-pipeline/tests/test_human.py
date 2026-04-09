@@ -770,7 +770,9 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
@@ -811,7 +813,9 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
@@ -857,7 +861,9 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
@@ -901,7 +907,9 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
@@ -926,7 +934,10 @@ class TestHumanGateFreeformRichAttachments:
                     id="review",
                     shape="hexagon",
                     label="Review",
-                    attrs={"mode": "freeform", "attachments_inline": "nonexistent/*.md"},
+                    attrs={
+                        "mode": "freeform",
+                        "attachments_inline": "nonexistent/*.md",
+                    },
                 ),
                 "next": Node(id="next", shape="box"),
             },
@@ -938,14 +949,18 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
                 return Answer(value="ok", text="ok")
 
         handler = HumanGateHandler(interviewer=CapturingInterviewer())
-        outcome = await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            graph.nodes["review"], _make_context(), graph, "/tmp"
+        )
 
         q = captured[0]
         assert "attachments_inline" not in q.metadata
@@ -973,14 +988,18 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
                 return Answer(value="ok", text="ok")
 
         handler = HumanGateHandler(interviewer=CapturingInterviewer())
-        outcome = await handler.execute(graph.nodes["review"], _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            graph.nodes["review"], _make_context(), graph, "/tmp"
+        )
 
         q = captured[0]
         assert "description" not in q.metadata
@@ -1024,7 +1043,9 @@ class TestHumanGateFreeformRichAttachments:
 
         class CapturingInterviewer:
             def ask(self, q: Question) -> Answer:
-                raise AssertionError("ask() must not be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must not be called when async_ask is present"
+                )
 
             async def async_ask(self, q: Question) -> Answer:
                 captured.append(q)
@@ -1077,7 +1098,9 @@ class TestHumanGateLastResponsePropagation:
 
         class FreeformInterviewer:
             def ask(self, question: Question) -> Answer:
-                raise AssertionError("ask() must NOT be called when async_ask is present")
+                raise AssertionError(
+                    "ask() must NOT be called when async_ask is present"
+                )
 
             async def async_ask(self, question: Question) -> Answer:
                 return Answer(
@@ -1130,7 +1153,9 @@ class TestHumanGateLastResponsePropagation:
                 return Answer(value=long_text, text=long_text)
 
         handler = HumanGateHandler(interviewer=LongResponseInterviewer())
-        outcome = await handler.execute(graph.nodes["gate"], _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            graph.nodes["gate"], _make_context(), graph, "/tmp"
+        )
 
         assert outcome.context_updates is not None
         assert len(outcome.context_updates["last_response"]) == 200

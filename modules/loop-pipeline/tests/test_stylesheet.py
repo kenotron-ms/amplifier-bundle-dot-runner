@@ -307,9 +307,7 @@ def test_class_selector_matches_comma_separated_classes():
     """`.code` selector must match nodes with class="code,critical"."""
     graph = _make_graph_with_stylesheet(
         nodes={
-            "impl": Node(
-                id="impl", prompt="Build", attrs={"class": "code,critical"}
-            ),
+            "impl": Node(id="impl", prompt="Build", attrs={"class": "code,critical"}),
         },
         stylesheet=".code { llm_model: claude-opus-4-6; }",
     )
@@ -322,9 +320,7 @@ def test_class_selector_matches_second_class_in_list():
     """`.critical` selector must match nodes with class="code,critical"."""
     graph = _make_graph_with_stylesheet(
         nodes={
-            "impl": Node(
-                id="impl", prompt="Build", attrs={"class": "code,critical"}
-            ),
+            "impl": Node(id="impl", prompt="Build", attrs={"class": "code,critical"}),
         },
         stylesheet=".critical { reasoning_effort: high; }",
     )
@@ -337,9 +333,7 @@ def test_class_selector_no_match_on_multi_class():
     """`.planning` selector must NOT match nodes with class="code,critical"."""
     graph = _make_graph_with_stylesheet(
         nodes={
-            "impl": Node(
-                id="impl", prompt="Build", attrs={"class": "code,critical"}
-            ),
+            "impl": Node(id="impl", prompt="Build", attrs={"class": "code,critical"}),
         },
         stylesheet=".planning { llm_model: planning-model; }",
     )
@@ -352,9 +346,7 @@ def test_multi_class_with_spaces_around_commas():
     """class="code, critical" (spaces) still matches .code and .critical."""
     graph = _make_graph_with_stylesheet(
         nodes={
-            "impl": Node(
-                id="impl", prompt="Build", attrs={"class": "code, critical"}
-            ),
+            "impl": Node(id="impl", prompt="Build", attrs={"class": "code, critical"}),
         },
         stylesheet=".critical { reasoning_effort: high; }",
     )

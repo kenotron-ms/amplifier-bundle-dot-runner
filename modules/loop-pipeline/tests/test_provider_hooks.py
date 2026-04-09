@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-import unified_llm
+unified_llm = pytest.importorskip("unified_llm")
 
 # ---------------------------------------------------------------------------
 # Provide a minimal amplifier_core stub (same pattern as test_unified_llm_wiring.py)
@@ -78,6 +78,7 @@ def test_amplifier_backend_accepts_hooks_param():
     class _Coordinator:
         session = _MockSession()
         config: dict[str, Any] = {"agents": {}}
+
         def get_capability(self, name: str) -> Any:
             return None
 
@@ -99,6 +100,7 @@ def test_amplifier_backend_hooks_defaults_to_none():
     class _Coordinator:
         session = _MockSession()
         config: dict[str, Any] = {"agents": {}}
+
         def get_capability(self, name: str) -> Any:
             return None
 
@@ -124,12 +126,14 @@ async def test_amplifier_backend_emit_helper_fires_event():
     class _Coordinator:
         session = _MockSession()
         config: dict[str, Any] = {"agents": {}}
+
         def get_capability(self, name: str) -> Any:
             return None
 
     class _RecordingHooks:
         def __init__(self):
             self.events: list[tuple[str, dict]] = []
+
         async def emit(self, event: str, data: dict) -> Any:
             self.events.append((event, data))
             return type("HookResult", (), {"action": "continue", "data": None})()
@@ -140,7 +144,7 @@ async def test_amplifier_backend_emit_helper_fires_event():
         profiles={},
         hooks=hooks,
     )
-    result = await backend._emit("test:event", {"key": "value"})
+    await backend._emit("test:event", {"key": "value"})
     assert len(hooks.events) == 1
     assert hooks.events[0] == ("test:event", {"key": "value"})
 
@@ -155,6 +159,7 @@ async def test_amplifier_backend_emit_helper_noop_without_hooks():
     class _Coordinator:
         session = _MockSession()
         config: dict[str, Any] = {"agents": {}}
+
         def get_capability(self, name: str) -> Any:
             return None
 
@@ -183,12 +188,14 @@ class _MockSession:
 class NoSpawnCoordinator:
     session = _MockSession()
     config: dict[str, Any] = {"agents": {}}
+
     def get_capability(self, name: str) -> Any:
         return None
 
 
 class RecordingHooks:
     """Records emitted events and returns configurable HookResults."""
+
     def __init__(self, action: str = "continue"):
         self.events: list[tuple[str, dict]] = []
         self._action = action
@@ -200,11 +207,15 @@ class RecordingHooks:
 
     async def emit(self, event: str, data: dict) -> Any:
         self.events.append((event, data))
-        return type("HookResult", (), {
-            "action": self._action,
-            "data": None,
-            "reason": self._reason,
-        })()
+        return type(
+            "HookResult",
+            (),
+            {
+                "action": self._action,
+                "data": None,
+                "reason": self._reason,
+            },
+        )()
 
     @property
     def event_names(self) -> list[str]:
@@ -259,7 +270,9 @@ def _make_node(**kwargs: Any) -> Node:
 async def test_amplifier_backend_emits_provider_request():
     """AmplifierBackend emits provider:request before unified_llm.generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -287,7 +300,9 @@ async def test_amplifier_backend_emits_provider_request():
 async def test_amplifier_backend_emits_provider_response():
     """AmplifierBackend emits provider:response after successful generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -315,7 +330,9 @@ async def test_amplifier_backend_emits_provider_response():
 async def test_amplifier_backend_response_includes_step_count():
     """provider:response includes the number of tool loop steps."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -340,6 +357,7 @@ async def test_amplifier_backend_response_includes_step_count():
 class FailingUnifiedClient:
     def __init__(self, error: Exception) -> None:
         self._error = error
+
     async def complete(self, request: unified_llm.Request) -> Any:
         raise self._error
 
@@ -418,7 +436,9 @@ from amplifier_module_loop_pipeline import DirectProviderBackend
 async def test_direct_backend_emits_provider_request():
     """DirectProviderBackend emits provider:request before generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -439,7 +459,9 @@ async def test_direct_backend_emits_provider_request():
 async def test_direct_backend_emits_provider_response():
     """DirectProviderBackend emits provider:response after generate()."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -510,7 +532,9 @@ async def test_direct_backend_deny_hook_aborts_llm_call():
 @pytest.mark.asyncio
 async def test_amplifier_backend_works_without_hooks():
     """AmplifierBackend still works when hooks is None (backward compat)."""
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),
@@ -529,7 +553,9 @@ async def test_amplifier_backend_works_without_hooks():
 @pytest.mark.asyncio
 async def test_direct_backend_works_without_hooks():
     """DirectProviderBackend still works when hooks is None."""
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -547,7 +573,9 @@ async def test_direct_backend_works_without_hooks():
 async def test_event_ordering_request_before_response():
     """provider:request is emitted before provider:response."""
     hooks = RecordingHooks()
-    mock_client = MockUnifiedClient([_make_text_response('{"status": "success", "notes": "done"}')])
+    mock_client = MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "done"}')]
+    )
 
     backend = AmplifierBackend(
         coordinator=NoSpawnCoordinator(),

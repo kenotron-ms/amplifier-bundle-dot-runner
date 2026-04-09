@@ -40,9 +40,7 @@ def test_profiles_from_explicit_config():
         }
     }
 
-    backend = _build_backend(
-        providers, {}, None, coordinator, orchestrator_config
-    )
+    backend = _build_backend(providers, {}, None, coordinator, orchestrator_config)
     assert backend is not None
     assert backend._profiles == {
         "anthropic": "attractor-anthropic",
@@ -55,8 +53,12 @@ def test_profiles_auto_discovered_from_agents():
     coordinator = _make_coordinator(
         has_spawn=True,
         agents={
-            "attractor-anthropic": {"bundle": "attractor:profiles/attractor-profile-anthropic"},
-            "attractor-openai": {"bundle": "attractor:profiles/attractor-profile-openai"},
+            "attractor-anthropic": {
+                "bundle": "attractor:profiles/attractor-profile-anthropic"
+            },
+            "attractor-openai": {
+                "bundle": "attractor:profiles/attractor-profile-openai"
+            },
         },
     )
     providers = {"anthropic": MagicMock()}
@@ -76,13 +78,9 @@ def test_explicit_profiles_override_auto_discovery():
     )
     providers = {"anthropic": MagicMock()}
 
-    orchestrator_config = {
-        "profiles": {"anthropic": "my-custom-agent"}
-    }
+    orchestrator_config = {"profiles": {"anthropic": "my-custom-agent"}}
 
-    backend = _build_backend(
-        providers, {}, None, coordinator, orchestrator_config
-    )
+    backend = _build_backend(providers, {}, None, coordinator, orchestrator_config)
     assert backend._profiles == {"anthropic": "my-custom-agent"}
     # Auto-discovered agent should NOT be present
     assert "auto-agent" not in backend._profiles
@@ -117,5 +115,6 @@ def test_orchestrator_config_threaded_from_execute():
     # profiles, they should reach _build_backend.
     # We test this indirectly by checking the function signature accepts the param.
     import inspect
+
     sig = inspect.signature(_build_backend)
     assert "orchestrator_config" in sig.parameters

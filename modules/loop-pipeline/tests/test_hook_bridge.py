@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-import unified_llm
+unified_llm = pytest.importorskip("unified_llm")
 
 # ---------------------------------------------------------------------------
 # amplifier_core stub (same as test_provider_hooks.py)
@@ -207,7 +207,7 @@ async def test_middleware_emits_provider_response():
         async def next_fn(req):
             return response
 
-        result = await middleware(request, next_fn)
+        await middleware(request, next_fn)
 
         assert "provider:response" in hooks.event_names
         data = hooks.get_data("provider:response")[0]
@@ -543,7 +543,9 @@ async def test_end_to_end_middleware_with_real_client():
         name = "test"
 
         async def complete(self, request):
-            return _make_response('{"status": "success", "notes": "Implementation complete"}')
+            return _make_response(
+                '{"status": "success", "notes": "Implementation complete"}'
+            )
 
         def stream(self, request):
             raise NotImplementedError

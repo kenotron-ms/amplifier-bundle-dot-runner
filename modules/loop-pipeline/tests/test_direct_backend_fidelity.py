@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+unified_llm = pytest.importorskip("unified_llm")
+
 # ---------------------------------------------------------------------------
 # Provide a minimal amplifier_core stub so the backend's lazy imports work
 # in the test environment where amplifier_core may not be installed.
@@ -48,8 +50,6 @@ if "amplifier_core" not in sys.modules:
     _stub_msg = types.ModuleType("amplifier_core.message_models")
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
-
-import unified_llm
 
 from amplifier_module_loop_pipeline import DirectProviderBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
@@ -133,7 +133,9 @@ async def test_direct_backend_compact_fidelity_prepends_preamble():
     """With compact fidelity, the prompt should include a preamble after first node."""
     mock_client = _MockUnifiedClient(
         [
-            _make_text_response('{"status": "success", "notes": "Step completed successfully"}'),
+            _make_text_response(
+                '{"status": "success", "notes": "Step completed successfully"}'
+            ),
             _make_text_response('{"status": "success", "notes": "Step 2 done"}'),
         ]
     )
@@ -261,7 +263,9 @@ async def test_direct_backend_full_fidelity_reuses_messages():
 @pytest.mark.asyncio
 async def test_direct_backend_without_graph_falls_back_gracefully():
     """When graph/edge not provided, backend works like before (no fidelity)."""
-    mock_client = _MockUnifiedClient([_make_text_response('{"status": "success", "notes": "ok"}')])
+    mock_client = _MockUnifiedClient(
+        [_make_text_response('{"status": "success", "notes": "ok"}')]
+    )
     backend = DirectProviderBackend(
         provider=object(),
         unified_client=mock_client,

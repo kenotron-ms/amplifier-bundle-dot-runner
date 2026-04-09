@@ -23,6 +23,8 @@ from typing import Any
 
 import pytest
 
+unified_llm = pytest.importorskip("unified_llm")
+
 # ---------------------------------------------------------------------------
 # Provide a minimal amplifier_core stub (same pattern as test_backend.py)
 # ---------------------------------------------------------------------------
@@ -58,8 +60,6 @@ if "amplifier_core" not in sys.modules:
     _stub_msg = types.ModuleType("amplifier_core.message_models")
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
-
-import unified_llm
 
 from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline import DirectProviderBackend

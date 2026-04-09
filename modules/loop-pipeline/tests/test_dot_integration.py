@@ -28,7 +28,7 @@ from typing import Any
 
 import pytest
 
-import unified_llm
+unified_llm = pytest.importorskip("unified_llm")
 
 # ---------------------------------------------------------------------------
 # amplifier_core stub (same pattern as test_hook_bridge.py)
@@ -256,7 +256,9 @@ class TestSimplePipeline:
     async def test_simple_pipeline_completes_successfully(self, tmp_path):
         """Simple pipeline runs to completion with unified-llm-client."""
         hooks = RecordingHooks()
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "Hello, world!"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "Hello, world!"}')]
+        )
         engine = _make_integration_engine(self._dot(), client, hooks, str(tmp_path))
 
         outcome = await engine.run()
@@ -268,7 +270,9 @@ class TestSimplePipeline:
     async def test_simple_pipeline_emits_hook_events(self, tmp_path):
         """Simple pipeline: 1 LLM node = 1 provider:request + 1 provider:response."""
         hooks = RecordingHooks()
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "Hello, world!"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "Hello, world!"}')]
+        )
         engine = _make_integration_engine(self._dot(), client, hooks, str(tmp_path))
 
         await engine.run()
@@ -280,7 +284,9 @@ class TestSimplePipeline:
     async def test_simple_pipeline_event_ordering(self, tmp_path):
         """provider:request always comes before provider:response."""
         hooks = RecordingHooks()
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "Hello, world!"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "Hello, world!"}')]
+        )
         engine = _make_integration_engine(self._dot(), client, hooks, str(tmp_path))
 
         await engine.run()
@@ -294,7 +300,9 @@ class TestSimplePipeline:
     async def test_simple_pipeline_event_payloads(self, tmp_path):
         """Event payloads contain model, provider, node_id, usage data."""
         hooks = RecordingHooks()
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "Hello, world!"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "Hello, world!"}')]
+        )
         engine = _make_integration_engine(self._dot(), client, hooks, str(tmp_path))
 
         await engine.run()
@@ -317,7 +325,9 @@ class TestSimplePipeline:
     async def test_simple_pipeline_emits_pipeline_events(self, tmp_path):
         """Engine emits pipeline:start/complete alongside provider events."""
         hooks = RecordingHooks()
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "Hello, world!"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "Hello, world!"}')]
+        )
         engine = _make_integration_engine(self._dot(), client, hooks, str(tmp_path))
 
         await engine.run()
@@ -346,8 +356,12 @@ class TestMultiStepPipeline:
         hooks = RecordingHooks()
         client = MockUnifiedClient(
             [
-                _make_response('{"status": "success", "notes": "Plan: build calculator"}'),
-                _make_response('{"status": "success", "notes": "def add(a, b): return a + b"}'),
+                _make_response(
+                    '{"status": "success", "notes": "Plan: build calculator"}'
+                ),
+                _make_response(
+                    '{"status": "success", "notes": "def add(a, b): return a + b"}'
+                ),
                 _make_response('{"status": "success", "notes": "Code looks good"}'),
             ]
         )
@@ -446,7 +460,9 @@ class TestConditionalRetry:
     async def test_conditional_completes_on_first_success(self, tmp_path):
         """When fix succeeds on first try, pipeline completes immediately."""
         hooks = RecordingHooks()
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "Fixed!"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "Fixed!"}')]
+        )
         engine = _make_integration_engine(self._dot(), client, hooks, str(tmp_path))
 
         outcome = await engine.run()
@@ -641,7 +657,9 @@ class TestDenyHook:
         """When hooks return deny, LLM call is aborted and node FAILs."""
         hooks = RecordingHooks()
         hooks.set_deny("budget exceeded")
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "should not reach"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "should not reach"}')]
+        )
 
         dot = _load_fixture("unified_llm_simple.dot", "integration")
         engine = _make_integration_engine(dot, client, hooks, str(tmp_path))
@@ -662,7 +680,9 @@ class TestDenyHook:
         """Deny produces a provider:request but no provider:response."""
         hooks = RecordingHooks()
         hooks.set_deny("blocked")
-        client = MockUnifiedClient([_make_response('{"status": "success", "notes": "should not reach"}')])
+        client = MockUnifiedClient(
+            [_make_response('{"status": "success", "notes": "should not reach"}')]
+        )
 
         dot = _load_fixture("unified_llm_simple.dot", "integration")
         engine = _make_integration_engine(dot, client, hooks, str(tmp_path))

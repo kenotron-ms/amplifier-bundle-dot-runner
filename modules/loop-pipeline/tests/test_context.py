@@ -139,10 +139,7 @@ def test_context_thread_safety():
         except Exception as e:
             errors.append(str(e))
 
-    threads = [
-        threading.Thread(target=writer, args=(f"t{t}", 100))
-        for t in range(10)
-    ]
+    threads = [threading.Thread(target=writer, args=(f"t{t}", 100)) for t in range(10)]
     for t in threads:
         t.start()
     for t in threads:

@@ -637,6 +637,7 @@ class TestManagerChildDotfileObservability:
     async def test_cycle_indexed_subgraph_runs(self, tmp_path):
         """After child dotfile execution, _subgraph_runs has cycle-indexed entry."""
         import json as _json
+
         child_dot = tmp_path / "child.dot"
         child_dot.write_text(
             "digraph child {\n"

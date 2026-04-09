@@ -185,7 +185,9 @@ class TestSimpleLinear:
 
         assert graph.name == "SimpleLinear"
         assert len(graph.nodes) == 4  # start, implement, validate, exit
-        assert len(graph.edges) == 3  # start->implement, implement->validate, validate->exit
+        assert (
+            len(graph.edges) == 3
+        )  # start->implement, implement->validate, validate->exit
         assert graph.goal == "Implement a simple feature"
 
     @pytest.mark.asyncio
@@ -205,7 +207,10 @@ class TestSimpleLinear:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=backend, logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=backend,
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         outcome = await engine.run()
 
@@ -253,7 +258,10 @@ class TestSimpleLinear:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         await engine.run()
 
@@ -271,7 +279,9 @@ class TestSimpleLinear:
         dot = self._load()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path),
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
         )
         await engine.run()
 
@@ -305,7 +315,9 @@ class TestSimpleLinear:
         dot = self._load()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path),
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
         )
         await engine.run()
 
@@ -347,7 +359,10 @@ class TestConditionalBranch:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=backend, logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=backend,
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         outcome = await engine.run()
 
@@ -400,7 +415,10 @@ class TestConditionalBranch:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         await engine.run()
 
@@ -417,7 +435,10 @@ class TestConditionalBranch:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         await engine.run()
 
@@ -473,7 +494,10 @@ class TestGoalGate:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=backend, logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=backend,
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         outcome = await engine.run()
 
@@ -499,7 +523,10 @@ class TestGoalGate:
         recorder = EventRecorder()
 
         engine = _make_engine(
-            dot, backend=backend, logs_root=str(tmp_path), hooks=recorder,
+            dot,
+            backend=backend,
+            logs_root=str(tmp_path),
+            hooks=recorder,
         )
         outcome = await engine.run()
 
@@ -520,7 +547,9 @@ class TestGoalGate:
         dot = self._load()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path),
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
         )
         await engine.run()
 
@@ -537,7 +566,9 @@ class TestGoalGate:
         dot = self._load()
 
         engine = _make_engine(
-            dot, backend=SuccessBackend(), logs_root=str(tmp_path),
+            dot,
+            backend=SuccessBackend(),
+            logs_root=str(tmp_path),
         )
         await engine.run()
 
@@ -637,7 +668,7 @@ digraph test_pipeline {
             backend=SuccessBackend(),
             logs_root=str(tmp_path),
         )
-        outcome = await engine.run()
+        await engine.run()
 
         # implement is a goal gate — it should be in outcomes with SUCCESS
         impl_outcome = engine.node_outcomes.get("implement")
@@ -684,16 +715,18 @@ digraph test_pipeline {
         assert names[-1] == PIPELINE_COMPLETE
 
         # Should have node_start/complete pairs for each executed node
-        start_nodes = [
-            d["node_id"] for d in recorder.get_data(PIPELINE_NODE_START)
-        ]
+        start_nodes = [d["node_id"] for d in recorder.get_data(PIPELINE_NODE_START)]
         complete_nodes = [
             d["node_id"] for d in recorder.get_data(PIPELINE_NODE_COMPLETE)
         ]
         for node_id in ["start", "plan", "implement", "review"]:
             assert node_id in start_nodes, f"{node_id} missing from node_start events"
-            assert node_id in complete_nodes, f"{node_id} missing from node_complete events"
+            assert node_id in complete_nodes, (
+                f"{node_id} missing from node_complete events"
+            )
 
         # Should have edge_selected events
         edge_events = recorder.get_data(PIPELINE_EDGE_SELECTED)
-        assert len(edge_events) >= 4  # start->plan, plan->impl, impl->review, review->done
+        assert (
+            len(edge_events) >= 4
+        )  # start->plan, plan->impl, impl->review, review->done

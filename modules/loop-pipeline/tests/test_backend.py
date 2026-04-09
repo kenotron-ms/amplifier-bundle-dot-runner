@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+unified_llm = pytest.importorskip("unified_llm")
+
 # ---------------------------------------------------------------------------
 # Provide a minimal amplifier_core stub so the backend's lazy imports work
 # in the test environment where amplifier_core may not be installed.
@@ -54,8 +56,6 @@ if "amplifier_core" not in sys.modules:
     _stub_msg = types.ModuleType("amplifier_core.message_models")
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
-
-import unified_llm
 
 # Provide a minimal amplifier_foundation stub so the backend's ProviderPreference
 # import works in the test environment where amplifier_foundation is not installed.

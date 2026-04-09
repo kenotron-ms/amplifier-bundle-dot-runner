@@ -45,3 +45,8 @@ dev = [
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
+
+[tool.ruff.lint.per-file-ignores]
+# Test files set up sys.modules stubs before importing the module under test.
+# This requires late imports (after the stub setup), which ruff flags as E402.
+"tests/*.py" = ["E402"]
