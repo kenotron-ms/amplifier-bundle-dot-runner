@@ -30,10 +30,6 @@ def _box(node_id: str = "work", **kwargs) -> Node:
     return Node(id=node_id, shape="box", **kwargs)
 
 
-def _diamond(node_id: str = "gate") -> Node:
-    return Node(id=node_id, shape="diamond", label="Gate")
-
-
 def _graph(
     nodes: dict[str, Node] | None = None,
     edges: list[Edge] | None = None,
@@ -457,7 +453,7 @@ def test_type_known_valid_type():
     """type_known: recognized type produces no warning."""
     graph = _make_graph(
         nodes_extra=[
-            Node(id="gate", shape="box", type="conditional", prompt="decide"),
+            Node(id="gate", shape="box", type="tool", prompt="decide"),
         ],
         edges_extra=[
             Edge(from_node="work", to_node="gate"),
@@ -662,36 +658,18 @@ def test_extra_rules_multiple():
 # --- SHAPE_TO_HANDLER / _LLM_SHAPES completeness ---
 
 
-def test_ellipse_in_shape_to_handler():
-    """ellipse shape must map to 'codergen' handler (documented alias for box)."""
+def test_ellipse_removed_from_shape_to_handler():
+    """ellipse shape must NOT be in SHAPE_TO_HANDLER (removed — was never used)."""
     from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER
 
-    assert "ellipse" in SHAPE_TO_HANDLER, "ellipse missing from SHAPE_TO_HANDLER"
-    assert SHAPE_TO_HANDLER["ellipse"] == "codergen"
+    assert "ellipse" not in SHAPE_TO_HANDLER, "ellipse should be removed from SHAPE_TO_HANDLER"
 
 
-def test_ellipse_in_llm_shapes():
-    """ellipse must be in _LLM_SHAPES since it maps to codergen (an LLM handler)."""
-    from amplifier_module_loop_pipeline.validation import _LLM_SHAPES
+def test_diamond_removed_from_shape_to_handler():
+    """diamond shape must NOT be in SHAPE_TO_HANDLER (removed — routing via edge conditions)."""
+    from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER
 
-    assert "ellipse" in _LLM_SHAPES, "ellipse missing from _LLM_SHAPES"
-
-
-def test_ellipse_node_gets_prompt_warning():
-    """An ellipse node with no prompt/label should trigger prompt_on_llm_nodes warning."""
-    graph = _make_graph(
-        nodes_extra=[
-            Node(id="plan", shape="ellipse"),
-        ],
-        edges_extra=[
-            Edge(from_node="work", to_node="plan"),
-            Edge(from_node="plan", to_node="done"),
-        ],
-    )
-    diags = validate(graph)
-    assert any(
-        d.rule == "prompt_on_llm_nodes" and "plan" in d.message for d in diags
-    ), "ellipse node should trigger prompt_on_llm_nodes warning"
+    assert "diamond" not in SHAPE_TO_HANDLER, "diamond should be removed from SHAPE_TO_HANDLER"
 
 
 # --- Alternative start/exit node conventions ---

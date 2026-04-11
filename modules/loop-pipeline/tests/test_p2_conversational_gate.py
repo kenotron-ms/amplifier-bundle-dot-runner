@@ -99,13 +99,13 @@ class TestConversationalGateParse:
         )
 
     def test_node_shapes(self):
-        """Pattern has start(Mdiamond), ask(hexagon), eval(box), check(diamond), done(Msquare)."""
+        """Pattern has start(Mdiamond), ask(hexagon), eval(box), check(parallelogram), done(Msquare)."""
         source = _GATE_DOT.read_text()
         g = parse_dot(source)
 
         start_nodes = [n for n in g.nodes.values() if n.shape == "Mdiamond"]
         ask_nodes = [n for n in g.nodes.values() if n.shape == "hexagon"]
-        check_nodes = [n for n in g.nodes.values() if n.shape == "diamond"]
+        check_nodes = [n for n in g.nodes.values() if n.shape == "parallelogram"]
         done_nodes = [n for n in g.nodes.values() if n.shape == "Msquare"]
 
         assert len(start_nodes) == 1, (
@@ -115,7 +115,7 @@ class TestConversationalGateParse:
             f"Expected 1 hexagon (ask) node, got {len(ask_nodes)}"
         )
         assert len(check_nodes) == 1, (
-            f"Expected 1 diamond (check) node, got {len(check_nodes)}"
+            f"Expected 1 parallelogram (check) node, got {len(check_nodes)}"
         )
         assert len(done_nodes) == 1, (
             f"Expected 1 Msquare done node, got {len(done_nodes)}"
@@ -124,7 +124,7 @@ class TestConversationalGateParse:
         codergen_like = [
             n
             for n in g.nodes.values()
-            if n.shape not in ("Mdiamond", "hexagon", "diamond", "Msquare")
+            if n.shape not in ("Mdiamond", "hexagon", "parallelogram", "Msquare")
         ]
         assert len(codergen_like) == 1, (
             f"Expected 1 codergen (eval) node, got {len(codergen_like)}: "

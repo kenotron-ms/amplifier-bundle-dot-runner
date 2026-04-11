@@ -12,7 +12,6 @@ from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.handlers.codergen import CodergenHandler
-from amplifier_module_loop_pipeline.handlers.conditional import ConditionalHandler
 from amplifier_module_loop_pipeline.handlers.exit import ExitHandler
 from amplifier_module_loop_pipeline.handlers.start import StartHandler
 from amplifier_module_loop_pipeline.handlers.tool import ToolHandler
@@ -59,20 +58,12 @@ def test_registry_resolves_codergen_handler():
     assert isinstance(handler, CodergenHandler)
 
 
-def test_registry_resolves_conditional_handler():
-    """Registry maps shape=diamond to ConditionalHandler."""
-    registry = HandlerRegistry()
-    node = Node(id="d", shape="diamond")
-    handler = registry.get(node)
-    assert isinstance(handler, ConditionalHandler)
-
-
 def test_registry_explicit_type_overrides_shape():
     """Node type attribute overrides shape-based resolution."""
     registry = HandlerRegistry()
-    node = Node(id="x", shape="box", type="conditional")
+    node = Node(id="x", shape="box", type="tool")
     handler = registry.get(node)
-    assert isinstance(handler, ConditionalHandler)
+    assert isinstance(handler, ToolHandler)
 
 
 # --- StartHandler ---
@@ -95,18 +86,6 @@ async def test_exit_handler_returns_success():
     """Exit handler returns SUCCESS immediately."""
     handler = ExitHandler()
     node = Node(id="exit", shape="Msquare")
-    outcome = await handler.execute(node, _make_context(), _make_graph(), "/tmp")
-    assert outcome.status == StageStatus.SUCCESS
-
-
-# --- ConditionalHandler ---
-
-
-@pytest.mark.asyncio
-async def test_conditional_handler_is_noop():
-    """Conditional handler returns SUCCESS (routing via edges)."""
-    handler = ConditionalHandler()
-    node = Node(id="check", shape="diamond")
     outcome = await handler.execute(node, _make_context(), _make_graph(), "/tmp")
     assert outcome.status == StageStatus.SUCCESS
 
@@ -429,10 +408,10 @@ def test_registry_custom_handler_registration():
 def test_registry_node_type_fallback():
     """node_type attribute is used as fallback when type is empty."""
     registry = HandlerRegistry()
-    # node_type="conditional" should resolve to ConditionalHandler
-    node = Node(id="x", shape="box", type="", attrs={"node_type": "conditional"})
+    # node_type="tool" should resolve to ToolHandler
+    node = Node(id="x", shape="box", type="", attrs={"node_type": "tool"})
     handler = registry.get(node)
-    assert isinstance(handler, ConditionalHandler)
+    assert isinstance(handler, ToolHandler)
 
 
 def test_registry_node_type_unknown_falls_to_shape():
@@ -457,10 +436,10 @@ def test_registry_type_takes_priority_over_node_type():
     """Explicit type= attribute takes priority over node_type."""
     registry = HandlerRegistry()
     node = Node(
-        id="x", shape="box", type="conditional", attrs={"node_type": "codergen"}
+        id="x", shape="box", type="tool", attrs={"node_type": "codergen"}
     )
     handler = registry.get(node)
-    assert isinstance(handler, ConditionalHandler)
+    assert isinstance(handler, ToolHandler)
 
 
 def test_registry_node_type_takes_priority_over_shape():
@@ -475,9 +454,9 @@ def test_registry_node_type_takes_priority_over_shape():
 def test_registry_no_type_no_node_type_uses_shape():
     """When neither type nor node_type is set, shape-based lookup works as before."""
     registry = HandlerRegistry()
-    node = Node(id="x", shape="diamond")
+    node = Node(id="x", shape="parallelogram")
     handler = registry.get(node)
-    assert isinstance(handler, ConditionalHandler)
+    assert isinstance(handler, ToolHandler)
 
 
 def test_registry_register_replaces_existing():

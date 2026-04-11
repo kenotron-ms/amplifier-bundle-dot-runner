@@ -15,7 +15,7 @@ Grammar:
 
 Specificity (M-21: added shape-name level):
     *           -> 0 (universal)
-    shape_name  -> 1 (bare shape name, e.g. 'box', 'ellipse')
+    shape_name  -> 1 (bare shape name, e.g. 'box', 'parallelogram')
     .class      -> 2
     #node_id    -> 3
 
@@ -81,7 +81,7 @@ def parse_stylesheet(css: str) -> list[StyleRule]:
     Unrecognized properties are silently ignored. Empty or whitespace-only
     input returns an empty list. Parsing is safe — no eval.
 
-    M-21: Bare identifiers (e.g. ``box``, ``ellipse``) are parsed as
+    M-21: Bare identifiers (e.g. ``box``, ``parallelogram``) are parsed as
     shape-name selectors with specificity 1.
 
     Args:

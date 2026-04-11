@@ -184,7 +184,7 @@ class TestConvergenceFactoryParse:
         assert expected == actual, f"Expected node IDs {expected}, got {actual}"
 
     def test_node_shapes(self):
-        """Pattern has correct shapes: Mdiamond/Msquare/diamond/parallelogram/box."""
+        """Pattern has correct shapes: Mdiamond/Msquare/parallelogram/box."""
         source = _FACTORY_DOT.read_text()
         g = parse_dot(source)
 
@@ -194,8 +194,8 @@ class TestConvergenceFactoryParse:
         assert g.nodes["done"].shape == "Msquare", (
             f"Expected done shape=Msquare, got {g.nodes['done'].shape!r}"
         )
-        assert g.nodes["check"].shape == "diamond", (
-            f"Expected check shape=diamond, got {g.nodes['check'].shape!r}"
+        assert g.nodes["check"].shape == "parallelogram", (
+            f"Expected check shape=parallelogram, got {g.nodes['check'].shape!r}"
         )
         assert g.nodes["validate"].shape == "parallelogram", (
             f"Expected validate shape=parallelogram, got {g.nodes['validate'].shape!r}"

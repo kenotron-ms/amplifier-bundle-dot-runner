@@ -1,9 +1,9 @@
 """Handler registry and base protocol for pipeline node handlers.
 
-Each node type (start, exit, codergen, conditional, tool, etc.) has a
-handler that implements the NodeHandler protocol. The HandlerRegistry
-maps nodes to their handlers based on the node's type attribute or
-shape-to-handler-type mapping.
+Each node type (start, exit, codergen, tool, etc.) has a handler that
+implements the NodeHandler protocol. The HandlerRegistry maps nodes to
+their handlers based on the node's type attribute or shape-to-handler-type
+mapping.
 
 Spec coverage: HAND-001–007, Section 4.1–4.2.
 """
@@ -47,7 +47,6 @@ class HandlerRegistry:
 
     def __init__(self, **kwargs: Any) -> None:
         from .codergen import CodergenHandler
-        from .conditional import ConditionalHandler
         from .exit import ExitHandler
         from .fan_in import FanInHandler
         from .human import HumanGateHandler
@@ -63,7 +62,6 @@ class HandlerRegistry:
             "start": StartHandler(),
             "exit": ExitHandler(),
             "codergen": CodergenHandler(backend=kwargs.get("backend")),
-            "conditional": ConditionalHandler(),
             "tool": ToolHandler(),
             "wait.human": HumanGateHandler(
                 interviewer=kwargs.get("interviewer"),

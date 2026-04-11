@@ -115,7 +115,7 @@ async def test_conditional_branching(tmp_path):
         dot_source="""
         digraph {
             start [shape=Mdiamond]
-            check [shape=diamond]
+            check [shape=parallelogram, tool_command="echo routing"]
             pass_path [prompt="Tests pass"]
             fail_path [prompt="Tests fail"]
             exit [shape=Msquare]

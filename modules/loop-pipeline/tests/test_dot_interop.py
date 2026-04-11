@@ -137,14 +137,14 @@ class TestSpecBranching:
         assert graph.name == "Branch"
 
     def test_node_count(self):
-        """6 nodes: start, exit, plan, implement, validate, gate."""
+        """5 nodes: start, exit, plan, implement, validate."""
         graph = parse_dot(self._load())
-        assert len(graph.nodes) == 6
+        assert len(graph.nodes) == 5
 
     def test_edge_count(self):
-        """6 edges: chain of 5 + gate->exit + gate->implement."""
+        """5 edges: chain of 3 + validate->exit + validate->implement."""
         graph = parse_dot(self._load())
-        assert len(graph.edges) == 6
+        assert len(graph.edges) == 5
 
     def test_goal_attribute(self):
         graph = parse_dot(self._load())
@@ -164,22 +164,17 @@ class TestSpecBranching:
         plan_timeout = graph.nodes["plan"].attrs.get("timeout")
         assert plan_timeout == 900_000  # 900s = 900000ms
 
-    def test_diamond_shape(self):
-        """Gate node has shape=diamond."""
-        graph = parse_dot(self._load())
-        assert graph.nodes["gate"].shape == "diamond"
-
     def test_conditional_edges(self):
-        """Gate outgoing edges have conditions."""
+        """Validate outgoing edges have conditions (routing via edge conditions)."""
         graph = parse_dot(self._load())
-        gate_edges = [e for e in graph.edges if e.from_node == "gate"]
-        assert len(gate_edges) == 2
+        validate_edges = [e for e in graph.edges if e.from_node == "validate"]
+        assert len(validate_edges) == 2
 
-        success_edge = next(e for e in gate_edges if e.to_node == "exit")
+        success_edge = next(e for e in validate_edges if e.to_node == "exit")
         assert success_edge.condition == "outcome=success"
         assert success_edge.label == "Yes"
 
-        fail_edge = next(e for e in gate_edges if e.to_node == "implement")
+        fail_edge = next(e for e in validate_edges if e.to_node == "implement")
         assert fail_edge.condition == "outcome!=success"
         assert fail_edge.label == "No"
 

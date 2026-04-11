@@ -110,12 +110,12 @@ def test_node_defaults():
     digraph test {
         node [shape=box, max_retries=3]
         A
-        B [shape=diamond]
+        B [shape=hexagon]
     }
     """)
     assert graph.nodes["A"].shape == "box"
     assert graph.nodes["A"].attrs.get("max_retries") == 3
-    assert graph.nodes["B"].shape == "diamond"  # Override
+    assert graph.nodes["B"].shape == "hexagon"  # Override
 
 
 def test_edge_defaults():
@@ -384,21 +384,18 @@ def test_spec_branching_workflow():
         plan      [label="Plan", prompt="Plan the implementation"]
         implement [label="Implement", prompt="Implement the plan"]
         validate  [label="Validate", prompt="Run tests"]
-        gate      [shape=diamond, label="Tests passing?"]
-
-        start -> plan -> implement -> validate -> gate
-        gate -> exit      [label="Yes", condition="outcome=success"]
-        gate -> implement [label="No", condition="outcome!=success"]
+        start -> plan -> implement -> validate
+        validate -> exit      [label="Yes", condition="outcome=success"]
+        validate -> implement [label="No", condition="outcome!=success"]
     }
     """)
     assert graph.name == "Branch"
-    assert len(graph.nodes) == 6
-    # Chained: start -> plan -> implement -> validate -> gate = 4 edges
-    # Plus 2 from gate = 6 total
-    assert len(graph.edges) == 6
-    assert graph.nodes["gate"].shape == "diamond"
+    assert len(graph.nodes) == 5
+    # Chained: start -> plan -> implement -> validate = 3 edges
+    # Plus 2 from validate = 5 total
+    assert len(graph.edges) == 5
     # Check condition edges
-    gate_edges = graph.outgoing_edges("gate")
+    gate_edges = graph.outgoing_edges("validate")
     assert len(gate_edges) == 2
     yes_edge = [e for e in gate_edges if e.label == "Yes"][0]
     assert yes_edge.condition == "outcome=success"
@@ -422,7 +419,7 @@ def test_semicolons_optional():
     graph = parse_dot("""
     digraph test {
         A [shape=box];
-        B [shape=diamond];
+        B [shape=hexagon];
         A -> B;
     }
     """)
