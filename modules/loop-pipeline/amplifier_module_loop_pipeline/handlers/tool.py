@@ -11,6 +11,18 @@ Supported attributes:
     tool_env       — Comma-separated list of context variable names to expose
                      as uppercase environment variables to the subprocess
 
+Routing via tool.last_line:
+    The last non-empty line of stdout is extracted and stored in context as ``tool.last_line``.
+    This enables condition-based edge routing using condition="context.tool.last_line=<label>":
+
+        RunTests [shape=parallelogram, tool_command="... && echo tests_pass || echo tests_fail"];
+        RunTests -> Pass  [condition="context.tool.last_line=tests_pass"];
+        RunTests -> Retry [condition="context.tool.last_line=tests_fail"];
+
+    Unlike setting outcome.preferred_label, storing in context preserves the standard
+    condition="outcome=success" routing behaviour for tool nodes whose output is not a
+    routing label (e.g. the "routing" echo in existing tests).
+
 Spec coverage: TOOL-001–004, Section 4.10.
 """
 
@@ -151,6 +163,25 @@ class ToolHandler:
                         node.id,
                         stdout_text[:_LOG_TRUNCATE_CHARS],
                     )
+
+            # Extract the last non-empty stdout line into tool.last_line.
+            # Tool commands that echo a routing label as their final output
+            # (e.g. "echo tests_pass") can then be routed via
+            # condition="context.tool.last_line=tests_pass" on outgoing edges.
+            # This avoids polluting outcome.preferred_label, which would break
+            # condition="outcome=success" routing on tool nodes whose output is
+            # not a routing label.
+            last_line = next(
+                (
+                    line.strip()
+                    for line in reversed(stdout_text.splitlines())
+                    if line.strip()
+                ),
+                None,
+            )
+            if last_line:
+                context.set("tool.last_line", last_line)
+                context_updates["tool.last_line"] = last_line
 
             return Outcome(
                 status=StageStatus.SUCCESS,

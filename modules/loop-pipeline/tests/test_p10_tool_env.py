@@ -6,6 +6,10 @@ uppercase (snake_case -> UPPER_CASE), and passes as environment variables to
 the subprocess. Variables not found in context are silently skipped. Leading
 and trailing whitespace around names is trimmed.
 
+Also covers tool.last_line routing: the last non-empty stdout line is stored in
+context as tool.last_line, enabling condition="context.tool.last_line=<label>"
+edge routing without touching outcome.preferred_label.
+
 Tests:
 - test_injects_single_var_as_env_var: single var from context injected as env var
 - test_injects_multiple_vars: multiple comma-separated vars all injected
@@ -14,6 +18,9 @@ Tests:
 - test_whitespace_trimmed_from_var_names: leading/trailing whitespace around names trimmed
 - test_without_tool_env_does_not_inject: without tool_env, context vars NOT injected
 - test_tool_env_combined_with_parse_json: tool_env and parse_json can be used together
+- test_last_line_set_in_context: last stdout line → context["tool.last_line"]
+- test_last_line_ignores_trailing_newlines: blank trailing lines are skipped
+- test_last_line_absent_when_stdout_empty: empty stdout → no tool.last_line key
 """
 
 from __future__ import annotations
@@ -281,4 +288,97 @@ class TestToolEnv:
         status_value = ctx.get("status")
         assert status_value == "ok", (
             f"Expected context['status'] == 'ok', got {status_value!r}"
+        )
+
+
+class TestToolLastLine:
+    """Tests for ToolHandler storing last stdout line as context["tool.last_line"].
+
+    Tool commands that echo a routing label as their final line get that label
+    stored in context["tool.last_line"], enabling condition="context.tool.last_line=<label>"
+    routing on outgoing edges without touching outcome.preferred_label.
+
+    This design preserves the existing condition="outcome=success" routing for tool
+    nodes whose output is not a routing label (e.g. tool nodes that echo diagnostics).
+    """
+
+    @pytest.mark.asyncio
+    async def test_last_line_set_in_context(self, tmp_path):
+        """Last non-empty stdout line is stored in context as tool.last_line.
+
+        Tool commands that echo a routing label (e.g. "tests_pass") as their
+        last line should have that label stored in context["tool.last_line"]
+        for condition="context.tool.last_line=tests_pass" edge routing.
+        The outcome itself should have preferred_label=None so the standard
+        condition="outcome=success" routing is not disrupted.
+        """
+        ctx = _make_context()
+        node = Node(
+            id="run_tests",
+            attrs={"tool_command": "echo 'running tests'; echo tests_pass"},
+        )
+        handler = ToolHandler()
+        outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+
+        assert outcome.status == StageStatus.SUCCESS, (
+            f"Expected SUCCESS, got {outcome.status!r}: {outcome.failure_reason!r}"
+        )
+        # tool.last_line must be set to the routing label
+        last_line = ctx.get("tool.last_line")
+        assert last_line == "tests_pass", (
+            f"Expected context['tool.last_line']='tests_pass' (last stdout line), "
+            f"got {last_line!r}"
+        )
+        # preferred_label must remain None so outcome=success routing is unaffected
+        assert outcome.preferred_label is None, (
+            f"Expected preferred_label=None (not set by tool handler), "
+            f"got {outcome.preferred_label!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_last_line_ignores_trailing_newlines(self, tmp_path):
+        """Trailing blank lines in stdout do not become the tool.last_line value.
+
+        When stdout ends with trailing newlines (as echo commands typically produce),
+        the last *non-empty* stripped line is extracted as tool.last_line.
+        """
+        ctx = _make_context()
+        node = Node(
+            id="check",
+            attrs={
+                # printf to have fine-grained control over newlines
+                "tool_command": "printf 'tests_fail\\n\\n'",
+            },
+        )
+        handler = ToolHandler()
+        outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+
+        assert outcome.status == StageStatus.SUCCESS
+        last_line = ctx.get("tool.last_line")
+        assert last_line == "tests_fail", (
+            f"Expected context['tool.last_line']='tests_fail' (last non-empty line), "
+            f"got {last_line!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_last_line_absent_when_stdout_empty(self, tmp_path):
+        """When stdout is empty, tool.last_line is not set in context.
+
+        A tool with no output should leave context["tool.last_line"] unset
+        (or unchanged from any prior value), not set to an empty string.
+        """
+        ctx = _make_context()
+        node = Node(
+            id="silent_tool",
+            attrs={"tool_command": "true"},  # exits 0 with no output
+        )
+        handler = ToolHandler()
+        outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+
+        assert outcome.status == StageStatus.SUCCESS
+        # tool.last_line should NOT be set for empty stdout
+        last_line = ctx.get("tool.last_line")
+        assert last_line is None, (
+            f"Expected context['tool.last_line'] to be absent for empty stdout, "
+            f"got {last_line!r}"
         )

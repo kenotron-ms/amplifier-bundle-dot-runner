@@ -130,7 +130,32 @@ class PipelineEngine:
         # Bound failure-routing retries (no-matching-edge fallback chain)
         failure_routing_retries = 0
 
+        # Bound total pipeline steps to prevent infinite loops caused by
+        # condition-routing bugs or missing edge guards. Matches the safety
+        # bound used in the subgraph runner (_run_from).
+        max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
+        steps = 0
+
         while True:
+            # Safety step counter — checked first so every loop iteration
+            # (including resume-path continues) is counted.
+            steps += 1
+            if steps > max_steps:
+                exceeded_outcome = Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason=(
+                        f"Pipeline exceeded {max_steps} steps (safety bound): "
+                        f"{len(self.graph.nodes)} nodes × {self._MAX_GOAL_GATE_RETRIES}"
+                    ),
+                )
+                logger.error(
+                    "Pipeline safety bound exceeded: %d steps (max=%d), terminating",
+                    steps,
+                    max_steps,
+                )
+                await self._emit_complete(exceeded_outcome, pipeline_start_time)
+                return exceeded_outcome
+
             # Step 0: Enforce max_pipeline_duration if set on the graph.
             # The DOT parser stores durations as milliseconds.
             if self.graph.max_pipeline_duration:

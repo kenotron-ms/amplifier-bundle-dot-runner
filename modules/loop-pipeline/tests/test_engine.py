@@ -1018,3 +1018,46 @@ async def test_parallel_fan_out_clones_registry_per_branch(tmp_path):
     assert mock_clone.call_count == 3, (
         f"Expected 3 clone_for_branch calls, got {mock_clone.call_count}"
     )
+
+
+# --- main loop max_steps safety bound ---
+
+
+@pytest.mark.asyncio
+async def test_main_loop_safety_bound_terminates_infinite_cycle(tmp_path):
+    """Main run() loop terminates with FAIL when the step limit is exceeded.
+
+    Regression test: before the fix, a condition-routing bug (always-false
+    conditions) could cause the engine to cycle indefinitely.  The safety
+    bound must catch this and return a FAIL outcome rather than hang.
+
+    We patch _MAX_GOAL_GATE_RETRIES to 2 so max_steps = nodes × 2 = 6,
+    making the test complete quickly while still exercising the bound.
+    """
+    from unittest.mock import patch
+
+    # A graph where the only exit edge has a condition that is never satisfied.
+    # The unconditional edge back to 'work' is always preferred, so the engine
+    # cycles: start → work → work → work → ... forever without the bound.
+    dot_source = """
+    digraph {
+        start  [shape=Mdiamond]
+        work   [shape=parallelogram, tool_command="echo always_loops"]
+        exit   [shape=Msquare]
+        start -> work
+        work  -> exit [condition="outcome=never_true"]
+        work  -> work
+    }
+    """
+    engine = _make_engine(dot_source=dot_source, backend=MockBackend(), logs_root=str(tmp_path))
+
+    # Patch the class constant so max_steps = 3 nodes × 2 = 6 steps
+    with patch.object(type(engine), "_MAX_GOAL_GATE_RETRIES", new=2):
+        outcome = await engine.run()
+
+    assert outcome.status == StageStatus.FAIL, (
+        f"Expected FAIL when step bound exceeded, got {outcome.status!r}"
+    )
+    assert "safety bound" in (outcome.failure_reason or ""), (
+        f"Expected 'safety bound' in failure_reason, got {outcome.failure_reason!r}"
+    )
