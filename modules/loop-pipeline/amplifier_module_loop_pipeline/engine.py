@@ -73,6 +73,7 @@ class PipelineEngine:
         self.node_outcomes: dict[str, Outcome] = {}
         self.completed_nodes: list[str] = []
         self.iteration_count: int = 0
+        self._node_execution_counts: dict[str, int] = {}   # per-node execution count (graph-level visits)
         self._fidelity_degraded_hop: bool = False
         self._checkpoint_path = os.path.join(logs_root, "checkpoint.json")
         self.artifact_store = ArtifactStore(base_dir=logs_root)
@@ -257,12 +258,20 @@ class PipelineEngine:
             # Step 2: Execute node handler with retry policy
             handler = self.handler_registry.get(current_node)
             handler_type = current_node.type or current_node.shape
+
+            # Increment per-node execution count (monotonic across all loop iterations)
+            self._node_execution_counts[current_node.id] = (
+                self._node_execution_counts.get(current_node.id, 0) + 1
+            )
+            execution_index = self._node_execution_counts[current_node.id]
+
             await self._emit(
                 PIPELINE_NODE_START,
                 {
                     "node_id": current_node.id,
                     "handler_type": handler_type,
-                    "attempt": 1,
+                    "attempt": 1,  # within-handler retry counter (backward compat)
+                    "execution_index": execution_index,  # NEW — graph-level visit count
                 },
             )
 
@@ -302,6 +311,7 @@ class PipelineEngine:
                             "notes": outcome.notes,
                             "failure_reason": outcome.failure_reason,
                             "session_id": outcome.session_id,
+                            "execution_index": execution_index,  # NEW
                         },
                     )
             else:
@@ -385,6 +395,9 @@ class PipelineEngine:
                     current_node.id,
                 )
 
+            # Step 3b: Write per-node status.json BEFORE emitting so hook bridge can copy it
+            self._write_node_status(current_node.id, outcome, node_duration_ms)
+
             await self._emit(
                 PIPELINE_NODE_COMPLETE,
                 {
@@ -394,11 +407,9 @@ class PipelineEngine:
                     "notes": outcome.notes,
                     "failure_reason": outcome.failure_reason,
                     "session_id": outcome.session_id,
+                    "execution_index": execution_index,  # NEW — graph-level visit count
                 },
             )
-
-            # Step 3b: Write per-node status.json
-            self._write_node_status(current_node.id, outcome, node_duration_ms)
 
             # Step 4: Apply context updates from outcome
             if outcome.context_updates:
@@ -888,9 +899,20 @@ class PipelineEngine:
             handler = branch_registry.get(node)
             handler_type = node.type or node.shape
 
+            # Increment per-node execution count for branch nodes
+            self._node_execution_counts[node.id] = (
+                self._node_execution_counts.get(node.id, 0) + 1
+            )
+            branch_execution_index = self._node_execution_counts[node.id]
+
             await self._emit(
                 PIPELINE_NODE_START,
-                {"node_id": node.id, "handler_type": handler_type, "attempt": 1},
+                {
+                    "node_id": node.id,
+                    "handler_type": handler_type,
+                    "attempt": 1,  # within-handler retry counter (backward compat)
+                    "execution_index": branch_execution_index,  # NEW — graph-level visit count
+                },
             )
 
             node_start = time.monotonic()
@@ -918,6 +940,9 @@ class PipelineEngine:
             self.completed_nodes.append(target_node_id)
             self.node_outcomes[target_node_id] = outcome
 
+            # Write per-node status.json BEFORE emitting so hook bridge can copy it
+            self._write_node_status(target_node_id, outcome, node_duration)
+
             await self._emit(
                 PIPELINE_NODE_COMPLETE,
                 {
@@ -927,9 +952,9 @@ class PipelineEngine:
                     "notes": outcome.notes,
                     "failure_reason": outcome.failure_reason,
                     "session_id": outcome.session_id,
+                    "execution_index": branch_execution_index,  # NEW — graph-level visit count
                 },
             )
-            self._write_node_status(target_node_id, outcome, node_duration)
 
             return {
                 "node_id": target_node_id,
