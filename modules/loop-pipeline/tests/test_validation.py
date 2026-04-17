@@ -893,3 +893,53 @@ def test_folder_node_type_known():
     assert len(type_diags) == 0, (
         f"folder node should not trigger type_known warning, got: {type_diags}"
     )
+
+
+# --- Doc-consistency: stale shape entries must not appear in agent-visible docs ---
+
+
+def _repo_root():
+    from pathlib import Path
+
+    # test file lives at modules/loop-pipeline/tests/test_validation.py
+    # repo root is 4 parents up
+    return Path(__file__).parent.parent.parent.parent
+
+
+def test_doc_diamond_not_in_dot_reference_shape_table():
+    """context/dot-reference.md must NOT list diamond as a supported shape (D-128).
+
+    diamond was removed from SHAPE_TO_HANDLER; listing it in the agent-visible
+    reference card causes agents to generate invalid pipelines.
+    """
+    doc = (_repo_root() / "context" / "dot-reference.md").read_text()
+    # Match a markdown table row whose first cell is exactly `diamond`
+    assert "| `diamond` |" not in doc, (
+        "context/dot-reference.md still lists 'diamond' as a shape in the "
+        "handler table — remove it (D-128)"
+    )
+
+
+def test_doc_ellipse_not_in_dot_reference_shape_table():
+    """context/dot-reference.md must NOT list ellipse as a supported shape (D-129).
+
+    ellipse was removed from SHAPE_TO_HANDLER; documenting it as an alias
+    is misleading even though it falls through to the default codergen handler.
+    """
+    doc = (_repo_root() / "context" / "dot-reference.md").read_text()
+    assert "| `ellipse` |" not in doc, (
+        "context/dot-reference.md still lists 'ellipse' as a shape in the "
+        "handler table — remove it (D-129)"
+    )
+
+
+def test_doc_diamond_not_in_readme_shape_table():
+    """README.md must NOT list diamond as a supported shape (D-127).
+
+    Same root cause as D-128 — diamond has no registered handler.
+    """
+    doc = (_repo_root() / "README.md").read_text()
+    assert "| `diamond` |" not in doc, (
+        "README.md still lists 'diamond' as a shape in the handler table "
+        "— remove it (D-127)"
+    )
