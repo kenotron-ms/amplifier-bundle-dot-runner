@@ -71,7 +71,7 @@ def test_graph_construction():
     assert len(graph.nodes) == 3
     assert len(graph.edges) == 2
     assert graph.goal == ""
-    assert graph.default_max_retry == 50
+    assert graph.default_max_retry == 0
     assert graph.graph_attrs == {}
 
 

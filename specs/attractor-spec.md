@@ -135,7 +135,7 @@ Graph attributes are declared in a `graph [ ... ]` block or as top-level `key = 
 | `goal`                    | String   | `""`      | Human-readable goal for the pipeline. Exposed as `$goal` in prompt templates and mirrored into the run context as `graph.goal`. |
 | `label`                   | String   | `""`      | Display name for the graph (used in visualization). |
 | `model_stylesheet`        | String   | `""`      | CSS-like stylesheet for per-node LLM model/provider defaults. See Section 8. |
-| `default_max_retry`       | Integer  | `50`      | Global retry ceiling for nodes that omit `max_retries`. |
+| `default_max_retry`       | Integer  | `0`       | Global retry ceiling for nodes that omit `max_retries`. |
 | `retry_target`            | String   | `""`      | Node ID to jump to if exit is reached with unsatisfied goal gates. |
 | `fallback_retry_target`   | String   | `""`      | Secondary jump target if `retry_target` is missing or invalid. |
 | `default_fidelity`        | String   | `""`      | Default context fidelity mode (see Section 5.4). |
@@ -1986,7 +1986,7 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `goal`                  | String   | `""`    | Pipeline-level goal description |
 | `label`                 | String   | `""`    | Display name for the graph |
 | `model_stylesheet`      | String   | `""`    | CSS-like LLM model/provider stylesheet |
-| `default_max_retry`     | Integer  | `50`    | Global retry ceiling |
+| `default_max_retry`     | Integer  | `0`     | Global retry ceiling |
 | `default_fidelity`      | String   | `""`    | Default context fidelity mode |
 | `retry_target`          | String   | `""`    | Node to jump to on unsatisfied exit |
 | `fallback_retry_target` | String   | `""`    | Secondary jump target |

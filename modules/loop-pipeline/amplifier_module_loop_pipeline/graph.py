@@ -288,7 +288,7 @@ class Graph:
     edges: list[Edge]
     goal: str = ""
     dot_source: str = ""
-    default_max_retry: int = 50
+    default_max_retry: int = 0
     model_stylesheet: str = ""
     source_dir: str = ""  # Directory of the DOT file that produced this graph
     graph_attrs: dict[str, str] = field(default_factory=dict)
