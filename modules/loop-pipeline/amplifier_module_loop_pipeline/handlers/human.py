@@ -31,7 +31,8 @@ from ..pipeline_events import (
     PIPELINE_INTERVIEW_STARTED,
     PIPELINE_INTERVIEW_TIMEOUT,
 )
-from ..transforms import expand_goal_variable, expand_params
+from ..substitution import substitute_context
+from ..transforms import expand_goal_variable
 
 logger = logging.getLogger(__name__)
 
@@ -58,31 +59,18 @@ def _expand_description(
     context_goal = context.get("graph.goal") or ""
     result = expand_goal_variable(description, graph.goal, context_goal)
 
-    # $context — runtime alias for last_response
+    # $context — runtime alias for last_response (special alias; must be
+    # resolved before the general substitution pass to avoid clobbering).
     if "$context" in result:
         last_response = context.get("last_response", "") or ""
         result = result.replace("$context", str(last_response))
 
-    # All plain (dot-free) context keys: $last_response, $task, $spec, etc.
+    # M5 (R12): Unified substitution — handles both $key and ${key} forms,
+    # including dotted keys (e.g. ${tool.output}, $tool.output).
+    # Missing keys are left as literal tokens (same "literal-on-miss" policy
+    # as the other substitution sites).
     if "$" in result:
-        plain_params = {
-            k: str(v) for k, v in context.snapshot().items() if "." not in k
-        }
-        if plain_params:
-            result = expand_params(result, plain_params)
-
-    # ${dotted.key} expansion — braces disambiguate dot-separated context keys
-    # This is an amplifier extension for surfacing runtime context (tool.output,
-    # last_stage, etc.) in human gate descriptions.
-    if "${" in result:
-        snapshot = context.snapshot()
-
-        def _replace_braced(m: re.Match) -> str:  # type: ignore[type-arg]
-            key = m.group(1)
-            val = snapshot.get(key)
-            return str(val) if val is not None else m.group(0)
-
-        result = re.sub(r"\$\{([^}]+)\}", _replace_braced, result)
+        result = substitute_context(result, context.snapshot())
 
     return result
 
@@ -320,7 +308,29 @@ class HumanGateHandler:
             label_to_targets.setdefault(label, []).append(edge.to_node)
 
         # 2. Build the question with accelerator keys (L-11)
-        prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
+        # Increment the iteration counter BEFORE prompt expansion so that
+        # pattern prompts can reference ${_gate_iter.<node_id>} to show
+        # turn-N indicators to the user (Issue 17b).
+        stage_id = self._get_stage_id(node, context)
+
+        # node.prompt is a first-class Node field populated by the DOT parser (the
+        # parser pops "prompt" from attrs into node.prompt, so node.attrs.get("prompt")
+        # always returns None for DOT-parsed nodes).  Fall back to attrs for nodes
+        # constructed directly in tests or legacy callers that set attrs["prompt"].
+        raw_prompt = (
+            node.prompt
+            or node.attrs.get("prompt")
+            or node.label
+            or f"Human gate: {node.id}"
+        )
+        # Expand $variable tokens in the prompt (e.g. variables injected by a
+        # parent folder node via context.* attrs) using the same expansion pipeline
+        # as the description field.
+        prompt = (
+            _expand_description(raw_prompt, graph, context)
+            if "$" in raw_prompt
+            else raw_prompt
+        )
 
         # Read description for edge-choice gates (same as freeform path)
         description = node.attrs.get("description", "")
@@ -338,8 +348,6 @@ class HumanGateHandler:
             key = _parse_accelerator_key(c)
             key_to_label[key] = c
             options.append(Option(key=key, label=c))
-
-        stage_id = self._get_stage_id(node, context)
         if choices:
             question = Question(
                 text=prompt,
@@ -421,7 +429,25 @@ class HumanGateHandler:
         """
         assert self._interviewer is not None  # guaranteed by execute() guard
 
-        prompt = node.attrs.get("prompt") or node.label or f"Human gate: {node.id}"
+        # Increment the iteration counter BEFORE prompt expansion so that
+        # pattern prompts can reference ${_gate_iter.<node_id>} to show
+        # turn-N indicators to the user (Issue 17b).
+        stage_id = self._get_stage_id(node, context)
+
+        # node.prompt is a first-class Node field (DOT parser pops "prompt" from
+        # attrs into node.prompt).  Fall back to attrs for directly-constructed nodes.
+        raw_prompt = (
+            node.prompt
+            or node.attrs.get("prompt")
+            or node.label
+            or f"Human gate: {node.id}"
+        )
+        # Expand $variable tokens (e.g. $gate_topic injected by a parent folder node).
+        prompt = (
+            _expand_description(raw_prompt, graph, context)
+            if "$" in raw_prompt
+            else raw_prompt
+        )
 
         # --- Rich input request: read new attributes ---
         description = node.attrs.get("description", "")
@@ -449,7 +475,6 @@ class HumanGateHandler:
         if ref_envelopes:
             metadata["attachments_ref"] = ref_envelopes
 
-        stage_id = self._get_stage_id(node, context)
         question = Question(
             text=prompt,
             type=QuestionType.FREEFORM,
