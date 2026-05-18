@@ -183,6 +183,57 @@ async def test_contract_violation_payload_structure(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_no_contract_violation_for_component_node(tmp_path):
+    """Fix #2: component-shape nodes must NOT trigger PIPELINE_NODE_CONTRACT_VIOLATION.
+
+    Component nodes (shape=component) emit parallel results via parallel.results in
+    context, not via per-node declared outputs.  build_output_table() assigns dynamic
+    branch.{idx}.outcome keys to every component node with N outgoing edges.  Before
+    the fix, _check_contract_violation fired a false-positive violation event for
+    every component node on every successful run because it never writes
+    branch.N.outcome keys directly to outcome.context_updates.
+
+    After the fix, the contract check is skipped entirely for nodes with shape=component.
+    """
+    hooks = EventCapture()
+    engine = _make_engine(
+        """
+        digraph {
+            start [shape=Mdiamond]
+            fork  [shape=component]
+            b0    [shape=parallelogram, tool_command="echo 0"]
+            b1    [shape=parallelogram, tool_command="echo 1"]
+            b2    [shape=parallelogram, tool_command="echo 2"]
+            join  [shape=tripleoctagon]
+            exit  [shape=Msquare]
+            start -> fork
+            fork  -> b0
+            fork  -> b1
+            fork  -> b2
+            b0    -> join
+            b1    -> join
+            b2    -> join
+            join  -> exit
+        }
+        """,
+        logs_root=str(tmp_path),
+        hooks=hooks,
+    )
+    await engine.run()
+
+    # The component node 'fork' must NOT emit a contract violation.
+    # build_output_table() infers branch.0.outcome, branch.1.outcome, branch.2.outcome
+    # for the fork node, but ParallelHandler stores results via parallel.results, not
+    # via outcome.context_updates.  This was a spurious false-positive before the fix.
+    violations = hooks.events_of_type(PIPELINE_NODE_CONTRACT_VIOLATION)
+    fork_violations = [v for v in violations if v["node_id"] == "fork"]
+    assert fork_violations == [], (
+        f"component node 'fork' must NOT produce CONTRACT_VIOLATION events; "
+        f"got: {fork_violations}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_no_contract_violation_for_tool_with_empty_stdout(tmp_path):
     """Fix 4 (R12 R12.5): A tool node with empty stdout must NOT trigger a
     false-positive PIPELINE_NODE_CONTRACT_VIOLATION.

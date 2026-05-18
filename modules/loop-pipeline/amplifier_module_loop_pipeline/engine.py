@@ -1398,6 +1398,16 @@ class PipelineEngine:
             node_id: The producer node's ID.
             outcome: The node's SUCCESS outcome.
         """
+        # Fix #2: Component nodes (shape=component) emit parallel results via
+        # parallel.results in context, not via declared per-node outputs.
+        # build_output_table() infers dynamic branch.{idx}.outcome keys for
+        # every component node, but ParallelHandler never writes those keys to
+        # outcome.context_updates.  Checking the contract here would always
+        # fire a false-positive violation.  Skip entirely for component nodes.
+        node = self.graph.nodes.get(node_id)
+        if node is not None and node.shape == "component":
+            return
+
         declared = self._output_table.get(node_id, frozenset())
         if not declared:
             return  # No declared outputs → nothing to check.

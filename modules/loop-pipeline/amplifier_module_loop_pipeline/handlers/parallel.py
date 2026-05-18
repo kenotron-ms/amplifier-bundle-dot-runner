@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from typing import Any, Callable, Coroutine
 
 from ..context import PipelineContext
@@ -79,6 +80,8 @@ class ParallelHandler:
         5. Evaluate join policy and return aggregate outcome.
         """
         from ..pipeline_events import (
+            PIPELINE_NODE_COMPLETE,
+            PIPELINE_NODE_START,
             PIPELINE_PARALLEL_BRANCH_COMPLETED,
             PIPELINE_PARALLEL_BRANCH_STARTED,
             PIPELINE_PARALLEL_COMPLETED,
@@ -109,6 +112,32 @@ class ParallelHandler:
                     PIPELINE_PARALLEL_BRANCH_STARTED,
                     {"node_id": node.id, "branch_node_id": target_node_id},
                 )
+
+                # Resolve handler type for the branch target node so consumers
+                # that read events don't have to look up the graph separately.
+                target_node = graph.nodes.get(target_node_id)
+                branch_handler_type = (
+                    (target_node.type or target_node.shape)
+                    if target_node is not None
+                    else "unknown"
+                )
+
+                # Emit the standard per-node start event so the parent loop's
+                # event stream includes all branch nodes (Fix #1).  The
+                # via_parallel=True marker lets consumers distinguish these
+                # from main-loop node events without special-casing the shape.
+                await self._emit(
+                    PIPELINE_NODE_START,
+                    {
+                        "node_id": target_node_id,
+                        "handler_type": branch_handler_type,
+                        "attempt": 1,
+                        "execution_index": 1,
+                        "via_parallel": True,
+                    },
+                )
+
+                branch_start = time.monotonic()
                 branch_context = context.clone()
                 if self._runner is None:
                     outcome = Outcome(
@@ -129,6 +158,21 @@ class ParallelHandler:
                             status=StageStatus.FAIL,
                             failure_reason=str(e),
                         )
+
+                branch_duration_ms = (time.monotonic() - branch_start) * 1000
+
+                # Emit the standard per-node complete event (Fix #1).
+                await self._emit(
+                    PIPELINE_NODE_COMPLETE,
+                    {
+                        "node_id": target_node_id,
+                        "status": outcome.status.value,
+                        "duration_ms": branch_duration_ms,
+                        "notes": outcome.notes,
+                        "failure_reason": outcome.failure_reason,
+                        "via_parallel": True,
+                    },
+                )
 
                 await self._emit(
                     PIPELINE_PARALLEL_BRANCH_COMPLETED,
