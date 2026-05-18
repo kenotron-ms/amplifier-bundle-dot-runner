@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactStore
@@ -349,6 +350,15 @@ class PipelineEngine:
             if runs_on in ("always", "failure"):
                 self._resolve_missing_as_empty(current_node)
 
+            # Step 1.9 (Bug H): Pre-execution requires= file validation.
+            # If a node declares ``requires=`` (comma-separated relative paths),
+            # every path must exist under context.target_dir (or os.getcwd() as
+            # fallback) before the handler runs.  Missing files cause an
+            # immediate FAIL with a clear error — the handler is never invoked.
+            # This prevents LLM agents from fabricating missing inputs when
+            # upstream branches didn't produce their expected artifacts.
+            _requires_fail = self._check_requires(current_node)
+
             # Step 2: Execute node handler with retry policy
             handler = self.handler_registry.get(current_node)
             handler_type = current_node.type or current_node.shape
@@ -372,52 +382,56 @@ class PipelineEngine:
             node_start_time = time.monotonic()
             retry_policy = RetryPolicy.from_node(current_node, self.graph)
 
-            # Per-node timeout enforcement: wrap handler execution with
-            # asyncio.timeout when the node declares a timeout attribute.
-            # DOT timeout values are in seconds (per NLSpec timeout_seconds).
-            node_timeout_raw = current_node.timeout
-            if node_timeout_raw:
-                timeout_s = float(node_timeout_raw)
-                try:
-                    async with asyncio.timeout(timeout_s):
-                        outcome = await execute_with_retry(
-                            handler,
-                            current_node,
-                            self.context,
-                            self.graph,
-                            self.logs_root,
-                            retry_policy,
-                            hooks=self.hooks,
-                        )
-                except asyncio.TimeoutError:
-                    node_duration_ms = (time.monotonic() - node_start_time) * 1000
-                    outcome = Outcome(
-                        status=StageStatus.FAIL,
-                        notes=f"Node '{current_node.id}' timed out after {timeout_s}s",
-                        failure_reason="timeout",
-                    )
-                    await self._emit(
-                        PIPELINE_NODE_COMPLETE,
-                        {
-                            "node_id": current_node.id,
-                            "status": "timeout",
-                            "duration_ms": node_duration_ms,
-                            "notes": outcome.notes,
-                            "failure_reason": outcome.failure_reason,
-                            "session_id": outcome.session_id,
-                            "execution_index": execution_index,  # NEW
-                        },
-                    )
+            if _requires_fail is not None:
+                # requires= validation failed — short-circuit without calling handler
+                outcome = _requires_fail
             else:
-                outcome = await execute_with_retry(
-                    handler,
-                    current_node,
-                    self.context,
-                    self.graph,
-                    self.logs_root,
-                    retry_policy,
-                    hooks=self.hooks,
-                )
+                # Per-node timeout enforcement: wrap handler execution with
+                # asyncio.timeout when the node declares a timeout attribute.
+                # DOT timeout values are in seconds (per NLSpec timeout_seconds).
+                node_timeout_raw = current_node.timeout
+                if node_timeout_raw:
+                    timeout_s = float(node_timeout_raw)
+                    try:
+                        async with asyncio.timeout(timeout_s):
+                            outcome = await execute_with_retry(
+                                handler,
+                                current_node,
+                                self.context,
+                                self.graph,
+                                self.logs_root,
+                                retry_policy,
+                                hooks=self.hooks,
+                            )
+                    except asyncio.TimeoutError:
+                        node_duration_ms = (time.monotonic() - node_start_time) * 1000
+                        outcome = Outcome(
+                            status=StageStatus.FAIL,
+                            notes=f"Node '{current_node.id}' timed out after {timeout_s}s",
+                            failure_reason="timeout",
+                        )
+                        await self._emit(
+                            PIPELINE_NODE_COMPLETE,
+                            {
+                                "node_id": current_node.id,
+                                "status": "timeout",
+                                "duration_ms": node_duration_ms,
+                                "notes": outcome.notes,
+                                "failure_reason": outcome.failure_reason,
+                                "session_id": outcome.session_id,
+                                "execution_index": execution_index,  # NEW
+                            },
+                        )
+                else:
+                    outcome = await execute_with_retry(
+                        handler,
+                        current_node,
+                        self.context,
+                        self.graph,
+                        self.logs_root,
+                        retry_policy,
+                        hooks=self.hooks,
+                    )
             node_duration_ms = (time.monotonic() - node_start_time) * 1000
 
             # Step 2.5: Check for cancellation after node execution
@@ -553,12 +567,56 @@ class PipelineEngine:
             )
 
             # Step 5: Select next edge(s) — detect multi-edge fan-out
+            #
+            # BUG G FIX: Component nodes (shape=component) are handled by
+            # ParallelHandler, which fans out ALL outgoing branches internally
+            # via the subgraph_runner (_run_from) and populates parallel.results
+            # in context.  The engine must NOT re-fan-out via
+            # _execute_parallel_fan_out after the handler returns — that would
+            # execute each branch a second time.
+            #
+            # Key subtlety: component nodes typically use UNCONDITIONAL outgoing
+            # edges (branches run regardless of conditions), so
+            # select_all_matching_edges() — which only returns condition-matched
+            # edges — must NOT be used here.  Instead, read ALL outgoing edges
+            # directly from the graph, find the shared fan-in node, and route
+            # to it.  The FanInHandler will then read parallel.results.
+            if current_node.shape == "component":
+                all_branches = self.graph.outgoing_edges(current_node.id)
+                if len(all_branches) > 1:
+                    fan_in_node_id = self._find_fan_in_node(
+                        [e.to_node for e in all_branches]
+                    )
+                    if fan_in_node_id is None:
+                        fail_outcome = Outcome(
+                            status=StageStatus.FAIL,
+                            failure_reason=(
+                                f"Parallel fan-out from component node "
+                                f"'{current_node.id}' has no convergence "
+                                f"(fan-in) node — add a shape=tripleoctagon "
+                                f"node that all branches lead to"
+                            ),
+                        )
+                        await self._emit_complete(fail_outcome, pipeline_start_time)
+                        return fail_outcome
+                    logger.info(
+                        "Component node '%s' parallel fan-out complete; "
+                        "routing to fan-in node '%s'",
+                        current_node.id,
+                        fan_in_node_id,
+                    )
+                    current_node = self.graph.nodes[fan_in_node_id]
+                    continue
+                # Single outgoing edge from component node — fall through to
+                # normal single-edge selection below.
+
             all_matching = select_all_matching_edges(
                 current_node.id, outcome, self.context, self.graph
             )
 
             if len(all_matching) > 1:
-                # Multi-edge fan-out: execute all targets in parallel
+                # Multi-edge fan-out from a non-component node: execute all
+                # targets in parallel via the engine-level fan-out path.
                 logger.info(
                     "Multi-edge fan-out from '%s': %d parallel targets",
                     current_node.id,
@@ -1390,6 +1448,59 @@ class PipelineEngine:
         for key in refs:
             if self.context.get(key) is None:
                 self.context.set(key, "")
+
+    def _check_requires(self, node: Node) -> Outcome | None:
+        """Pre-execution file existence check for the ``requires=`` attribute (Bug H).
+
+        Reads the node's ``requires`` attribute (comma-separated relative file
+        paths) and verifies that every declared path exists on disk before the
+        handler runs.  Paths are resolved relative to ``context.target_dir``
+        if set, falling back to ``os.getcwd()``.
+
+        This prevents LLM agents from fabricating missing inputs when upstream
+        parallel branches didn't produce their expected artifacts.  Failing
+        fast here surfaces the real error (missing file) rather than letting
+        the agent hallucinate a plausible-looking result.
+
+        Returns:
+            A FAIL ``Outcome`` naming all missing files if any are absent,
+            ``None`` if all required files exist (or no ``requires=`` is set).
+        """
+        raw_requires = node.attrs.get("requires") if node.attrs else None
+        if not raw_requires:
+            return None
+
+        # Resolve base directory: context.target_dir takes precedence
+        base_dir_raw = self.context.get("context.target_dir")
+        base_dir = Path(str(base_dir_raw)) if base_dir_raw else Path(os.getcwd())
+
+        # Parse comma-separated paths, strip whitespace
+        paths = [p.strip() for p in str(raw_requires).split(",") if p.strip()]
+        if not paths:
+            return None
+
+        missing = [p for p in paths if not (base_dir / p).exists()]
+        if not missing:
+            return None  # All required files are present — proceed normally
+
+        logger.warning(
+            "Node '%s' requires= validation failed: missing files %s (base_dir=%s)",
+            node.id,
+            missing,
+            base_dir,
+        )
+        return Outcome(
+            status=StageStatus.FAIL,
+            failure_reason=(
+                f"Node '{node.id}' requires inputs that don't exist: {missing} "
+                f"(resolved under {base_dir})"
+            ),
+            notes=(
+                f"Missing required files: {', '.join(missing)}. "
+                f"Ensure upstream nodes produced these artifacts before this "
+                f"node runs. Set requires= to declare file preconditions."
+            ),
+        )
 
     # -- Event helpers -------------------------------------------------------
 
