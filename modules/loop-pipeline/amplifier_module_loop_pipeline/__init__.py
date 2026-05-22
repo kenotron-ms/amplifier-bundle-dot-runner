@@ -15,6 +15,7 @@ __amplifier_module_type__ = "orchestrator"
 import json
 import logging
 import os
+import re
 import tempfile
 from typing import Any
 
@@ -78,8 +79,10 @@ class DirectProviderBackend:
 
         from .backend import (
             _build_unified_tools,
+            _find_report_outcome_call,
             _parse_outcome,
             _resolve_model,
+            _STATUS_MAP,
             _MAX_TOOL_LOOP_ROUNDS,
         )
 
@@ -216,8 +219,39 @@ class DirectProviderBackend:
             },
         )
 
-        # Map GenerateResult → Outcome
+        # Map GenerateResult → Outcome (same priority order as _run_with_tool_loop)
         text = result.text
+
+        if text:
+            stripped = text.strip()
+            _fence_match = re.match(
+                r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped, re.DOTALL
+            )
+            if bool(_fence_match) or stripped.startswith("{"):
+                outcome = _parse_outcome(text)
+                outcome.context_updates = {
+                    "last_stage": node.id,
+                    "last_response": text[:200],
+                }
+                self._completed_nodes[node.id] = outcome
+                self._last_node_id = node.id
+                return outcome
+
+        # Text is plain prose or empty — check if report_outcome was called
+        lo = _find_report_outcome_call(result)
+        if lo is not None:
+            outcome = Outcome(
+                status=_STATUS_MAP.get(lo.get("status"), StageStatus.FAIL),
+                context_updates=lo.get("context_updates"),
+                failure_reason=lo.get("failure_reason"),
+                preferred_label=lo.get("preferred_label"),
+                suggested_next_ids=lo.get("suggested_next_ids"),
+                notes=lo.get("notes"),
+            )
+            self._completed_nodes[node.id] = outcome
+            self._last_node_id = node.id
+            return outcome
+
         if text:
             outcome = _parse_outcome(text)
         else:

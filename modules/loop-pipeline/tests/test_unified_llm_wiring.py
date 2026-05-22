@@ -475,3 +475,99 @@ async def test_direct_backend_compact_fidelity_uses_preamble():
     ]
     user_text = " ".join(user_parts)
     assert "test goal" in user_text or "step1" in user_text
+
+
+# ---------------------------------------------------------------------------
+# DirectProviderBackend: report_outcome terminal action (issue #238)
+# ---------------------------------------------------------------------------
+
+
+class _MockReportOutcomeTool:
+    """Minimal stand-in for ReportOutcomeTool used in DirectProviderBackend tests.
+
+    The backend extracts outcome from result.steps[i].tool_calls (immutable,
+    race-free) so execute() only needs to return a truthy value.
+    """
+
+    name = "report_outcome"
+    description = "Report structured outcome for pipeline routing."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string"},
+            "failure_reason": {"type": "string"},
+            "context_updates": {"type": "object"},
+        },
+        "required": ["status"],
+    }
+
+    async def execute(self, input: dict) -> _MockToolResult:
+        return _MockToolResult(output=f"recorded: {input.get('status', '?')}")
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_report_outcome_terminal_action_empty_text():
+    """DirectProviderBackend: report_outcome as terminal tool, result.text empty → step args used.
+
+    Mirrors test_tool_loop_report_outcome_terminal_action_empty_text in test_backend.py
+    but targets DirectProviderBackend.run(). Outcome is read from result.steps[i].tool_calls
+    (immutable), not from mutable tool state — race-free for cloned parallel backends.
+    """
+    report_tool = _MockReportOutcomeTool()
+
+    mock_client = _MockUnifiedClient([
+        # Round 1: model calls report_outcome as its terminal action
+        _make_tool_call_response([{
+            "id": "tc-1",
+            "name": "report_outcome",
+            "args": {
+                "status": "fail",
+                "failure_reason": "quality gate failed",
+                "context_updates": {"quality_feedback": "fix X"},
+            },
+        }]),
+        # Round 2: empty text — no follow-up turn (extended thinking)
+        _make_text_response(""),
+    ])
+
+    backend = DirectProviderBackend(
+        provider=object(),
+        tools={"report_outcome": report_tool},
+        unified_client=mock_client,
+    )
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "evaluate quality", _make_context())
+
+    assert result.status == StageStatus.FAIL
+    assert result.failure_reason == "quality gate failed"
+    assert result.context_updates == {"quality_feedback": "fix X"}
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_report_outcome_no_cross_node_bleed():
+    """DirectProviderBackend: each generate() call has its own steps — no cross-node bleed."""
+    report_tool = _MockReportOutcomeTool()
+    backend = DirectProviderBackend(provider=object())
+    backend._tools = {"report_outcome": report_tool}
+
+    # Node 1: report_outcome called as terminal tool, result.text empty
+    backend._unified_client = _MockUnifiedClient([
+        _make_tool_call_response([{
+            "id": "tc-1",
+            "name": "report_outcome",
+            "args": {"status": "fail", "failure_reason": "first node failed"},
+        }]),
+        _make_text_response(""),
+    ])
+    node1 = _make_node(id="node1", attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result1 = await backend.run(node1, "task 1", _make_context())
+
+    assert result1.status == StageStatus.FAIL
+    assert result1.failure_reason == "first node failed"
+
+    # Node 2: no tool call, plain text response — must NOT inherit node 1's verdict
+    backend._unified_client = _MockUnifiedClient([_make_text_response("plain text done")])
+    node2 = _make_node(id="node2", attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result2 = await backend.run(node2, "task 2", _make_context())
+
+    assert result2.status == StageStatus.SUCCESS

@@ -45,6 +45,7 @@ class Outcome:
     session_id: str | None = (
         None  # child Amplifier session ID (if executed via AmplifierBackend)
     )
+
     #: Issue 10 / analog of WS-4 Sub-fix C: structured tool-invocation payload
     #: populated by ToolHandler on failure so the dashboard can display the
     #: command and output instead of the "command lost on failure" placeholder.

@@ -912,3 +912,231 @@ async def test_backend_no_injection_without_human_gate_text():
 
     # human.gate.text should still be None (never set, never cleared)
     assert context.get("human.gate.text") is None
+
+
+# ---------------------------------------------------------------------------
+# report_outcome tool integration with _run_with_tool_loop  (issue #238)
+# ---------------------------------------------------------------------------
+
+
+class _MockReportOutcomeTool:
+    """Minimal stand-in for ReportOutcomeTool.
+
+    The backend extracts outcome from result.steps[i].tool_calls (immutable,
+    race-free) rather than from last_outcome on the tool object.  execute()
+    only needs to return a truthy result so unified_llm.generate() can
+    complete the tool loop — the call arguments are read from the step record.
+    """
+
+    last_outcome: dict | None = None
+    name = "report_outcome"
+    description = "Report structured outcome for pipeline routing."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string"},
+            "failure_reason": {"type": "string"},
+            "context_updates": {"type": "object"},
+        },
+        "required": ["status"],
+    }
+
+    async def execute(self, input: dict) -> _MockToolResult:
+        return _MockToolResult(output=f"recorded: {input.get('status', '?')}")
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_report_outcome_terminal_action_empty_text():
+    """generate() calls report_outcome as terminal tool; result.text empty → step args used.
+
+    The backend extracts the outcome from result.steps[i].tool_calls (immutable after
+    generate() returns) — not from a mutable last_outcome field on the tool object.
+    This is race-free even when backend.clone() shares tool instances across parallel branches.
+    """
+    report_tool = _MockReportOutcomeTool()
+
+    mock_client = _MockUnifiedClient([
+        # Round 1: model calls report_outcome as its terminal action
+        _make_tool_call_response([{
+            "id": "tc-1",
+            "name": "report_outcome",
+            "args": {
+                "status": "fail",
+                "failure_reason": "quality gate failed",
+                "context_updates": {"quality_feedback": "fix X"},
+            },
+        }]),
+        # Round 2: empty text — no follow-up turn (extended thinking)
+        _make_text_response(""),
+    ])
+
+    coordinator = NoSpawnCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),
+        tools={"report_outcome": report_tool},
+        unified_client=mock_client,
+    )
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "evaluate quality", _make_context())
+
+    assert result.status == StageStatus.FAIL
+    assert result.failure_reason == "quality gate failed"
+    assert result.context_updates == {"quality_feedback": "fix X"}
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_report_outcome_no_cross_node_bleed():
+    """Each generate() call has its own result.steps — node 2 cannot see node 1's tool call.
+
+    Since outcome is read from result.steps (per-generate() immutable data) rather than
+    from shared mutable tool state, there is no cross-node bleed even when the same tool
+    object is registered in multiple backends.
+    """
+    report_tool = _MockReportOutcomeTool()
+
+    coordinator = NoSpawnCoordinator()
+
+    # Node 1: report_outcome called as terminal tool, result.text empty
+    mock_client_1 = _MockUnifiedClient([
+        _make_tool_call_response([{
+            "id": "tc-1",
+            "name": "report_outcome",
+            "args": {"status": "fail", "failure_reason": "first node failed"},
+        }]),
+        _make_text_response(""),
+    ])
+    backend1 = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),
+        tools={"report_outcome": report_tool},
+        unified_client=mock_client_1,
+    )
+    node1 = _make_node(id="node1", attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result1 = await backend1.run(node1, "task 1", _make_context())
+
+    assert result1.status == StageStatus.FAIL
+    assert result1.failure_reason == "first node failed"
+
+    # Node 2: no tool call, plain text response — must NOT see node 1's result
+    mock_client_2 = _MockUnifiedClient([_make_text_response("plain text done")])
+    backend2 = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),
+        tools={"report_outcome": report_tool},
+        unified_client=mock_client_2,
+    )
+    node2 = _make_node(id="node2", attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result2 = await backend2.run(node2, "task 2", _make_context())
+
+    # Plain text → SUCCESS (spec 4.5); must NOT inherit node1's FAIL
+    assert result2.status == StageStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_build_unified_tools_falls_back_to_input_schema():
+    """_build_unified_tools resolves input_schema when parameters and schema are absent.
+
+    ReportOutcomeTool exposes its schema via the input_schema property.
+    Without this fallback it was registered with an empty schema, meaning
+    the provider had no declared parameters to enforce.
+    """
+    from amplifier_module_loop_pipeline.backend import _build_unified_tools
+
+    class _ToolWithInputSchema:
+        name = "report_outcome"
+        description = "Report outcome"
+        # Deliberately omit "parameters" and "schema" — only input_schema
+        @property
+        def input_schema(self) -> dict:
+            return {
+                "type": "object",
+                "properties": {"status": {"type": "string"}},
+                "required": ["status"],
+            }
+
+        async def execute(self, input):
+            return _MockToolResult(output="ok")
+
+    tools = _build_unified_tools({"report_outcome": _ToolWithInputSchema()})
+    assert len(tools) == 1
+    assert tools[0].name == "report_outcome"
+    assert "properties" in tools[0].parameters
+    assert "status" in tools[0].parameters["properties"]
+    assert tools[0].parameters.get("required") == ["status"]
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_report_outcome_json_text_wins_over_last_outcome():
+    """JSON text response takes precedence over last_outcome; stale tool state is reset.
+
+    A model without extended thinking may call report_outcome AND produce a JSON
+    text response.  The text is authoritative; last_outcome from the tool call
+    must be discarded (reset to None) and not returned as the outcome.
+    """
+    report_tool = _MockReportOutcomeTool()
+
+    mock_client = _MockUnifiedClient([
+        # Round 1: model calls report_outcome (sets last_outcome via execute())
+        _make_tool_call_response([{
+            "id": "tc-1",
+            "name": "report_outcome",
+            "args": {"status": "fail", "failure_reason": "from tool call"},
+        }]),
+        # Round 2: model also produces a JSON text response — this must win
+        _make_text_response(json.dumps({"status": "success", "notes": "text wins"})),
+    ])
+
+    coordinator = NoSpawnCoordinator()
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={},
+        provider=object(),
+        tools={"report_outcome": report_tool},
+        unified_client=mock_client,
+    )
+    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
+    result = await backend.run(node, "evaluate", _make_context())
+
+    # Text JSON wins — must not return the "fail" from the tool call args
+    assert result.status == StageStatus.SUCCESS
+    assert result.notes == "text wins"
+
+
+def test_clone_isolates_stateful_tool_instances():
+    """clone() gives each branch its own shallow copy with last_outcome reset.
+
+    Covers two sub-cases:
+    1. Object identity — clone holds a different tool instance than the original.
+    2. Stale-state isolation — even if last_outcome was set by a prior run before
+       clone() is called, the cloned branch starts with last_outcome=None and
+       mutations on the clone do not propagate back to the original.
+    """
+    report_tool = _MockReportOutcomeTool()
+    # Simulate the tool having been used before clone() is called
+    report_tool.last_outcome = {"status": "fail", "failure_reason": "prior run"}
+
+    backend = AmplifierBackend(
+        coordinator=NoSpawnCoordinator(),
+        profiles={},
+        provider=object(),
+        tools={"report_outcome": report_tool},
+        unified_client=_MockUnifiedClient([]),
+    )
+    cloned = backend.clone()
+
+    # 1. Different instances — not the same object
+    assert cloned._tools["report_outcome"] is not backend._tools["report_outcome"]
+
+    # 2. Clone starts with clean state regardless of prior use
+    assert cloned._tools["report_outcome"].last_outcome is None
+
+    # 3. Mutations on the clone do not affect the original
+    cloned._tools["report_outcome"].last_outcome = {"status": "success"}
+    assert backend._tools["report_outcome"].last_outcome == {
+        "status": "fail",
+        "failure_reason": "prior run",
+    }

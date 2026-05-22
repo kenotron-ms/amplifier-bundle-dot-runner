@@ -15,6 +15,7 @@ Spec coverage: Section 4.5 (CodergenBackend Interface), Section 1.4,
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -115,8 +116,26 @@ class AmplifierBackend:
         new._provider = self._provider
         new._unified_client = self._unified_client
         new._hooks = self._hooks
-        # Shallow-copy tools (tool objects shared, dict independent)
-        new._tools = dict(self._tools)
+        # Copy tools: stateless tools are shared across clones (safe); stateful tools
+        # (those exposing last_outcome) get an independent shallow copy with last_outcome
+        # reset to None, so parallel branches start clean regardless of prior use.
+        def _clone_tool(tool: Any) -> Any:
+            # Detect stateful tools via explicit __dict__ inspection — not hasattr(),
+            # which returns True for MagicMock and other proxy objects that fabricate
+            # attributes dynamically.
+            is_stateful = (
+                # Instance attribute (e.g. ReportOutcomeTool sets self.last_outcome in __init__)
+                "last_outcome" in getattr(tool, "__dict__", {})
+                # Class attribute (e.g. _MockReportOutcomeTool defines last_outcome at class level)
+                or any("last_outcome" in vars(cls) for cls in type(tool).__mro__)
+            )
+            if is_stateful:
+                c = copy.copy(tool)
+                c.last_outcome = None
+                return c
+            return tool
+
+        new._tools = {k: _clone_tool(v) for k, v in self._tools.items()}
         # Fresh mutable state
         new._spawn_fn = None
         new._spawn_checked = False
@@ -216,18 +235,10 @@ class AmplifierBackend:
                 graph,
                 context,
             )
-            # Fall back to direct tool loop if spawn failed and provider available
-            if outcome.status == StageStatus.FAIL and self._provider is not None:
-                logger.info(
-                    "Spawn failed for node %s, falling back to direct tool loop",
-                    node.id,
-                )
-                outcome = await self._run_with_tool_loop(
-                    node,
-                    instruction,
-                    reasoning_effort,
-                    max_agent_turns,
-                )
+            # Fallback logic (infrastructure failure, empty output) is handled
+            # inside _run_with_spawn — see that method for the full rationale.
+            # When _run_with_spawn returns here, the child ran and produced output;
+            # _parse_outcome has already determined the outcome.
         elif self._provider is not None:
             outcome = await self._run_with_tool_loop(
                 node,
@@ -325,14 +336,43 @@ class AmplifierBackend:
         try:
             result = await self._spawn_fn(**spawn_kwargs)
         except Exception as e:
+            # Infrastructure failure: the spawn mechanism itself broke (e.g.
+            # agent profile not found, session init error).  The child never
+            # ran, so falling back to the direct tool loop is reasonable.
             logger.warning("Spawn failed for node %s: %s", node.id, e)
+            if self._provider is not None:
+                logger.warning(
+                    "Node %s: retrying via direct tool loop after spawn exception",
+                    node.id,
+                )
+                return await self._run_with_tool_loop(
+                    node, instruction, reasoning_effort, max_agent_turns
+                )
+            return Outcome(status=StageStatus.FAIL, failure_reason=str(e))
+
+        # Parse outcome from result.
+        # If the child produced output, _parse_outcome determines the outcome —
+        # including intentional {"status":"fail"} verdicts from goal_gate nodes.
+        # If the child produced NO output (silent failure — crash, bad profile,
+        # etc.), fall back to the direct tool loop the same way an exception would.
+        output = result.get("output", "") if isinstance(result, dict) else str(result)
+        if not output.strip():
+            if self._provider is not None:
+                logger.warning(
+                    "Node %s: spawn returned empty output; "
+                    "falling back to direct tool loop. "
+                    "Ensure the child agent profile is correctly configured.",
+                    node.id,
+                )
+                return await self._run_with_tool_loop(
+                    node, instruction, reasoning_effort, max_agent_turns
+                )
             return Outcome(
                 status=StageStatus.FAIL,
-                failure_reason=str(e),
+                notes="No output from child session",
+                failure_reason="Empty spawn output",
             )
 
-        # Parse outcome from result
-        output = result.get("output", "") if isinstance(result, dict) else str(result)
         outcome = _parse_outcome(output)
 
         # Capture session_id from spawn result — always, for all fidelity modes
@@ -460,8 +500,33 @@ class AmplifierBackend:
         )
 
         # Map GenerateResult → Outcome
+        #
+        # Priority order (see issue #238):
+        #   1. result.text contains JSON-like content → authoritative, use it
+        #   2. result.text is plain prose or empty → fall back to report_outcome tool call args
+        #      (extracted from result.steps — immutable, race-free; avoids the last_outcome
+        #       shared-state bug when backend instances are cloned for parallel branches)
+        #   3. No tool call either → plain prose → SUCCESS (spec 4.5), or empty → SUCCESS
         if result.text:
-            return _parse_outcome(result.text)
+            stripped = result.text.strip()
+            _fence_match = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped, re.DOTALL)
+            if bool(_fence_match) or stripped.startswith("{"):
+                return _parse_outcome(result.text)
+
+        # Text is plain prose or empty — check if report_outcome was called
+        lo = _find_report_outcome_call(result)
+        if lo is not None:
+            return Outcome(
+                status=_STATUS_MAP.get(lo.get("status"), StageStatus.FAIL),
+                context_updates=lo.get("context_updates"),
+                failure_reason=lo.get("failure_reason"),
+                preferred_label=lo.get("preferred_label"),
+                suggested_next_ids=lo.get("suggested_next_ids"),
+                notes=lo.get("notes"),
+            )
+
+        if result.text:
+            return _parse_outcome(result.text)  # plain prose → SUCCESS per spec 4.5
         return Outcome(
             status=StageStatus.SUCCESS,
             notes=f"Stage completed: {node.id}",
@@ -536,7 +601,11 @@ def _build_unified_tools(pipeline_tools: dict[str, Any]) -> list[Any]:
 
     tools: list[Any] = []
     for tool in pipeline_tools.values():
-        schema = getattr(tool, "parameters", None) or getattr(tool, "schema", None)
+        schema = (
+            getattr(tool, "parameters", None)
+            or getattr(tool, "schema", None)
+            or getattr(tool, "input_schema", None)  # ReportOutcomeTool exposes this
+        )
         if schema is None:
             schema = {"type": "object", "properties": {}}
 
@@ -553,6 +622,23 @@ def _build_unified_tools(pipeline_tools: dict[str, Any]) -> list[Any]:
             )
         )
     return tools
+
+
+def _find_report_outcome_call(result: Any) -> dict[str, Any] | None:
+    """Return report_outcome call arguments from generate() result steps, or None.
+
+    Walks result.steps[i].tool_calls (each StepResult carries the tool calls
+    for that LLM exchange).  Using the immutable step record avoids the
+    ReportOutcomeTool.last_outcome shared-state bug: backend.clone() shallow-
+    copies self._tools, so parallel branches share the same tool object and
+    would race on last_outcome.  result.steps is created fresh per generate()
+    call and is never shared between branches.
+    """
+    for step in getattr(result, "steps", []) or []:
+        for tc in getattr(step, "tool_calls", []) or []:
+            if getattr(tc, "name", None) == "report_outcome":
+                return getattr(tc, "arguments", {}) or {}
+    return None
 
 
 def _parse_outcome(output: str) -> Outcome:
