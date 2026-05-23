@@ -113,7 +113,7 @@ class ToolHandler:
         # back to graph.source_dir (the DOT file's directory), then None.
         # Without this, tool_command scripts that grep/read files created in
         # the project directory fail when graph.source_dir is None (built-in
-        # pipelines loaded via the resolver) because the subprocess defaults
+        # pipelines loaded by the consuming resolver) because the subprocess defaults
         # to /workspace/ instead of /workspace/project/.
         cwd: str | None = context.get("context.target_dir") or graph.source_dir or None
 

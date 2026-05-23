@@ -1317,7 +1317,7 @@ class PipelineEngine:
                         # is the *absence* of a failure (the happy path ran
                         # clean). Emitting "predecessor_failed" when no
                         # predecessor failed produces false-positive hits for
-                        # dashboard filters and reality-check queries on
+                        # downstream observability filters and queries on
                         # failure_mode=predecessor_failed.
                         "failure_mode": None,
                         "failure_mode_taxonomy_version": 1,

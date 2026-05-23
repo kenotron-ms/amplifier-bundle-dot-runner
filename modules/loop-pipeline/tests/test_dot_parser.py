@@ -513,14 +513,14 @@ def test_single_attr_no_warning():
     assert len(comma_warnings) == 0
 
 
-# --- Escape sequence regression tests (added for reality_check shell crash) ---
+# --- Escape sequence regression tests (added for multi-line shell heredoc crash) ---
 # Background: chained str.replace() in _parse_value was order-dependent. The bug
 # was that ``\n`` -> LF ran before ``\\`` -> ``\``, so an input of ``\\n`` (two
-# literal backslashes followed by n, used by reality_check and semport
-# pipelines as a logical line separator) was mis-processed into ``\<LF>`` —
-# dash interprets that as line-continuation, joining script lines. The
-# resulting joined line broke heredoc structure in the reality_check
-# RenderVerdict node, causing 100% pipeline failure with
+# literal backslashes followed by n — a common escape pattern in multi-line shell
+# heredoc command attributes — used as a logical line separator) was mis-processed
+# into ``\<LF>`` — dash interprets that as line-continuation, joining script lines.
+# The resulting joined line broke heredoc structure in any tool_command node that
+# used Python heredoc syntax, causing pipeline failure with
 # ``/bin/sh: Syntax error: "(" unexpected``.
 #
 # Fix: reorder the chain so ``\\`` -> ``\`` runs FIRST, before any
@@ -531,8 +531,8 @@ def test_single_attr_no_warning():
 def test_escape_double_backslash_n_yields_newline():
     """REGRESSION: ``\\\\n`` in DOT source must yield a real newline (LF).
 
-    This is the existing semantics expected by reality_check, semport, and
-    smoke_test pipelines that use ``\\\\n`` as a logical line separator.
+    Pipelines that use ``\\\\n`` as a logical line separator in multi-line
+    shell heredoc tool_command attributes depend on this behavior.
     """
     graph = parse_dot('digraph t { n [label="line1\\\\nline2"] }')
     assert graph.nodes["n"].label == "line1\nline2"
@@ -565,11 +565,11 @@ def test_escape_quadruple_backslash_yields_pair():
     assert graph.nodes["n"].label == "\\\\"
 
 
-def test_escape_multiline_shell_script_preserves_structure():
-    """Full reality_check-style tool_command must produce valid multi-line shell.
+def test_escape_multiline_shell_heredoc_tool_command_preserves_structure():
+    """Multi-line shell heredoc tool_command must produce valid multi-line shell.
 
     Before the fix: ``\\\\n`` between script lines became ``\<LF>`` (line
-    continuation), joining lines into one big logical line and breaking the
+    continuation), joining lines into one big logical line and breaking any
     `python3 - << 'PYEOF'` heredoc. Result: dash parsed Python source as shell
     code and crashed on the first ``(``.
     """

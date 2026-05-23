@@ -565,8 +565,8 @@ def _parse_value(raw: str) -> Any:
         # Process escape sequences.
         #
         # ORDER MATTERS. ``\\`` -> ``\`` MUST run first; otherwise an input of
-        # ``\\n`` (two literal backslashes followed by n, used by reality_check
-        # and semport pipelines as a logical line separator) is mis-processed:
+        # ``\\n`` (two literal backslashes followed by n — a common escape
+        # pattern in multi-line shell heredoc command attributes) is mis-processed:
         # ``\n`` -> LF runs first, leaving ``\<LF>`` (backslash + real newline,
         # which dash interprets as a line continuation) and the trailing
         # ``\\`` -> ``\`` step finds nothing to replace.

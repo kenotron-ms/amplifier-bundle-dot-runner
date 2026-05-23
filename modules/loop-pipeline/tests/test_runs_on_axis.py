@@ -276,7 +276,7 @@ async def test_runs_on_failure_skipped_event_has_no_failure_mode(tmp_path):
 
     When no predecessor failed the skip is the *absence* of failure.
     Emitting failure_mode='predecessor_failed' produces false-positive hits in
-    dashboard filters and reality-check queries on that field.
+    downstream observability filters and queries on that field.
     """
     hooks = EventCapture()
     engine = _make_engine(
