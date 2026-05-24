@@ -188,11 +188,19 @@ def test_deterministic_with_same_inputs():
     assert all(r is not None and r.to_node == first.to_node for r in results)
 
 
-# --- Fallback when all conditions fail ---
+# --- No-match returns None (spec §3.3 RETURN NONE) ---
 
 
-def test_all_conditions_false_fallback_to_weight():
-    """If all edges have conditions and none match, fallback picks by weight."""
+def test_all_conditional_edges_none_match_returns_none():
+    """If all edges have conditions and none match, select_edge returns None (spec §3.3).
+
+    Previously the implementation had a silent fallback that returned an arbitrary
+    edge via _best_by_weight_then_lexical(edges).  That violated spec §3.3 whose
+    final step is RETURN NONE.  The engine already handles None correctly (halts
+    with FAIL outcome).  This test was previously named
+    test_all_conditions_false_fallback_to_weight and asserted selected is not None;
+    the assertion has been corrected to encode spec-compliant behavior.
+    """
     edges = [
         Edge("A", "B", condition="outcome=fail", weight=1),
         Edge("A", "C", condition="outcome=fail", weight=5),
@@ -200,8 +208,53 @@ def test_all_conditions_false_fallback_to_weight():
     graph = _make_graph(edges)
     outcome = Outcome(status=StageStatus.SUCCESS)
     selected = select_edge("A", outcome, PipelineContext(), graph)
-    assert selected is not None
-    assert selected.to_node == "C"
+    assert selected is None
+
+
+def test_fail_node_all_conditional_edges_no_match_returns_none():
+    """Spec §3.3: select_edge returns None when no edge matches a FAIL outcome.
+
+    A node whose only outgoing edges carry conditions that don't match the
+    actual outcome must produce select_edge → None, which allows the engine to
+    correctly halt the pipeline with the FAIL outcome instead of silently
+    routing into downstream nodes that then also fail (cascading failures).
+
+    Pipeline authors who want downstream execution to continue after a failure
+    should use continue_on_fail="true" on the node — the engine handles that
+    attribute before calling select_edge.
+    """
+    # Graph: N1 → N2 [condition="outcome=success"]
+    #        N1 → N3 [condition="outcome=other"]
+    # Outcome: FAIL — neither condition matches.
+    edges = [
+        Edge("N1", "N2", condition="outcome=success"),
+        Edge("N1", "N3", condition="outcome=other"),
+    ]
+    graph = _make_graph(edges)
+    outcome = Outcome(status=StageStatus.FAIL)
+    result = select_edge("N1", outcome, PipelineContext(), graph)
+    assert result is None
+
+
+def test_fail_node_with_unconditional_edge_routes():
+    """Unconditional edges still route correctly even from a FAIL node.
+
+    The fix removes the all-edges fallback, NOT the unconditional-edges path
+    (steps 4 & 5 of spec §3.3).  Pipelines that want a node to always route
+    somewhere — regardless of outcome — should use an unconditional edge, and
+    that must keep working.
+    """
+    # Graph: N1 → N2 [condition="outcome=success"]  (won't match FAIL)
+    #        N1 → N3                                  (unconditional — should win)
+    edges = [
+        Edge("N1", "N2", condition="outcome=success"),
+        Edge("N1", "N3"),  # unconditional
+    ]
+    graph = _make_graph(edges)
+    outcome = Outcome(status=StageStatus.FAIL)
+    result = select_edge("N1", outcome, PipelineContext(), graph)
+    assert result is not None
+    assert result.to_node == "N3"
 
 
 # --- Priority order tests ---

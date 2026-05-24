@@ -64,8 +64,12 @@ def select_edge(
     if unconditional:
         return _best_by_weight_then_lexical(unconditional)
 
-    # Fallback: any edge (spec Section 3.3 final step)
-    return _best_by_weight_then_lexical(edges)
+    # Spec §3.3 final step: RETURN NONE.
+    # No unconditional edges exist and no conditional edge matched — the engine
+    # halts this branch with a FAIL outcome.  Pipeline authors who want
+    # execution to continue past a failure use continue_on_fail="true" on the
+    # node (engine.py handles that attribute before calling select_edge).
+    return None
 
 
 def select_all_matching_edges(
