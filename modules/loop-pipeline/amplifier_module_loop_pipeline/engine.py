@@ -831,6 +831,23 @@ class PipelineEngine:
         """Mirror graph attributes into context.
 
         Spec Section 3.1: Initialize phase.
+
+        This seeds context with graph-level attributes only.  Additional keys
+        arrive through external channels:
+
+        - The resolver/dispatcher injects user-provided params and any
+          schema-declared defaults (e.g. ``default:`` fields in
+          resolver.yaml) into context before ``run()`` is called.  That is a
+          resolver-layer responsibility, not an engine responsibility.
+        - Subsequent nodes write outputs into context via the M5
+          substitution mechanism and ``outputs=`` declarations.
+
+        The engine itself has no concept of "param defaults".  Keys that exist
+        in context at execution time are available for ``$variable``
+        substitution in tool_command strings; keys that are absent leave the
+        literal token unchanged (see ``substitution.py`` M5 contract).
+        Pipeline authors should use shell ``${VAR:-default}`` syntax for any
+        context key that may be absent at execution time.
         """
         # Set goal from argument or graph attribute
         effective_goal = goal or self.graph.goal

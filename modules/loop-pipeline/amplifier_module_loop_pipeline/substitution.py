@@ -14,6 +14,44 @@ are raised on missing keys; failures are caught by the engine's eager scan
 
 Key ordering: longest keys replaced first to avoid partial matches when a
 shorter key is a prefix of a longer one (e.g. "tool" vs "tool.output").
+
+Spec note (§4.5):
+    The NLSpec defines ``$goal`` as the only template variable in codergen
+    handler prompts.  M5 generalises this to all context keys in
+    tool_command strings — a conscious extension beyond the written spec.
+
+Implications for pipeline authors:
+    When a tool_command runs under ``set -eu`` bash, any token whose key
+    is absent from context survives as a literal string (e.g. the four
+    characters ``$foo``).  Bash then treats it as an unbound shell variable
+    and exits with "parameter not set" (exit 2).
+
+    The universally-portable defence is shell-default syntax in the bash::
+
+        ${optional_var:-fallback_value}
+
+    This works regardless of invocation path — dot-graph resolver,
+    attractor-as-tool in an AmplifierSession, custom resolver, or
+    ``attractor run`` CLI.  No upstream abstraction layer needs to be
+    relied upon.
+
+Implications for resolver authors:
+    Resolvers MAY pre-seed context with declared defaults from their own
+    schema before the engine runs (e.g. the dot-graph resolver reads
+    ``default:`` fields from resolver.yaml and injects them into context
+    at dispatch time).  This is an enhancement on top of the universal
+    shell-default baseline, not a replacement for it.
+
+Three-layer default pattern:
+    1. Universal floor — shell defaults in bash (works for all consumers).
+    2. Bridge enforcement — resolver seeds context with schema-declared
+       defaults at dispatch (protects direct API callers that bypass UI).
+    3. UI affordance — resolver emits A2UI ``defaultValue`` on schema
+       components so users see pre-filled fields without knowing the
+       underlying attractor mechanics.
+
+    The engine participates only at layer 1, via the absent-key
+    pass-through described above.  Layers 2 and 3 are resolver concerns.
 """
 
 from __future__ import annotations
