@@ -13,7 +13,12 @@ Node attributes:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..context import PipelineContext
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
 
@@ -36,6 +41,8 @@ class ConditionalHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Return SUCCESS immediately.  Routing is handled by the engine."""
         return Outcome(status=StageStatus.SUCCESS, notes=f"Conditional node: {node.id}")

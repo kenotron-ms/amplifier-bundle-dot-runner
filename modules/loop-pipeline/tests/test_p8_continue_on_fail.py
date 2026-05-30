@@ -25,6 +25,7 @@ from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,8 @@ class FailingToolHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine=None,
     ) -> Outcome:
         return Outcome(status=StageStatus.FAIL, failure_reason="tool simulated failure")
 
@@ -96,7 +99,7 @@ class TestContinueOnFail:
             ],
         )
         context = PipelineContext()
-        registry = HandlerRegistry(backend=FailingBackend())
+        registry = HandlerRegistry(HandlerContext(backend=FailingBackend()))
         engine = PipelineEngine(
             graph=graph,
             context=context,
@@ -139,7 +142,7 @@ class TestContinueOnFail:
         )
         context = PipelineContext()
         backend = FailingBackend()
-        registry = HandlerRegistry(backend=backend)
+        registry = HandlerRegistry(HandlerContext(backend=backend))
         engine = PipelineEngine(
             graph=graph,
             context=context,
@@ -182,7 +185,7 @@ class TestContinueOnFail:
             ],
         )
         context = PipelineContext()
-        registry = HandlerRegistry(backend=FailingBackend())
+        registry = HandlerRegistry(HandlerContext(backend=FailingBackend()))
         engine = PipelineEngine(
             graph=graph,
             context=context,
@@ -222,7 +225,7 @@ class TestContinueOnFail:
             ],
         )
         context = PipelineContext()
-        registry = HandlerRegistry(backend=FailingBackend())
+        registry = HandlerRegistry(HandlerContext(backend=FailingBackend()))
         engine = PipelineEngine(
             graph=graph,
             context=context,
@@ -275,7 +278,7 @@ class TestContinueOnFail:
             ],
         )
         context = PipelineContext()
-        registry = HandlerRegistry(backend=SuccessBackend())
+        registry = HandlerRegistry(HandlerContext(backend=SuccessBackend()))
         engine = PipelineEngine(
             graph=graph,
             context=context,
@@ -312,7 +315,7 @@ digraph test {
         graph = parse_dot(dot_source)
 
         context = PipelineContext()
-        registry = HandlerRegistry(backend=FailingBackend())
+        registry = HandlerRegistry(HandlerContext(backend=FailingBackend()))
         # Replace the built-in tool handler with our failing mock
         registry.register("tool", FailingToolHandler())
         engine = PipelineEngine(

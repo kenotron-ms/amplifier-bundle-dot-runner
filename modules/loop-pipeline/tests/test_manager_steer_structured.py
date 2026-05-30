@@ -65,13 +65,14 @@ class TestStructuredSteeringMessage:
         """Steering message includes 'Cycle X of Y' context."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(status=StageStatus.FAIL, failure_reason="broken")
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(status=StageStatus.FAIL, failure_reason="broken")
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -80,7 +81,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None
@@ -94,13 +97,16 @@ class TestStructuredSteeringMessage:
         """Steering message includes remaining cycles budget."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 3:
-                return Outcome(status=StageStatus.FAIL, failure_reason="still broken")
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 3:
+                    return Outcome(
+                        status=StageStatus.FAIL, failure_reason="still broken"
+                    )
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -109,7 +115,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         # Third cycle's steering (after 2 failures)
         steering = captured_contexts[2].get("manager.steering")
@@ -123,17 +131,18 @@ class TestStructuredSteeringMessage:
         """Steering message uses multi-line structured format, not flat text."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason="compilation error in main.py line 42",
-                    notes="Build step failed",
-                )
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason="compilation error in main.py line 42",
+                        notes="Build step failed",
+                    )
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -142,7 +151,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None
@@ -154,17 +165,18 @@ class TestStructuredSteeringMessage:
         """Structured format still includes the full failure reason."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason="tests failing: 3 of 10 assertions broken",
-                    notes="Unit tests did not pass",
-                )
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason="tests failing: 3 of 10 assertions broken",
+                        notes="Unit tests did not pass",
+                    )
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -173,7 +185,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None
@@ -186,17 +200,18 @@ class TestStructuredSteeringMessage:
         """Structured format includes notes from the previous cycle."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason="build failed",
-                    notes="3 warnings, 1 error in output",
-                )
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason="build failed",
+                        notes="3 warnings, 1 error in output",
+                    )
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -205,7 +220,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None
@@ -216,13 +233,14 @@ class TestStructuredSteeringMessage:
         """Steering includes the previous cycle's status value."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(status=StageStatus.FAIL, failure_reason="broke")
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(status=StageStatus.FAIL, failure_reason="broke")
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -231,7 +249,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None
@@ -242,11 +262,12 @@ class TestStructuredSteeringMessage:
         """First cycle has no steering (no prior outcome)."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -255,7 +276,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         assert captured_contexts[0].get("manager.steering") is None
 
@@ -264,13 +287,14 @@ class TestStructuredSteeringMessage:
         """Steering handles outcomes that have no failure_reason gracefully."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(node_id, context, graph, logs_root):
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(status=StageStatus.FAIL)  # no failure_reason
-            return Outcome(status=StageStatus.SUCCESS)
+        class MockEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(status=StageStatus.FAIL)  # no failure_reason
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -279,7 +303,9 @@ class TestStructuredSteeringMessage:
             }
         )
         ctx = PipelineContext()
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=MockEngine()
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None

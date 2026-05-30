@@ -52,7 +52,7 @@ class FakeSubgraphRunner:
         )
 
     async def run_subgraph(
-        self, node_id: str, context: PipelineContext, graph: Graph, logs_root: str
+        self, node_id: str, *, context: PipelineContext | None = None
     ) -> Outcome:
         if self._delay > 0:
             await asyncio.sleep(self._delay)
@@ -64,7 +64,7 @@ class FakeSubgraphRunner:
 async def test_parallel_fans_out_to_all_branches():
     """Parallel handler executes all outgoing edges concurrently."""
     runner = FakeSubgraphRunner()
-    handler = ParallelHandler(subgraph_runner=runner.run_subgraph)
+    handler = ParallelHandler()
 
     par_node = Node(id="parallel", shape="component")
     graph = _make_graph(
@@ -81,7 +81,9 @@ async def test_parallel_fans_out_to_all_branches():
         ],
     )
 
-    outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+    outcome = await handler.execute(
+        par_node, _make_context(), graph, "/tmp", engine=runner
+    )
     assert outcome.is_success
     assert sorted(runner.calls) == ["branch_a", "branch_b", "branch_c"]
 
@@ -91,12 +93,15 @@ async def test_parallel_clones_context_per_branch():
     """Each branch gets an isolated context clone."""
     branch_contexts: dict[str, PipelineContext] = {}
 
-    async def capturing_runner(node_id, context, graph, logs_root):
-        branch_contexts[node_id] = context
-        context.set(f"branch.{node_id}", "was_here")
-        return Outcome(status=StageStatus.SUCCESS)
+    class CapturingEngine:
+        async def run_subgraph(self, node_id, *, context=None):
+            branch_contexts[node_id] = context
+            if context is not None:
+                context.set(f"branch.{node_id}", "was_here")
+            return Outcome(status=StageStatus.SUCCESS)
 
-    handler = ParallelHandler(subgraph_runner=capturing_runner)
+    capturing_engine = CapturingEngine()
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component")
     parent_context = _make_context()
     parent_context.set("shared_key", "shared_value")
@@ -113,7 +118,9 @@ async def test_parallel_clones_context_per_branch():
         ],
     )
 
-    await handler.execute(par_node, parent_context, graph, "/tmp")
+    await handler.execute(
+        par_node, parent_context, graph, "/tmp", engine=capturing_engine
+    )
 
     # Each branch should have gotten the shared_key
     assert branch_contexts["branch_a"].get("shared_key") == "shared_value"
@@ -134,17 +141,19 @@ async def test_parallel_respects_max_parallel():
     current_concurrent = 0
     lock = asyncio.Lock()
 
-    async def tracking_runner(node_id, context, graph, logs_root):
-        nonlocal current_concurrent
-        async with lock:
-            current_concurrent += 1
-            concurrency_tracker.append(current_concurrent)
-        await asyncio.sleep(0.05)
-        async with lock:
-            current_concurrent -= 1
-        return Outcome(status=StageStatus.SUCCESS)
+    class TrackingEngine:
+        async def run_subgraph(self, node_id, *, context=None):
+            nonlocal current_concurrent
+            async with lock:
+                current_concurrent += 1
+                concurrency_tracker.append(current_concurrent)
+            await asyncio.sleep(0.05)
+            async with lock:
+                current_concurrent -= 1
+            return Outcome(status=StageStatus.SUCCESS)
 
-    handler = ParallelHandler(subgraph_runner=tracking_runner)
+    tracking_engine = TrackingEngine()
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component", attrs={"max_parallel": "2"})
 
     graph = _make_graph(
@@ -163,7 +172,9 @@ async def test_parallel_respects_max_parallel():
         ],
     )
 
-    outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+    outcome = await handler.execute(
+        par_node, _make_context(), graph, "/tmp", engine=tracking_engine
+    )
     assert outcome.is_success
     # Max concurrent should never exceed 2
     assert max(concurrency_tracker) <= 2
@@ -178,7 +189,7 @@ async def test_parallel_wait_all_all_success():
             "b2": Outcome(status=StageStatus.SUCCESS),
         }
     )
-    handler = ParallelHandler(subgraph_runner=runner.run_subgraph)
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component", attrs={"join_policy": "wait_all"})
 
     graph = _make_graph(
@@ -193,7 +204,9 @@ async def test_parallel_wait_all_all_success():
         ],
     )
 
-    outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+    outcome = await handler.execute(
+        par_node, _make_context(), graph, "/tmp", engine=runner
+    )
     assert outcome.status == StageStatus.SUCCESS
 
 
@@ -206,7 +219,7 @@ async def test_parallel_wait_all_with_failure():
             "b2": Outcome(status=StageStatus.FAIL, failure_reason="broken"),
         }
     )
-    handler = ParallelHandler(subgraph_runner=runner.run_subgraph)
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component", attrs={"join_policy": "wait_all"})
 
     graph = _make_graph(
@@ -221,7 +234,9 @@ async def test_parallel_wait_all_with_failure():
         ],
     )
 
-    outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+    outcome = await handler.execute(
+        par_node, _make_context(), graph, "/tmp", engine=runner
+    )
     assert outcome.status == StageStatus.PARTIAL_SUCCESS
 
 
@@ -234,7 +249,7 @@ async def test_parallel_stores_results_in_context():
             "b2": Outcome(status=StageStatus.FAIL, failure_reason="B2 broken"),
         }
     )
-    handler = ParallelHandler(subgraph_runner=runner.run_subgraph)
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component")
     context = _make_context()
 
@@ -250,7 +265,7 @@ async def test_parallel_stores_results_in_context():
         ],
     )
 
-    await handler.execute(par_node, context, graph, "/tmp")
+    await handler.execute(par_node, context, graph, "/tmp", engine=runner)
 
     # Results should be stored in context
     results = context.get("parallel.results")
@@ -262,8 +277,7 @@ async def test_parallel_stores_results_in_context():
 @pytest.mark.asyncio
 async def test_parallel_no_branches_returns_success():
     """Parallel node with no outgoing edges returns SUCCESS."""
-    runner = FakeSubgraphRunner()
-    handler = ParallelHandler(subgraph_runner=runner.run_subgraph)
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component")
 
     graph = _make_graph(
@@ -271,6 +285,7 @@ async def test_parallel_no_branches_returns_success():
         edges=[],
     )
 
+    # No engine needed: no branches execute, so engine.run_subgraph is never called
     outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
     assert outcome.status == StageStatus.SUCCESS
 
@@ -285,7 +300,7 @@ async def test_parallel_continue_error_policy():
             "b3": Outcome(status=StageStatus.FAIL, failure_reason="fail 3"),
         }
     )
-    handler = ParallelHandler(subgraph_runner=runner.run_subgraph)
+    handler = ParallelHandler()
     par_node = Node(
         id="parallel",
         shape="component",
@@ -307,7 +322,7 @@ async def test_parallel_continue_error_policy():
         ],
     )
 
-    await handler.execute(par_node, context, graph, "/tmp")
+    await handler.execute(par_node, context, graph, "/tmp", engine=runner)
     # All branches were executed
     assert sorted(runner.calls) == ["b1", "b2", "b3"]
     # Results stored
@@ -319,12 +334,13 @@ async def test_parallel_continue_error_policy():
 async def test_parallel_exception_in_branch_becomes_fail():
     """Exception in a branch is caught and converted to FAIL outcome."""
 
-    async def failing_runner(node_id, context, graph, logs_root):
-        if node_id == "b2":
-            raise RuntimeError("Branch crashed")
-        return Outcome(status=StageStatus.SUCCESS)
+    class FailingEngine:
+        async def run_subgraph(self, node_id, *, context=None):
+            if node_id == "b2":
+                raise RuntimeError("Branch crashed")
+            return Outcome(status=StageStatus.SUCCESS)
 
-    handler = ParallelHandler(subgraph_runner=failing_runner)
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component")
 
     graph = _make_graph(
@@ -340,7 +356,9 @@ async def test_parallel_exception_in_branch_becomes_fail():
     )
     context = _make_context()
 
-    outcome = await handler.execute(par_node, context, graph, "/tmp")
+    outcome = await handler.execute(
+        par_node, context, graph, "/tmp", engine=FailingEngine()
+    )
     # Should still complete (continue policy)
     assert outcome.status == StageStatus.PARTIAL_SUCCESS
     results = context.get("parallel.results")
@@ -368,10 +386,11 @@ async def test_parallel_handler_emits_events():
         async def emit(self, event_name, data):
             emitted.append((event_name, data))
 
-    async def mock_runner(node_id, ctx, graph, logs_root):
-        return Outcome(status=StageStatus.SUCCESS, notes="ok")
+    class MockEngine:
+        async def run_subgraph(self, node_id, *, context=None):
+            return Outcome(status=StageStatus.SUCCESS, notes="ok")
 
-    handler = ParallelHandler(subgraph_runner=mock_runner, hooks=MockHooks())
+    handler = ParallelHandler(hooks=MockHooks())
 
     graph = _make_graph(
         nodes={
@@ -386,7 +405,9 @@ async def test_parallel_handler_emits_events():
     )
 
     ctx = _make_context()
-    await handler.execute(graph.nodes["par"], ctx, graph, "/tmp/test")
+    await handler.execute(
+        graph.nodes["par"], ctx, graph, "/tmp/test", engine=MockEngine()
+    )
 
     event_names = [e[0] for e in emitted]
     assert PIPELINE_PARALLEL_STARTED in event_names
@@ -610,13 +631,13 @@ async def test_fan_in_falls_back_to_heuristic_without_prompt():
     assert context.get("parallel.fan_in.best_id") == "b1"
 
 
-# --- Task 3: ParallelHandler returns FAIL when no subgraph_runner ---
+# --- Task 3: ParallelHandler returns FAIL when no engine ---
 
 
 @pytest.mark.asyncio
 async def test_parallel_no_runner_returns_fail():
-    """ParallelHandler with no runner returns FAIL outcome — no silent simulation."""
-    handler = ParallelHandler(subgraph_runner=None)
+    """ParallelHandler without engine returns FAIL outcome — no silent simulation."""
+    handler = ParallelHandler()
     par_node = Node(
         id="parallel",
         shape="component",
@@ -630,6 +651,7 @@ async def test_parallel_no_runner_returns_fail():
         edges=[Edge(from_node="parallel", to_node="branch_a")],
     )
     context = _make_context()
+    # engine=None (default) → branches fail with "No engine configured"
     outcome = await handler.execute(par_node, context, graph, "/tmp")
     assert outcome.status == StageStatus.FAIL
     results = context.get("parallel.results") or []
@@ -637,13 +659,13 @@ async def test_parallel_no_runner_returns_fail():
         str(r.get("notes") or "") + " " + str(r.get("failure_reason") or "")
         for r in results
     )
-    assert "subgraph_runner" in failure_text
+    assert "engine" in failure_text
 
 
 @pytest.mark.asyncio
 async def test_parallel_no_runner_branch_returns_fail():
-    """ParallelHandler with no runner returns FAIL outcomes for branches — no silent simulation."""
-    handler = ParallelHandler(subgraph_runner=None)
+    """ParallelHandler without engine returns FAIL outcomes for branches — no silent simulation."""
+    handler = ParallelHandler()
     par_node = Node(id="parallel", shape="component")
     graph = _make_graph(
         nodes={
@@ -653,10 +675,10 @@ async def test_parallel_no_runner_branch_returns_fail():
         edges=[Edge(from_node="parallel", to_node="branch_a")],
     )
     context = _make_context()
+    # engine=None (default) → branches fail
     await handler.execute(par_node, context, graph, "/tmp")
-    # With no runner, the branch should fail — not silently succeed
     results = context.get("parallel.results")
     assert results is not None
     assert len(results) == 1
     assert results[0]["status"] == "fail"
-    assert "subgraph_runner" in (results[0]["notes"] or "")
+    assert "engine" in (results[0]["notes"] or "")

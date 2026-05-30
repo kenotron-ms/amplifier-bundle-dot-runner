@@ -27,6 +27,7 @@ from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.graph import Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -57,6 +58,8 @@ class MockToolHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine=None,
     ) -> Outcome:
         return Outcome(status=StageStatus.SUCCESS, notes="Mock validation passed")
 
@@ -136,7 +139,7 @@ def _make_factory_engine(
         for key, value in extra_ctx.items():
             ctx.set(key, value)
 
-    registry = HandlerRegistry(backend=backend)
+    registry = HandlerRegistry(HandlerContext(backend=backend))
     registry.register("tool", MockToolHandler())
 
     return PipelineEngine(

@@ -22,6 +22,7 @@ from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.outcome import StageStatus
 from amplifier_module_loop_pipeline.pipeline_events import PIPELINE_NODE_SKIPPED
 from amplifier_module_loop_pipeline.validation import validate_or_raise
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 class EventCapture:
@@ -39,29 +40,16 @@ def _make_engine(dot_source: str, logs_root: str, hooks: Any = None) -> Pipeline
     graph = parse_dot(dot_source)
     validate_or_raise(graph)
     context = PipelineContext()
-    registry = HandlerRegistry()
-    engine = PipelineEngine(
+    # No subgraph_runner needed — ParallelHandler receives engine via execute(engine=...)
+    # and calls engine.run_subgraph() directly.
+    registry = HandlerRegistry(HandlerContext())
+    return PipelineEngine(
         graph=graph,
         context=context,
         handler_registry=registry,
         logs_root=logs_root,
         hooks=hooks,
     )
-
-    # Wire the subgraph_runner so ParallelHandler can execute branches.
-    # Without this, all branches fail immediately (no-op runner), which
-    # defeats the purpose of testing error_policy behavior.
-    async def subgraph_runner(
-        node_id: str,
-        branch_context: PipelineContext,
-        _graph: object,
-        _logs_root: str,
-    ) -> object:
-        return await engine._run_from(node_id, context=branch_context)
-
-    wired_registry = HandlerRegistry(subgraph_runner=subgraph_runner)
-    engine.handler_registry = wired_registry
-    return engine
 
 
 @pytest.mark.asyncio

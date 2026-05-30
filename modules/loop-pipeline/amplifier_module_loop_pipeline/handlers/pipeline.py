@@ -12,7 +12,10 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 from ..context import PipelineContext
 from ..dot_parser import parse_dot
@@ -95,6 +98,8 @@ class PipelineHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Execute a nested pipeline from a child DOT file.
 
@@ -162,30 +167,19 @@ class PipelineHandler:
         child_logs = os.path.join(logs_root, f"subgraph_{node.id}")
         os.makedirs(child_logs, exist_ok=True)
 
-        # (8) Create child HandlerRegistry — wire subgraph_runner so that
-        # ManagerLoopHandler and ParallelHandler can supervise child subgraphs.
-        #
-        # The closure below references child_engine, which is assigned in step (9)
-        # below.  Python closures are late-binding: the name is resolved at call time,
-        # not at definition time, so the assignment order is safe.
+        # (8) Create child HandlerRegistry (no closure, no rewire — engine passes self via execute(engine=...))
         if self._handler_registry_factory is not None:
             child_registry = self._handler_registry_factory()
         else:
-            async def child_subgraph_runner(
-                node_id: str,
-                branch_context: Any,
-                _graph: Any,
-                _logs_root: str,
-            ) -> Any:
-                """Execute a child subgraph branch via the child engine."""
-                return await child_engine._run_from(node_id, context=branch_context)
+            from .context import HandlerContext
 
             child_registry = HandlerRegistry(
-                backend=self._backend,
-                hooks=self._hooks,
-                cancel_event=self._cancel_event,
-                interviewer=self._interviewer,
-                subgraph_runner=child_subgraph_runner,
+                HandlerContext(
+                    backend=self._backend,
+                    hooks=self._hooks,
+                    cancel_event=self._cancel_event,
+                    interviewer=self._interviewer,
+                )
             )
 
         # (9) Create child PipelineEngine

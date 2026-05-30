@@ -58,16 +58,18 @@ class TestFirstSuccessEarlyExit:
         """
         completed_branches: list[str] = []
 
-        async def runner(node_id, context, graph, logs_root):
-            if node_id == "fast":
+        class SlowFastEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                if node_id == "fast":
+                    completed_branches.append(node_id)
+                    return Outcome(status=StageStatus.SUCCESS, notes="fast done")
+                # Slow branches take 5 seconds
+                await asyncio.sleep(5.0)
                 completed_branches.append(node_id)
-                return Outcome(status=StageStatus.SUCCESS, notes="fast done")
-            # Slow branches take 5 seconds
-            await asyncio.sleep(5.0)
-            completed_branches.append(node_id)
-            return Outcome(status=StageStatus.SUCCESS, notes="slow done")
+                return Outcome(status=StageStatus.SUCCESS, notes="slow done")
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
+        _engine = SlowFastEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -91,7 +93,9 @@ class TestFirstSuccessEarlyExit:
         import time
 
         start = time.monotonic()
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_engine
+        )
         elapsed = time.monotonic() - start
 
         assert outcome.status == StageStatus.SUCCESS
@@ -103,14 +107,16 @@ class TestFirstSuccessEarlyExit:
         """first_success returns SUCCESS even if some branches fail first."""
         call_count = 0
 
-        async def runner(node_id, context, graph, logs_root):
-            nonlocal call_count
-            call_count += 1
-            if node_id == "b1":
-                return Outcome(status=StageStatus.FAIL, failure_reason="b1 broke")
-            return Outcome(status=StageStatus.SUCCESS, notes="b2 ok")
+        class FirstSuccessEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                nonlocal call_count
+                call_count += 1
+                if node_id == "b1":
+                    return Outcome(status=StageStatus.FAIL, failure_reason="b1 broke")
+                return Outcome(status=StageStatus.SUCCESS, notes="b2 ok")
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        _engine = FirstSuccessEngine()
+        handler = ParallelHandler()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -129,17 +135,23 @@ class TestFirstSuccessEarlyExit:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_engine
+        )
         assert outcome.status == StageStatus.SUCCESS
 
     @pytest.mark.asyncio
     async def test_first_success_fails_when_all_fail(self):
         """first_success returns FAIL when no branches succeed."""
 
-        async def fail_runner(node_id, context, graph, logs_root):
-            return Outcome(status=StageStatus.FAIL, failure_reason=f"{node_id} failed")
+        class FailEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                return Outcome(
+                    status=StageStatus.FAIL, failure_reason=f"{node_id} failed"
+                )
 
-        handler = ParallelHandler(subgraph_runner=fail_runner)
+        handler = ParallelHandler()
+        _engine = FailEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -158,7 +170,9 @@ class TestFirstSuccessEarlyExit:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_engine
+        )
         assert outcome.status == StageStatus.FAIL
 
 
@@ -179,16 +193,18 @@ class TestKOfNEarlyExit:
         """
         completed_branches: list[str] = []
 
-        async def runner(node_id, context, graph, logs_root):
-            if node_id in ("fast1", "fast2"):
+        class KOfNFastEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                if node_id in ("fast1", "fast2"):
+                    completed_branches.append(node_id)
+                    return Outcome(status=StageStatus.SUCCESS, notes=f"{node_id} done")
+                # Slow branch
+                await asyncio.sleep(5.0)
                 completed_branches.append(node_id)
-                return Outcome(status=StageStatus.SUCCESS, notes=f"{node_id} done")
-            # Slow branch
-            await asyncio.sleep(5.0)
-            completed_branches.append(node_id)
-            return Outcome(status=StageStatus.SUCCESS, notes="slow done")
+                return Outcome(status=StageStatus.SUCCESS, notes="slow done")
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
+        _engine = KOfNFastEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -212,7 +228,9 @@ class TestKOfNEarlyExit:
         import time
 
         start = time.monotonic()
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_engine
+        )
         elapsed = time.monotonic() - start
 
         assert outcome.status == StageStatus.SUCCESS
@@ -223,12 +241,14 @@ class TestKOfNEarlyExit:
     async def test_k_of_n_waits_when_threshold_not_yet_met(self):
         """k_of_n waits for more branches when threshold not met yet."""
 
-        async def runner(node_id, context, graph, logs_root):
-            if node_id == "b1":
-                return Outcome(status=StageStatus.FAIL, failure_reason="broke")
-            return Outcome(status=StageStatus.SUCCESS)
+        class KOfNThresholdEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                if node_id == "b1":
+                    return Outcome(status=StageStatus.FAIL, failure_reason="broke")
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
+        _engine = KOfNThresholdEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -249,20 +269,24 @@ class TestKOfNEarlyExit:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_engine
+        )
         assert outcome.status == StageStatus.SUCCESS
 
     @pytest.mark.asyncio
     async def test_k_of_n_fails_when_threshold_impossible(self):
         """k_of_n fails when not enough remaining branches can meet threshold."""
 
-        async def runner(node_id, context, graph, logs_root):
-            if node_id in ("b1", "b2"):
-                return Outcome(status=StageStatus.FAIL, failure_reason="broke")
-            await asyncio.sleep(5.0)
-            return Outcome(status=StageStatus.SUCCESS)
+        class ImpossibleThresholdEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                if node_id in ("b1", "b2"):
+                    return Outcome(status=StageStatus.FAIL, failure_reason="broke")
+                await asyncio.sleep(5.0)
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
+        _engine = ImpossibleThresholdEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -286,7 +310,9 @@ class TestKOfNEarlyExit:
         import time
 
         start = time.monotonic()
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_engine
+        )
         elapsed = time.monotonic() - start
 
         assert outcome.status == StageStatus.FAIL
@@ -297,10 +323,12 @@ class TestKOfNEarlyExit:
     async def test_k_of_n_stores_results_in_context(self):
         """k_of_n stores collected results in parent context."""
 
-        async def runner(node_id, context, graph, logs_root):
-            return Outcome(status=StageStatus.SUCCESS, notes=f"{node_id} ok")
+        class StoreResultsEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                return Outcome(status=StageStatus.SUCCESS, notes=f"{node_id} ok")
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
+        _engine = StoreResultsEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -320,7 +348,7 @@ class TestKOfNEarlyExit:
             ],
         )
 
-        await handler.execute(par_node, context, graph, "/tmp")
+        await handler.execute(par_node, context, graph, "/tmp", engine=_engine)
         results = context.get("parallel.results")
         assert results is not None
         assert len(results) >= 1

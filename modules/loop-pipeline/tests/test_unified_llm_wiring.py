@@ -515,20 +515,26 @@ async def test_direct_backend_report_outcome_terminal_action_empty_text():
     """
     report_tool = _MockReportOutcomeTool()
 
-    mock_client = _MockUnifiedClient([
-        # Round 1: model calls report_outcome as its terminal action
-        _make_tool_call_response([{
-            "id": "tc-1",
-            "name": "report_outcome",
-            "args": {
-                "status": "fail",
-                "failure_reason": "quality gate failed",
-                "context_updates": {"quality_feedback": "fix X"},
-            },
-        }]),
-        # Round 2: empty text — no follow-up turn (extended thinking)
-        _make_text_response(""),
-    ])
+    mock_client = _MockUnifiedClient(
+        [
+            # Round 1: model calls report_outcome as its terminal action
+            _make_tool_call_response(
+                [
+                    {
+                        "id": "tc-1",
+                        "name": "report_outcome",
+                        "args": {
+                            "status": "fail",
+                            "failure_reason": "quality gate failed",
+                            "context_updates": {"quality_feedback": "fix X"},
+                        },
+                    }
+                ]
+            ),
+            # Round 2: empty text — no follow-up turn (extended thinking)
+            _make_text_response(""),
+        ]
+    )
 
     backend = DirectProviderBackend(
         provider=object(),
@@ -551,23 +557,38 @@ async def test_direct_backend_report_outcome_no_cross_node_bleed():
     backend._tools = {"report_outcome": report_tool}
 
     # Node 1: report_outcome called as terminal tool, result.text empty
-    backend._unified_client = _MockUnifiedClient([
-        _make_tool_call_response([{
-            "id": "tc-1",
-            "name": "report_outcome",
-            "args": {"status": "fail", "failure_reason": "first node failed"},
-        }]),
-        _make_text_response(""),
-    ])
-    node1 = _make_node(id="node1", attrs={"llm_provider": "test", "llm_model": "test-model"})
+    backend._unified_client = _MockUnifiedClient(
+        [
+            _make_tool_call_response(
+                [
+                    {
+                        "id": "tc-1",
+                        "name": "report_outcome",
+                        "args": {
+                            "status": "fail",
+                            "failure_reason": "first node failed",
+                        },
+                    }
+                ]
+            ),
+            _make_text_response(""),
+        ]
+    )
+    node1 = _make_node(
+        id="node1", attrs={"llm_provider": "test", "llm_model": "test-model"}
+    )
     result1 = await backend.run(node1, "task 1", _make_context())
 
     assert result1.status == StageStatus.FAIL
     assert result1.failure_reason == "first node failed"
 
     # Node 2: no tool call, plain text response — must NOT inherit node 1's verdict
-    backend._unified_client = _MockUnifiedClient([_make_text_response("plain text done")])
-    node2 = _make_node(id="node2", attrs={"llm_provider": "test", "llm_model": "test-model"})
+    backend._unified_client = _MockUnifiedClient(
+        [_make_text_response("plain text done")]
+    )
+    node2 = _make_node(
+        id="node2", attrs={"llm_provider": "test", "llm_model": "test-model"}
+    )
     result2 = await backend.run(node2, "task 2", _make_context())
 
     assert result2.status == StageStatus.SUCCESS

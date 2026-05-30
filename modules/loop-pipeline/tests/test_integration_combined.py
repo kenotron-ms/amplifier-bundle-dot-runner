@@ -26,6 +26,7 @@ from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.handlers.pipeline import PipelineHandler
 from amplifier_module_loop_pipeline.interviewer import Answer, Option, QueueInterviewer
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -78,6 +79,8 @@ class MockToolHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine=None,
     ) -> Outcome:
         return Outcome(status=StageStatus.SUCCESS, notes="Mock validation passed")
 
@@ -259,12 +262,12 @@ class TestCombinedExecution:
 
         # Factory to build child registries with both backend + interviewer + tool mock
         def child_registry_factory() -> HandlerRegistry:
-            registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+            registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
             registry.register("tool", MockToolHandler())
             return registry
 
         # Build parent registry; override pipeline handler to use the factory
-        parent_registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+        parent_registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
         parent_registry.register("tool", MockToolHandler())
         parent_registry.register(
             "pipeline",
@@ -314,11 +317,11 @@ class TestCombinedExecution:
         )
 
         def child_registry_factory() -> HandlerRegistry:
-            registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+            registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
             registry.register("tool", MockToolHandler())
             return registry
 
-        parent_registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+        parent_registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
         parent_registry.register("tool", MockToolHandler())
         parent_registry.register(
             "pipeline",
@@ -370,11 +373,11 @@ class TestCombinedExecution:
         )
 
         def child_registry_factory() -> HandlerRegistry:
-            registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+            registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
             registry.register("tool", MockToolHandler())
             return registry
 
-        parent_registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+        parent_registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
         parent_registry.register("tool", MockToolHandler())
         parent_registry.register(
             "pipeline",
@@ -420,11 +423,11 @@ class TestCombinedExecution:
         )
 
         def child_registry_factory() -> HandlerRegistry:
-            registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+            registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
             registry.register("tool", MockToolHandler())
             return registry
 
-        parent_registry = HandlerRegistry(backend=backend, interviewer=interviewer)
+        parent_registry = HandlerRegistry(HandlerContext(backend=backend, interviewer=interviewer))
         parent_registry.register("tool", MockToolHandler())
         parent_registry.register(
             "pipeline",

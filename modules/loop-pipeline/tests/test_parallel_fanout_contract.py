@@ -27,6 +27,7 @@ from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 # ---------------------------------------------------------------------------
@@ -39,29 +40,17 @@ async def _make_wired_engine(
     backend: object,
     logs_root: str,
 ) -> PipelineEngine:
-    """Create a PipelineEngine with subgraph_runner wired to engine._run_from.
+    """Create a PipelineEngine. Engine passes itself to handlers via execute(engine=self).
 
-    Required when testing shape=component nodes (ParallelHandler needs this
-    closure to execute branches as proper subgraphs).
+    No subgraph_runner closure needed — ParallelHandler receives the engine
+    directly via execute(engine=...) and calls engine.run_subgraph().
     """
-    engine = PipelineEngine(
+    return PipelineEngine(
         graph=graph,
         context=PipelineContext(),
-        handler_registry=HandlerRegistry(backend=backend),
+        handler_registry=HandlerRegistry(HandlerContext(backend=backend)),
         logs_root=logs_root,
     )
-
-    async def subgraph_runner(
-        node_id: str,
-        branch_context: PipelineContext,
-        _graph: Graph,
-        _logs_root: str,
-    ) -> object:
-        return await engine._run_from(node_id, context=branch_context)
-
-    registry = HandlerRegistry(backend=backend, subgraph_runner=subgraph_runner)
-    engine.handler_registry = registry
-    return engine
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +175,7 @@ async def test_parallelogram_shape_does_not_fan_out_unconditional_edges(tmp_path
 
     # No subgraph_runner needed — ToolHandler and LLM nodes don't use it.
     context = PipelineContext()
-    registry = HandlerRegistry(backend=CountingBackend())
+    registry = HandlerRegistry(HandlerContext(backend=CountingBackend()))
     engine = PipelineEngine(
         graph=graph,
         context=context,
@@ -299,7 +288,7 @@ async def test_non_component_fanout_respects_max_parallel(tmp_path):
     engine = PipelineEngine(
         graph=graph,
         context=PipelineContext(),
-        handler_registry=HandlerRegistry(backend=BoundedConcurrencyBackend()),
+        handler_registry=HandlerRegistry(HandlerContext(backend=BoundedConcurrencyBackend())),
         logs_root=str(tmp_path),
     )
     outcome = await engine.run()

@@ -20,19 +20,16 @@ import asyncio
 import logging
 import math
 import time
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
-# Type alias for the subgraph runner callback
-SubgraphRunner = Callable[
-    [str, PipelineContext, Graph, str],
-    Coroutine[Any, Any, Outcome],
-]
+logger = logging.getLogger(__name__)
 
 
 class ParallelHandler:
@@ -44,19 +41,13 @@ class ParallelHandler:
 
     def __init__(
         self,
-        subgraph_runner: SubgraphRunner | None = None,
         hooks: Any = None,
     ) -> None:
         """Initialize the parallel handler.
 
         Args:
-            subgraph_runner: Async callable that executes a subgraph
-                starting from a given node ID. Signature:
-                (node_id, context, graph, logs_root) -> Outcome.
-                If None, branches return FAIL with an explicit error.
             hooks: Optional hooks object for event emission.
         """
-        self._runner = subgraph_runner
         self._hooks = hooks
 
     async def _emit(self, event_name: str, data: dict[str, Any]) -> None:
@@ -70,6 +61,8 @@ class ParallelHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Execute a parallel node by fanning out to all outgoing edges.
 
@@ -139,16 +132,16 @@ class ParallelHandler:
 
                 branch_start = time.monotonic()
                 branch_context = context.clone()
-                if self._runner is None:
+                if engine is None:
                     outcome = Outcome(
                         status=StageStatus.FAIL,
-                        notes=f"ParallelHandler requires a subgraph_runner. Branch '{target_node_id}' cannot execute.",
-                        failure_reason="No subgraph_runner configured",
+                        notes=f"ParallelHandler requires engine to be passed via execute(engine=...). Branch '{target_node_id}' cannot execute.",
+                        failure_reason="No engine configured",
                     )
                 else:
                     try:
-                        outcome = await self._runner(
-                            target_node_id, branch_context, graph, logs_root
+                        outcome = await engine.run_subgraph(
+                            target_node_id, context=branch_context
                         )
                     except Exception as e:
                         logger.warning(

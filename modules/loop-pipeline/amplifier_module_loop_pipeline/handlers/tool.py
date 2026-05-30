@@ -33,7 +33,10 @@ import json
 import logging
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
@@ -66,6 +69,8 @@ class ToolHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Execute a tool command and return the outcome.
 

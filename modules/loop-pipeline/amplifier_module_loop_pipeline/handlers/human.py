@@ -13,7 +13,10 @@ from __future__ import annotations
 import logging
 import pathlib
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
@@ -279,6 +282,8 @@ class HumanGateHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Present choices to a human and route based on selection.
 

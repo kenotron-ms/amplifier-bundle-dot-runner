@@ -10,12 +10,16 @@ Spec coverage: HAND-001–007, Section 4.1–4.2.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..outcome import Outcome
 from ..validation import SHAPE_TO_HANDLER
+from .context import HandlerContext
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 
 @runtime_checkable
@@ -31,6 +35,8 @@ class NodeHandler(Protocol):
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome: ...
 
 
@@ -45,7 +51,7 @@ class HandlerRegistry:
     Spec Section 4.2: Handler Registry.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, ctx: HandlerContext) -> None:
         from .codergen import CodergenHandler
         from .conditional import ConditionalHandler
         from .exit import ExitHandler
@@ -57,34 +63,32 @@ class HandlerRegistry:
         from .start import StartHandler
         from .tool import ToolHandler
 
-        self._hooks = kwargs.get("hooks")
+        self._ctx = ctx
 
         self._handlers: dict[str, NodeHandler] = {
             "start": StartHandler(),
             "exit": ExitHandler(),
-            "codergen": CodergenHandler(backend=kwargs.get("backend")),
+            "codergen": CodergenHandler(backend=ctx.backend),
             "conditional": ConditionalHandler(),
             "tool": ToolHandler(),
             "wait.human": HumanGateHandler(
-                interviewer=kwargs.get("interviewer"),
-                hooks=self._hooks,
+                interviewer=ctx.interviewer,
+                hooks=ctx.hooks,
             ),
             "stack.manager_loop": ManagerLoopHandler(
-                subgraph_runner=kwargs.get("subgraph_runner"),
-                backend=kwargs.get("backend"),
-                hooks=self._hooks,
-                cancel_event=kwargs.get("cancel_event"),
+                backend=ctx.backend,
+                hooks=ctx.hooks,
+                cancel_event=ctx.cancel_event,
             ),
             "parallel": ParallelHandler(
-                subgraph_runner=kwargs.get("subgraph_runner"),
-                hooks=self._hooks,
+                hooks=ctx.hooks,
             ),
             "parallel.fan_in": FanInHandler(),
             "pipeline": PipelineHandler(
-                hooks=self._hooks,
-                cancel_event=kwargs.get("cancel_event"),
-                backend=kwargs.get("backend"),
-                interviewer=kwargs.get("interviewer"),
+                hooks=ctx.hooks,
+                cancel_event=ctx.cancel_event,
+                backend=ctx.backend,
+                interviewer=ctx.interviewer,
             ),
         }
 
@@ -138,7 +142,7 @@ class HandlerRegistry:
         from .pipeline import PipelineHandler
 
         new = HandlerRegistry.__new__(HandlerRegistry)
-        new._hooks = self._hooks
+        new._ctx = self._ctx  # frozen dataclass — safe to share
         new._handlers = dict(self._handlers)
 
         # Replace codergen with a clone that has its own backend state

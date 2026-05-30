@@ -575,6 +575,4 @@ def test_escape_multiline_shell_heredoc_tool_command_preserves_structure():
     """
     cmd_attr = "#!/bin/sh\\\\nset -e\\\\nprintf hello\\\\nprintf world"
     graph = parse_dot(f'digraph t {{ n [label="{cmd_attr}"] }}')
-    assert graph.nodes["n"].label == (
-        "#!/bin/sh\nset -e\nprintf hello\nprintf world"
-    )
+    assert graph.nodes["n"].label == ("#!/bin/sh\nset -e\nprintf hello\nprintf world")

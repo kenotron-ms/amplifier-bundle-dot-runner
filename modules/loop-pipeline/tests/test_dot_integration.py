@@ -71,7 +71,7 @@ from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.dot_parser import parse_dot
 from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
-from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.outcome import StageStatus
 from amplifier_module_loop_pipeline.pipeline_events import (
     PIPELINE_COMPLETE,
     PIPELINE_NODE_COMPLETE,
@@ -82,6 +82,7 @@ from amplifier_module_loop_pipeline.pipeline_events import (
 )
 from amplifier_module_loop_pipeline.transforms import apply_transforms
 from amplifier_module_loop_pipeline.validation import validate_or_raise
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 # ---------------------------------------------------------------------------
@@ -211,31 +212,14 @@ def _make_integration_engine(
         hooks=hooks,
     )
 
-    # Create engine first (parallel handler needs engine._run_from)
+    # Engine passes itself to handlers via execute(engine=...) — no closure needed.
     engine = PipelineEngine(
         graph=graph,
         context=context,
-        handler_registry=HandlerRegistry(backend=backend),  # temp
+        handler_registry=HandlerRegistry(HandlerContext(backend=backend, hooks=hooks)),
         logs_root=logs_root,
         hooks=hooks,
     )
-
-    # Wire subgraph runner for parallel support
-    async def subgraph_runner(
-        node_id: str,
-        branch_context: PipelineContext,
-        _graph: Any,
-        _logs_root: str,
-    ) -> Outcome:
-        return await engine._run_from(node_id, context=branch_context)
-
-    # Replace registry with fully-wired version
-    registry = HandlerRegistry(
-        backend=backend,
-        subgraph_runner=subgraph_runner,
-        hooks=hooks,
-    )
-    engine.handler_registry = registry
 
     return engine
 
@@ -859,29 +843,14 @@ def _make_production_engine(
         hooks=hooks,
     )
 
+    # Engine passes itself to handlers via execute(engine=...) — no closure needed.
     engine = PipelineEngine(
         graph=graph,
         context=context,
-        handler_registry=HandlerRegistry(backend=backend),
+        handler_registry=HandlerRegistry(HandlerContext(backend=backend, hooks=hooks)),
         logs_root=logs_root,
         hooks=hooks,
     )
-
-    # Wire subgraph runner for parallel support
-    async def subgraph_runner(
-        node_id: str,
-        branch_context: PipelineContext,
-        _graph: Any,
-        _logs_root: str,
-    ) -> Outcome:
-        return await engine._run_from(node_id, context=branch_context)
-
-    registry = HandlerRegistry(
-        backend=backend,
-        subgraph_runner=subgraph_runner,
-        hooks=hooks,
-    )
-    engine.handler_registry = registry
     return engine
 
 

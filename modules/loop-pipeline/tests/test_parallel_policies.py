@@ -124,10 +124,11 @@ class TestKOfNJoinPolicy:
             "b3": Outcome(status=StageStatus.SUCCESS),
         }
 
-        async def runner(node_id, context, graph, logs_root):
-            return outcomes[node_id]
+        class _KOfNEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                return outcomes[node_id]
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -148,7 +149,9 @@ class TestKOfNJoinPolicy:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_KOfNEngine()
+        )
         assert outcome.status == StageStatus.SUCCESS
 
 
@@ -230,10 +233,11 @@ class TestQuorumJoinPolicy:
             "b4": Outcome(status=StageStatus.SUCCESS),
         }
 
-        async def runner(node_id, context, graph, logs_root):
-            return outcomes[node_id]
+        class _QuorumEngine2:
+            async def run_subgraph(self, node_id, *, context=None):
+                return outcomes[node_id]
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -256,7 +260,9 @@ class TestQuorumJoinPolicy:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_QuorumEngine2()
+        )
         assert outcome.status == StageStatus.SUCCESS
 
 
@@ -273,17 +279,19 @@ class TestFailFastErrorPolicy:
         """fail_fast cancels remaining branches when one fails."""
         execution_order: list[str] = []
 
-        async def slow_runner(node_id, context, graph, logs_root):
-            execution_order.append(f"start:{node_id}")
-            if node_id == "b1":
-                # b1 fails immediately
-                return Outcome(status=StageStatus.FAIL, failure_reason="broken")
-            # Other branches take a while
-            await asyncio.sleep(0.5)
-            execution_order.append(f"end:{node_id}")
-            return Outcome(status=StageStatus.SUCCESS)
+        class SlowEngine2:
+            async def run_subgraph(self, node_id, *, context=None):
+                execution_order.append(f"start:{node_id}")
+                if node_id == "b1":
+                    # b1 fails immediately
+                    return Outcome(status=StageStatus.FAIL, failure_reason="broken")
+                # Other branches take a while
+                await asyncio.sleep(0.5)
+                execution_order.append(f"end:{node_id}")
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ParallelHandler(subgraph_runner=slow_runner)
+        handler = ParallelHandler()
+        _slow_engine2 = SlowEngine2()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -304,7 +312,9 @@ class TestFailFastErrorPolicy:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=_slow_engine2
+        )
 
         # The outcome should reflect the failure
         assert outcome.status in (StageStatus.FAIL, StageStatus.PARTIAL_SUCCESS)
@@ -316,10 +326,11 @@ class TestFailFastErrorPolicy:
     async def test_fail_fast_all_succeed(self):
         """fail_fast with all successes returns SUCCESS normally."""
 
-        async def success_runner(node_id, context, graph, logs_root):
-            return Outcome(status=StageStatus.SUCCESS)
+        class SuccessEngine2:
+            async def run_subgraph(self, node_id, *, context=None):
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ParallelHandler(subgraph_runner=success_runner)
+        handler = ParallelHandler()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -338,20 +349,24 @@ class TestFailFastErrorPolicy:
             ],
         )
 
-        outcome = await handler.execute(par_node, _make_context(), graph, "/tmp")
+        outcome = await handler.execute(
+            par_node, _make_context(), graph, "/tmp", engine=SuccessEngine2()
+        )
         assert outcome.status == StageStatus.SUCCESS
 
     @pytest.mark.asyncio
     async def test_fail_fast_stores_partial_results(self):
         """fail_fast stores whatever results were collected before cancellation."""
 
-        async def mixed_runner(node_id, context, graph, logs_root):
-            if node_id == "b1":
-                return Outcome(status=StageStatus.FAIL, failure_reason="broken")
-            await asyncio.sleep(0.5)
-            return Outcome(status=StageStatus.SUCCESS)
+        class MixedEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                if node_id == "b1":
+                    return Outcome(status=StageStatus.FAIL, failure_reason="broken")
+                await asyncio.sleep(0.5)
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ParallelHandler(subgraph_runner=mixed_runner)
+        handler = ParallelHandler()
+        _mixed_engine = MixedEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -395,10 +410,11 @@ class TestIgnoreErrorPolicy:
             "b3": Outcome(status=StageStatus.SUCCESS, notes="also good"),
         }
 
-        async def runner(node_id, context, graph, logs_root):
-            return outcomes[node_id]
+        class _IgnoreEngine3:
+            async def run_subgraph(self, node_id, *, context=None):
+                return outcomes[node_id]
 
-        handler = ParallelHandler(subgraph_runner=runner)
+        handler = ParallelHandler()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -435,10 +451,12 @@ class TestIgnoreErrorPolicy:
     async def test_ignore_all_fail_returns_success_no_results(self):
         """ignore with all failures returns SUCCESS with empty results."""
 
-        async def fail_runner(node_id, context, graph, logs_root):
-            return Outcome(status=StageStatus.FAIL, failure_reason="all bad")
+        class FailEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                return Outcome(status=StageStatus.FAIL, failure_reason="all bad")
 
-        handler = ParallelHandler(subgraph_runner=fail_runner)
+        handler = ParallelHandler()
+        _fail_engine = FailEngine()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -466,10 +484,11 @@ class TestIgnoreErrorPolicy:
     async def test_ignore_all_succeed(self):
         """ignore with all successes works normally."""
 
-        async def success_runner(node_id, context, graph, logs_root):
-            return Outcome(status=StageStatus.SUCCESS)
+        class _IgnoreSuccessEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ParallelHandler(subgraph_runner=success_runner)
+        handler = ParallelHandler()
         par_node = Node(
             id="parallel",
             shape="component",
@@ -489,7 +508,7 @@ class TestIgnoreErrorPolicy:
             ],
         )
 
-        outcome = await handler.execute(par_node, context, graph, "/tmp")
+        outcome = await handler.execute(par_node, context, graph, "/tmp", engine=_IgnoreSuccessEngine())
         assert outcome.status == StageStatus.SUCCESS
         results = context.get("parallel.results")
         assert len(results) == 2

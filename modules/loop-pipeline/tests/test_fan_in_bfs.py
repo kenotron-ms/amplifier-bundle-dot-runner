@@ -26,6 +26,7 @@ from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 def _make_engine(graph: Graph, tmp_path) -> PipelineEngine:
@@ -33,7 +34,7 @@ def _make_engine(graph: Graph, tmp_path) -> PipelineEngine:
     return PipelineEngine(
         graph=graph,
         context=PipelineContext(),
-        handler_registry=HandlerRegistry(),
+        handler_registry=HandlerRegistry(HandlerContext()),
         logs_root=str(tmp_path),
     )
 
@@ -180,9 +181,7 @@ def test_fan_in_empty_list_returns_none(tmp_path):
 
     result = engine._find_fan_in_node([])
 
-    assert result is None, (
-        f"_find_fan_in_node([]) must return None, got {result!r}"
-    )
+    assert result is None, f"_find_fan_in_node([]) must return None, got {result!r}"
 
 
 def test_fan_in_excludes_branch_roots_from_candidates(tmp_path):
@@ -285,28 +284,15 @@ async def test_pipeline_with_multi_hop_branches_completes(tmp_path):
         ],
     )
 
-    # Wire up subgraph runner (required for ParallelHandler)
+    from amplifier_module_loop_pipeline.outcome import StageStatus
+
+    # No subgraph_runner needed — ParallelHandler receives engine via execute(engine=...)
     engine = PipelineEngine(
         graph=graph,
         context=PipelineContext(),
-        handler_registry=HandlerRegistry(backend=CountingBackend()),
+        handler_registry=HandlerRegistry(HandlerContext(backend=CountingBackend())),
         logs_root=str(tmp_path),
     )
-
-    async def subgraph_runner(
-        node_id: str,
-        branch_context: PipelineContext,
-        _graph: Graph,
-        _logs_root: str,
-    ) -> object:
-        return await engine._run_from(node_id, context=branch_context)
-
-    from amplifier_module_loop_pipeline.outcome import StageStatus
-
-    registry = HandlerRegistry(
-        backend=CountingBackend(), subgraph_runner=subgraph_runner
-    )
-    engine.handler_registry = registry
 
     outcome = await engine.run()
 

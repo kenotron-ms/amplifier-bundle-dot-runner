@@ -8,9 +8,14 @@ Spec coverage: HSTART-001–002, Section 4.3.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..context import PipelineContext
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 
 class StartHandler:
@@ -22,6 +27,8 @@ class StartHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Return SUCCESS immediately."""
         return Outcome(status=StageStatus.SUCCESS, notes=f"Start node: {node.id}")

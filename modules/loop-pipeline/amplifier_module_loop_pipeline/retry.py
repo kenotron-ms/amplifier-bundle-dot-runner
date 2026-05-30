@@ -173,6 +173,7 @@ async def execute_with_retry(
     logs_root: str,
     policy: RetryPolicy,
     hooks: Any = None,
+    engine: Any = None,
 ) -> Outcome:
     """Execute a handler with retry policy.
 
@@ -186,7 +187,9 @@ async def execute_with_retry(
     for attempt in range(1, policy.max_attempts + 1):
         # Execute the handler
         try:
-            outcome = await handler.execute(node, context, graph, logs_root)
+            outcome = await handler.execute(
+                node, context, graph, logs_root, engine=engine
+            )
         except Exception as e:
             logger.warning(
                 "Node %s attempt %d/%d raised: %s",

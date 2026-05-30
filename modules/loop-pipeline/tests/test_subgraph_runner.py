@@ -1,6 +1,6 @@
 """Tests for subgraph runner (H-11).
 
-Validates that PipelineEngine._run_from() can execute a subgraph
+Validates that PipelineEngine.run_subgraph() can execute a subgraph
 starting from a specified node and return the final outcome.
 """
 
@@ -11,6 +11,7 @@ from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 class CountingHandler:
@@ -19,7 +20,7 @@ class CountingHandler:
     def __init__(self):
         self.call_counts: dict[str, int] = {}
 
-    async def execute(self, node, context, graph, logs_root):
+    async def execute(self, node, context, graph, logs_root, *, engine=None):
         self.call_counts[node.id] = self.call_counts.get(node.id, 0) + 1
         return Outcome(
             status=StageStatus.SUCCESS,
@@ -30,7 +31,7 @@ class CountingHandler:
 def _make_subgraph():
     """Build a graph: start -> a -> b -> done.
 
-    _run_from("a") should execute a, then b, then hit done (exit).
+    run_subgraph("a") should execute a, then b, then hit done (exit).
     """
     return Graph(
         name="test",
@@ -50,10 +51,10 @@ def _make_subgraph():
 
 @pytest.mark.asyncio
 async def test_run_from_executes_subgraph(tmp_path):
-    """_run_from('a') should execute a, b, then stop at exit."""
+    """run_subgraph('a') should execute a, b, then stop at exit."""
     graph = _make_subgraph()
     counting = CountingHandler()
-    registry = HandlerRegistry()
+    registry = HandlerRegistry(HandlerContext())
     registry.register("codergen", counting)
 
     engine = PipelineEngine(
@@ -65,7 +66,7 @@ async def test_run_from_executes_subgraph(tmp_path):
     # Initialize context (normally done in run())
     engine._initialize_context(goal="test")
 
-    outcome = await engine._run_from("a")
+    outcome = await engine.run_subgraph("a")
 
     assert outcome.status == StageStatus.SUCCESS
     # Both a and b should have been executed
@@ -78,7 +79,7 @@ async def test_run_from_with_isolated_context(tmp_path):
     """_run_from with a separate context should not pollute the engine context."""
     graph = _make_subgraph()
     counting = CountingHandler()
-    registry = HandlerRegistry()
+    registry = HandlerRegistry(HandlerContext())
     registry.register("codergen", counting)
 
     main_context = PipelineContext()
@@ -93,7 +94,7 @@ async def test_run_from_with_isolated_context(tmp_path):
     engine._initialize_context(goal="test")
 
     branch_context = main_context.clone()
-    outcome = await engine._run_from("a", context=branch_context)
+    outcome = await engine.run_subgraph("a", context=branch_context)
 
     assert outcome.status == StageStatus.SUCCESS
     # Branch context should have node outcomes; main should not
@@ -116,7 +117,7 @@ async def test_run_from_stops_at_dead_end(tmp_path):
         ],
     )
     counting = CountingHandler()
-    registry = HandlerRegistry()
+    registry = HandlerRegistry(HandlerContext())
     registry.register("codergen", counting)
 
     engine = PipelineEngine(
@@ -127,7 +128,7 @@ async def test_run_from_stops_at_dead_end(tmp_path):
     )
     engine._initialize_context(goal="test")
 
-    outcome = await engine._run_from("a")
+    outcome = await engine.run_subgraph("a")
 
     assert outcome.status == StageStatus.SUCCESS
     assert counting.call_counts.get("a") == 1
@@ -137,7 +138,7 @@ async def test_run_from_stops_at_dead_end(tmp_path):
 async def test_run_from_nonexistent_node(tmp_path):
     """_run_from with a bad node ID should return FAIL."""
     graph = _make_subgraph()
-    registry = HandlerRegistry()
+    registry = HandlerRegistry(HandlerContext())
 
     engine = PipelineEngine(
         graph=graph,
@@ -147,7 +148,7 @@ async def test_run_from_nonexistent_node(tmp_path):
     )
     engine._initialize_context(goal="test")
 
-    outcome = await engine._run_from("nonexistent")
+    outcome = await engine.run_subgraph("nonexistent")
 
     assert outcome.status == StageStatus.FAIL
     assert "not found" in (outcome.failure_reason or "").lower()
@@ -155,16 +156,17 @@ async def test_run_from_nonexistent_node(tmp_path):
 
 @pytest.mark.asyncio
 async def test_manager_loop_uses_wired_subgraph_runner(tmp_path):
-    """ManagerLoopHandler receives and uses a real subgraph_runner."""
+    """ManagerLoopHandler calls engine.run_subgraph when engine is provided."""
     from amplifier_module_loop_pipeline.handlers.manager_loop import ManagerLoopHandler
 
     calls: list[str] = []
 
-    async def mock_runner(node_id, ctx, graph, logs_root):
-        calls.append(node_id)
-        return Outcome(status=StageStatus.SUCCESS, notes="child done")
+    class MockEngine:
+        async def run_subgraph(self, node_id, *, context=None):
+            calls.append(node_id)
+            return Outcome(status=StageStatus.SUCCESS, notes="child done")
 
-    handler = ManagerLoopHandler(subgraph_runner=mock_runner)
+    handler = ManagerLoopHandler()
 
     graph = Graph(
         name="test",
@@ -182,7 +184,9 @@ async def test_manager_loop_uses_wired_subgraph_runner(tmp_path):
     )
 
     ctx = PipelineContext()
-    outcome = await handler.execute(graph.nodes["mgr"], ctx, graph, str(tmp_path))
+    outcome = await handler.execute(
+        graph.nodes["mgr"], ctx, graph, str(tmp_path), engine=MockEngine()
+    )
 
     assert outcome.status == StageStatus.SUCCESS
     assert "child" in calls

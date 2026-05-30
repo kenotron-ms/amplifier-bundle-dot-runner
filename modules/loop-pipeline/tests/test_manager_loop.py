@@ -17,6 +17,7 @@ from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers.manager_loop import ManagerLoopHandler
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +57,29 @@ def _make_graph(
     )
 
 
-def _make_runner(outcomes: list[Outcome]) -> AsyncMock:
-    """Create a mock subgraph_runner that returns outcomes in sequence."""
-    runner = AsyncMock()
-    runner.side_effect = list(outcomes)
-    return runner
+class _MockEngine:
+    """Mock engine that returns outcomes from a sequence via run_subgraph."""
+
+    def __init__(self, outcomes: list[Outcome]) -> None:
+        self._outcomes = list(outcomes)
+        self.call_count = 0
+        self.call_args: tuple | None = None  # (args, kwargs) of last call
+
+    async def run_subgraph(self, node_id: str, *, context: object = None) -> Outcome:
+        self.call_count += 1
+        self.call_args = ((node_id,), {"context": context})
+        if self._outcomes:
+            outcome = self._outcomes.pop(0)
+            # Support AsyncMock-style StopAsyncIteration for exhausted sequences
+            if isinstance(outcome, type) and issubclass(outcome, Exception):
+                raise outcome()
+            return outcome
+        return Outcome(status=StageStatus.FAIL, failure_reason="no more outcomes")
+
+
+def _make_runner(outcomes: list[Outcome]) -> _MockEngine:
+    """Create a mock engine that returns outcomes in sequence."""
+    return _MockEngine(outcomes)
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +98,13 @@ class TestManagerLoopExecution:
                 Outcome(status=StageStatus.SUCCESS, notes="child ok"),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(manager_attrs={"manager.max_cycles": "5"})
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         assert result.status == StageStatus.SUCCESS
         assert runner.call_count == 1
@@ -98,7 +119,7 @@ class TestManagerLoopExecution:
                 Outcome(status=StageStatus.SUCCESS, notes="fixed"),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -107,7 +128,9 @@ class TestManagerLoopExecution:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         assert result.status == StageStatus.SUCCESS
         assert runner.call_count == 3
@@ -122,7 +145,7 @@ class TestManagerLoopExecution:
                 Outcome(status=StageStatus.FAIL, failure_reason="nope"),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "3",
@@ -131,7 +154,9 @@ class TestManagerLoopExecution:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         assert result.status == StageStatus.FAIL
         assert runner.call_count == 3
@@ -145,11 +170,13 @@ class TestManagerLoopExecution:
                 Outcome(status=StageStatus.PARTIAL_SUCCESS, notes="close enough"),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(manager_attrs={"manager.max_cycles": "5"})
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         assert result.is_success
         assert runner.call_count == 1
@@ -172,7 +199,7 @@ class TestManagerStopCondition:
                 Outcome(status=StageStatus.SUCCESS),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -182,7 +209,9 @@ class TestManagerStopCondition:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         assert result.status == StageStatus.SUCCESS
         assert runner.call_count == 2
@@ -196,7 +225,7 @@ class TestManagerStopCondition:
                 Outcome(status=StageStatus.PARTIAL_SUCCESS),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "2",
@@ -206,7 +235,9 @@ class TestManagerStopCondition:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         # Guard requires "success" exactly, partial_success doesn't match
         assert result.status == StageStatus.FAIL
@@ -230,7 +261,7 @@ class TestManagerContextRecording:
                 Outcome(status=StageStatus.SUCCESS),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -239,7 +270,7 @@ class TestManagerContextRecording:
         )
         ctx = PipelineContext()
 
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp", engine=runner)
 
         assert ctx.get("manager.cycle_1.status") == "fail"
         assert ctx.get("manager.cycle_2.status") == "success"
@@ -253,11 +284,13 @@ class TestManagerContextRecording:
                 Outcome(status=StageStatus.SUCCESS),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(manager_attrs={"manager.max_cycles": "3"})
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=runner
+        )
 
         assert result.context_updates is not None
         assert result.context_updates["last_stage"] == "manager"
@@ -277,18 +310,15 @@ class TestManagerSteer:
         """When 'steer' in actions, child context gets steering message."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(
-            node_id: str,
-            context: PipelineContext,
-            graph: Graph,
-            logs_root: str,
-        ) -> Outcome:
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(status=StageStatus.FAIL)
-            return Outcome(status=StageStatus.SUCCESS)
+        class _CapturingEngine3:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(status=StageStatus.FAIL)
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
+        _engine = _CapturingEngine3()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -298,7 +328,9 @@ class TestManagerSteer:
         )
         ctx = PipelineContext()
 
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=_engine
+        )
 
         # First cycle: no steering (no prior failure)
         assert captured_contexts[0].get("manager.steering") is None
@@ -312,22 +344,19 @@ class TestManagerSteer:
         """M-15: Steering message includes actual failure details from prior cycle."""
         captured_contexts: list[PipelineContext] = []
 
-        async def capturing_runner(
-            node_id: str,
-            context: PipelineContext,
-            graph: Graph,
-            logs_root: str,
-        ) -> Outcome:
-            captured_contexts.append(context)
-            if len(captured_contexts) < 2:
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason="tests failing: 3 of 10 assertions broken",
-                    notes="Unit tests did not pass",
-                )
-            return Outcome(status=StageStatus.SUCCESS)
+        class _CapturingEngine4:
+            async def run_subgraph(self, node_id, *, context=None):
+                captured_contexts.append(context)
+                if len(captured_contexts) < 2:
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason="tests failing: 3 of 10 assertions broken",
+                        notes="Unit tests did not pass",
+                    )
+                return Outcome(status=StageStatus.SUCCESS)
 
-        handler = ManagerLoopHandler(subgraph_runner=capturing_runner)
+        handler = ManagerLoopHandler()
+        _engine = _CapturingEngine4()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -337,7 +366,9 @@ class TestManagerSteer:
         )
         ctx = PipelineContext()
 
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=_engine
+        )
 
         steering = captured_contexts[1].get("manager.steering")
         assert steering is not None
@@ -357,7 +388,7 @@ class TestManagerEdgeCases:
     @pytest.mark.asyncio
     async def test_no_child_edges_returns_fail(self):
         """Manager with no outgoing edges returns FAIL."""
-        handler = ManagerLoopHandler(subgraph_runner=AsyncMock())
+        handler = ManagerLoopHandler()
         graph = _make_graph(has_child_edge=False)
         ctx = PipelineContext()
 
@@ -368,11 +399,12 @@ class TestManagerEdgeCases:
 
     @pytest.mark.asyncio
     async def test_no_runner_returns_fail(self):
-        """Manager without a subgraph_runner returns FAIL."""
-        handler = ManagerLoopHandler()  # no runner
+        """Manager without engine returns FAIL."""
+        handler = ManagerLoopHandler()  # no engine
         graph = _make_graph(manager_attrs={"manager.max_cycles": "3"})
         ctx = PipelineContext()
 
+        # engine=None (default) -> ManagerLoopHandler requires engine
         result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
 
         assert result.status == StageStatus.FAIL
@@ -384,14 +416,16 @@ class TestManagerEdgeCases:
         # the default is > 10 (the old wrong default).
         call_count = 0
 
-        async def runner_succeeds_on_11(node_id, context, graph, logs_root):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 11:
-                return Outcome(status=StageStatus.SUCCESS)
-            return Outcome(status=StageStatus.FAIL)
+        class _Succeeds11Engine:
+            async def run_subgraph(self, node_id, *, context=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 11:
+                    return Outcome(status=StageStatus.SUCCESS)
+                return Outcome(status=StageStatus.FAIL)
 
-        handler = ManagerLoopHandler(subgraph_runner=runner_succeeds_on_11)
+        handler = ManagerLoopHandler()
+        _engine = _Succeeds11Engine()
         graph = _make_graph(
             manager_attrs={
                 "manager.poll_interval": "0s",
@@ -400,7 +434,9 @@ class TestManagerEdgeCases:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=_engine
+        )
 
         # With old default of 10, this would FAIL. With 1000, it succeeds.
         assert result.status == StageStatus.SUCCESS
@@ -411,15 +447,17 @@ class TestManagerEdgeCases:
         """M-14: When default max_cycles exhausted, failure mentions 1000."""
         call_count = 0
 
-        async def always_fails(node_id, context, graph, logs_root):
-            nonlocal call_count
-            call_count += 1
-            # Succeed on 1001 (never reached if default is 1000)
-            if call_count > 1000:
-                return Outcome(status=StageStatus.SUCCESS)
-            return Outcome(status=StageStatus.FAIL)
+        class _AlwaysFailsEngine:
+            async def run_subgraph(self, node_id, *, context=None):
+                nonlocal call_count
+                call_count += 1
+                # Succeed on 1001 (never reached if default is 1000)
+                if call_count > 1000:
+                    return Outcome(status=StageStatus.SUCCESS)
+                return Outcome(status=StageStatus.FAIL)
 
-        handler = ManagerLoopHandler(subgraph_runner=always_fails)
+        handler = ManagerLoopHandler()
+        _engine = _AlwaysFailsEngine()
         graph = _make_graph(
             manager_attrs={
                 "manager.poll_interval": "0s",
@@ -427,7 +465,9 @@ class TestManagerEdgeCases:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=_engine
+        )
 
         assert result.status == StageStatus.FAIL
         assert "1000" in (result.failure_reason or "")
@@ -436,13 +476,28 @@ class TestManagerEdgeCases:
     @pytest.mark.asyncio
     async def test_child_exception_treated_as_fail(self):
         """If the child runner raises, treat it as a FAIL outcome."""
-        runner = AsyncMock(
-            side_effect=[
-                RuntimeError("boom"),
-                Outcome(status=StageStatus.SUCCESS),
-            ]
-        )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+
+        class ExceptionEngine:
+            def __init__(self):
+                self.call_count = 0
+                self._items = [
+                    RuntimeError("boom"),
+                    Outcome(status=StageStatus.SUCCESS),
+                ]
+
+            async def run_subgraph(self, node_id, *, context=None):
+                self.call_count += 1
+                if self._items:
+                    item = self._items.pop(0)
+                    if isinstance(item, Exception):
+                        raise item
+                    return item
+                return Outcome(
+                    status=StageStatus.FAIL, failure_reason="no more outcomes"
+                )
+
+        exception_engine = ExceptionEngine()
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "5",
@@ -451,11 +506,13 @@ class TestManagerEdgeCases:
         )
         ctx = PipelineContext()
 
-        result = await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        result = await handler.execute(
+            graph.nodes["manager"], ctx, graph, "/tmp", engine=exception_engine
+        )
 
         # First call raises, second succeeds — manager should recover
         assert result.status == StageStatus.SUCCESS
-        assert runner.call_count == 2
+        assert exception_engine.call_count == 2
 
     @pytest.mark.asyncio
     async def test_runner_receives_child_node_id(self):
@@ -465,14 +522,15 @@ class TestManagerEdgeCases:
                 Outcome(status=StageStatus.SUCCESS),
             ]
         )
-        handler = ManagerLoopHandler(subgraph_runner=runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(manager_attrs={"manager.max_cycles": "1"})
         ctx = PipelineContext()
 
-        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp")
+        await handler.execute(graph.nodes["manager"], ctx, graph, "/tmp", engine=runner)
 
         call_args = runner.call_args
-        assert call_args[0][0] == "child_task"  # first positional arg
+        assert call_args is not None, "run_subgraph was not called"
+        assert call_args[0][0] == "child_task"  # node_id
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +544,7 @@ class TestManagerHandlerRegistration:
     def test_registry_resolves_manager_handler(self):
         from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 
-        registry = HandlerRegistry()
+        registry = HandlerRegistry(HandlerContext())
         node = Node(id="mgr", shape="house")
         handler = registry.get(node)
         assert isinstance(handler, ManagerLoopHandler)
@@ -515,7 +573,7 @@ class TestManagerChildDotfile:
         )
 
         inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
-        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "1",
@@ -549,7 +607,7 @@ class TestManagerChildDotfile:
         )
 
         inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
-        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={"manager.max_cycles": "1"},
             graph_attrs={"stack.child_dotfile": str(child_dot)},
@@ -568,13 +626,17 @@ class TestManagerChildDotfile:
 
     @pytest.mark.asyncio
     async def test_no_child_dotfile_uses_inline_runner(self):
-        """Without child_dotfile, inline subgraph_runner is called."""
+        """Without child_dotfile, engine.run_subgraph is called."""
         inline_runner = _make_runner([Outcome(status=StageStatus.SUCCESS)])
-        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(manager_attrs={"manager.max_cycles": "1"})
 
         result = await handler.execute(
-            graph.nodes["manager"], PipelineContext(), graph, "/tmp"
+            graph.nodes["manager"],
+            PipelineContext(),
+            graph,
+            "/tmp",
+            engine=inline_runner,
         )
 
         assert inline_runner.call_count == 1
@@ -603,7 +665,7 @@ class TestManagerChildDotfile:
         )
 
         inline_runner = AsyncMock(return_value=Outcome(status=StageStatus.SUCCESS))
-        handler = ManagerLoopHandler(subgraph_runner=inline_runner)
+        handler = ManagerLoopHandler()
         graph = _make_graph(
             manager_attrs={
                 "manager.max_cycles": "1",
@@ -655,7 +717,7 @@ class TestManagerChildDotfileObservability:
         from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 
         def _registry_factory():
-            return HandlerRegistry(backend=_MockBackend())
+            return HandlerRegistry(HandlerContext(backend=_MockBackend()))
 
         handler = ManagerLoopHandler(handler_registry_factory=_registry_factory)
         graph = _make_graph(

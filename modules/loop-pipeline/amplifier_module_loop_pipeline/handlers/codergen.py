@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
@@ -46,6 +49,8 @@ class CodergenHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Execute a codergen node.
 

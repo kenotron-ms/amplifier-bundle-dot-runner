@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 from ..conditions import evaluate_condition
 from ..context import PipelineContext
@@ -37,13 +37,10 @@ from ..dot_parser import parse_dot
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
-# Type alias matching the ParallelHandler's SubgraphRunner convention.
-SubgraphRunner = Callable[
-    [str, PipelineContext, Graph, str],
-    Coroutine[Any, Any, Outcome],
-]
+logger = logging.getLogger(__name__)
 
 # Pattern for parsing duration strings like "45s", "2m", "500ms".
 _DURATION_RE = re.compile(
@@ -104,13 +101,11 @@ class ManagerLoopHandler:
 
     def __init__(
         self,
-        subgraph_runner: SubgraphRunner | None = None,
         backend: Any = None,
         hooks: Any = None,
         cancel_event: Any = None,
         handler_registry_factory: Any | None = None,
     ) -> None:
-        self._runner = subgraph_runner
         self._backend = backend
         self._hooks = hooks
         self._cancel_event = cancel_event
@@ -123,6 +118,8 @@ class ManagerLoopHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Execute a manager loop node.
 
@@ -152,16 +149,16 @@ class ManagerLoopHandler:
         )
 
         if not child_dotfile:
-            # Without child_dotfile, require outgoing edges and runner
+            # Without child_dotfile, require outgoing edges and engine
             if not child_edges:
                 return Outcome(
                     status=StageStatus.FAIL,
                     failure_reason="Manager loop has no child to supervise",
                 )
-            if self._runner is None:
+            if engine is None:
                 return Outcome(
                     status=StageStatus.FAIL,
-                    failure_reason="Manager loop requires a subgraph_runner",
+                    failure_reason="ManagerLoopHandler requires engine to be passed via execute(engine=...)",
                 )
 
         logger.info(
@@ -201,9 +198,9 @@ class ManagerLoopHandler:
                         child_dotfile, child_context, graph, logs_root, node.id, cycle
                     )
                 else:
-                    assert self._runner is not None
-                    child_outcome = await self._runner(
-                        child_start_id, child_context, graph, logs_root
+                    assert engine is not None
+                    child_outcome = await engine.run_subgraph(
+                        child_start_id, context=child_context
                     )
             except Exception as exc:
                 logger.warning(
@@ -316,10 +313,14 @@ class ManagerLoopHandler:
         if self._handler_registry_factory is not None:
             child_registry = self._handler_registry_factory()
         else:
+            from .context import HandlerContext
+
             child_registry = HandlerRegistry(
-                backend=self._backend,
-                hooks=self._hooks,
-                cancel_event=self._cancel_event,
+                HandlerContext(
+                    backend=self._backend,
+                    hooks=self._hooks,
+                    cancel_event=self._cancel_event,
+                )
             )
         child_engine = PipelineEngine(
             graph=child_graph,

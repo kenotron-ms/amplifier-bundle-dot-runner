@@ -8,7 +8,12 @@ Spec coverage: HEXIT-001–003, Section 4.4.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..context import PipelineContext
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 from ..graph import Graph, Node
 from ..outcome import Outcome, StageStatus
 
@@ -22,6 +27,8 @@ class ExitHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Return SUCCESS immediately."""
         return Outcome(status=StageStatus.SUCCESS, notes=f"Exit node: {node.id}")

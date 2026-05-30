@@ -22,7 +22,8 @@ from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
-from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 # ---------------------------------------------------------------------------
@@ -68,32 +69,17 @@ async def _make_wired_engine(
     backend: object,
     logs_root: str,
 ) -> PipelineEngine:
-    """Create a PipelineEngine with subgraph_runner wired to engine._run_from.
+    """Create a PipelineEngine. Engine passes itself to handlers via execute(engine=self).
 
-    This matches the orchestrator wiring in __init__.py (step 8–10) so that
-    ParallelHandler can execute branches as proper subgraphs.
+    No subgraph_runner closure needed — ParallelHandler receives the engine
+    directly via execute(engine=...) and calls engine.run_subgraph().
     """
-    # Step 1: create engine with a temp registry (no subgraph_runner yet)
-    engine = PipelineEngine(
+    return PipelineEngine(
         graph=graph,
         context=PipelineContext(),
-        handler_registry=HandlerRegistry(backend=backend),
+        handler_registry=HandlerRegistry(HandlerContext(backend=backend)),
         logs_root=logs_root,
     )
-
-    # Step 2: build subgraph_runner closure over the real engine._run_from
-    async def subgraph_runner(
-        node_id: str,
-        branch_context: PipelineContext,
-        _graph: Graph,
-        _logs_root: str,
-    ) -> Outcome:
-        return await engine._run_from(node_id, context=branch_context)
-
-    # Step 3: replace registry with one that has subgraph_runner wired in
-    registry = HandlerRegistry(backend=backend, subgraph_runner=subgraph_runner)
-    engine.handler_registry = registry
-    return engine
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +251,7 @@ async def test_non_component_multi_edge_fanout_still_works(tmp_path):
 
     # No subgraph_runner needed for box nodes (uses engine-level fan-out)
     context = PipelineContext()
-    registry = HandlerRegistry(backend=TrackingBackend())
+    registry = HandlerRegistry(HandlerContext(backend=TrackingBackend()))
     engine = PipelineEngine(
         graph=graph,
         context=context,

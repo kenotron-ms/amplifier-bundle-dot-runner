@@ -662,7 +662,9 @@ def test_ellipse_removed_from_shape_to_handler():
     """ellipse shape must NOT be in SHAPE_TO_HANDLER (removed — was never used)."""
     from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER
 
-    assert "ellipse" not in SHAPE_TO_HANDLER, "ellipse should be removed from SHAPE_TO_HANDLER"
+    assert "ellipse" not in SHAPE_TO_HANDLER, (
+        "ellipse should be removed from SHAPE_TO_HANDLER"
+    )
 
 
 def test_diamond_maps_to_conditional_handler():

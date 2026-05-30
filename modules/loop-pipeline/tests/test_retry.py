@@ -23,7 +23,13 @@ class MockHandler:
         self.call_count = 0
 
     async def execute(
-        self, node: Node, context: PipelineContext, graph: Graph, logs_root: str
+        self,
+        node: Node,
+        context: PipelineContext,
+        graph: Graph,
+        logs_root: str,
+        *,
+        engine=None,
     ) -> Outcome:
         self.call_count += 1
         if self._outcomes:
@@ -43,7 +49,13 @@ class RaisingHandler:
         self.call_count = 0
 
     async def execute(
-        self, node: Node, context: PipelineContext, graph: Graph, logs_root: str
+        self,
+        node: Node,
+        context: PipelineContext,
+        graph: Graph,
+        logs_root: str,
+        *,
+        engine=None,
     ) -> Outcome:
         self.call_count += 1
         if self.call_count <= self._fail_count:
@@ -309,7 +321,7 @@ async def test_retry_emits_retrying_event():
     call_count = 0
 
     class RetryThenSucceedHandler:
-        async def execute(self, node, context, graph, logs_root):
+        async def execute(self, node, context, graph, logs_root, *, engine=None):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
@@ -449,7 +461,7 @@ async def test_terminal_exception_not_retried():
         def __init__(self):
             self.call_count = 0
 
-        async def execute(self, node, context, graph, logs_root):
+        async def execute(self, node, context, graph, logs_root, *, engine=None):
             self.call_count += 1
             if self.call_count == 1:
                 raise ValueError("invalid config")
@@ -474,7 +486,7 @@ async def test_retryable_exception_is_retried():
         def __init__(self):
             self.call_count = 0
 
-        async def execute(self, node, context, graph, logs_root):
+        async def execute(self, node, context, graph, logs_root, *, engine=None):
             self.call_count += 1
             if self.call_count == 1:
                 raise TimeoutError("connection timed out")

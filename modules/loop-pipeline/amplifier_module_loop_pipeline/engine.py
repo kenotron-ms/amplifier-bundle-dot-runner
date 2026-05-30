@@ -21,8 +21,14 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactStore
-from .checkpoint import Checkpoint, load_checkpoint, save_checkpoint
+from .checkpoint import (
+    Checkpoint,
+    CheckpointMismatchError,
+    load_checkpoint,
+    save_checkpoint,
+)
 from .context import PipelineContext
+from .run_identity import RunIdentity
 from .edge_selection import select_all_matching_edges, select_edge
 from .graph import Graph, Node
 from .handlers import HandlerRegistry
@@ -148,7 +154,7 @@ class PipelineEngine:
 
         # Bound total pipeline steps to prevent infinite loops caused by
         # condition-routing bugs or missing edge guards. Matches the safety
-        # bound used in the subgraph runner (_run_from).
+        # bound used in the subgraph runner (run_subgraph).
         max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
         steps = 0
 
@@ -258,9 +264,12 @@ class PipelineEngine:
                     self.graph,
                 )
                 if edge is None:
-                    fail_outcome = Outcome(
-                        status=StageStatus.FAIL,
-                        failure_reason=f"No matching edge from resumed node '{current_node.id}'",
+                    fail_outcome = self.terminate_pipeline(
+                        node_id=current_node.id,
+                        upstream_outcome=None,
+                        termination_reason=(
+                            f"No matching edge from resumed node '{current_node.id}'"
+                        ),
                     )
                     await self._emit(
                         PIPELINE_ERROR,
@@ -349,9 +358,10 @@ class PipelineEngine:
                         failure_routing_retries += 1
                         current_node = retry_node
                         continue
-                    fail_outcome = Outcome(
-                        status=StageStatus.FAIL,
-                        failure_reason=(
+                    fail_outcome = self.terminate_pipeline(
+                        node_id=current_node.id,
+                        upstream_outcome=routing_outcome,
+                        termination_reason=(
                             f"No matching edge from skipped node '{current_node.id}'"
                         ),
                     )
@@ -418,6 +428,7 @@ class PipelineEngine:
                                 self.logs_root,
                                 retry_policy,
                                 hooks=self.hooks,
+                                engine=self,
                             )
                     except asyncio.TimeoutError:
                         node_duration_ms = (time.monotonic() - node_start_time) * 1000
@@ -447,6 +458,7 @@ class PipelineEngine:
                         self.logs_root,
                         retry_policy,
                         hooks=self.hooks,
+                        engine=self,
                     )
             node_duration_ms = (time.monotonic() - node_start_time) * 1000
 
@@ -586,7 +598,7 @@ class PipelineEngine:
             #
             # BUG G FIX: Component nodes (shape=component) are handled by
             # ParallelHandler, which fans out ALL outgoing branches internally
-            # via the subgraph_runner (_run_from) and populates parallel.results
+            # via run_subgraph and populates parallel.results
             # in context.  The engine must NOT re-fan-out via
             # _execute_parallel_fan_out after the handler returns — that would
             # execute each branch a second time.
@@ -687,9 +699,12 @@ class PipelineEngine:
                     current_node = retry_node
                     continue
 
-                fail_outcome = Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason=f"No matching edge from node '{current_node.id}'",
+                fail_outcome = self.terminate_pipeline(
+                    node_id=current_node.id,
+                    upstream_outcome=outcome,
+                    termination_reason=(
+                        f"No matching edge from node '{current_node.id}'"
+                    ),
                 )
                 await self._emit(
                     PIPELINE_ERROR,
@@ -735,7 +750,7 @@ class PipelineEngine:
             # Step 7: Advance to next node
             current_node = self.graph.nodes[edge.to_node]
 
-    async def _run_from(
+    async def run_subgraph(
         self,
         start_node_id: str,
         *,
@@ -796,7 +811,7 @@ class PipelineEngine:
             else:
                 try:
                     outcome = await handler.execute(
-                        current_node, ctx, self.graph, self.logs_root
+                        current_node, ctx, self.graph, self.logs_root, engine=self
                     )
                 except Exception as exc:
                     return Outcome(
@@ -826,6 +841,10 @@ class PipelineEngine:
             status=StageStatus.FAIL,
             failure_reason=f"Subgraph exceeded {max_steps} steps (safety bound)",
         )
+
+    # Backward compat: _run_from was the pre-refactor private method name.
+    # Will be removed in a future release.
+    _run_from = run_subgraph
 
     def _initialize_context(self, goal: str | None) -> None:
         """Mirror graph attributes into context.
@@ -968,7 +987,30 @@ class PipelineEngine:
 
         Returns True if a checkpoint was loaded (resume mode), False otherwise.
 
-        Spec Section 5.3: Resume behavior.
+        Raises CheckpointMismatchError if the checkpoint belongs to a different
+        graph than the one currently running.  This is an intentional hard-fail:
+        silently restarting would re-execute side-effecting nodes (git pushes,
+        branch creates, file writes) that have already been applied.
+
+        Three checkpoint formats are handled:
+
+        1. Pre-identity (no ``identity`` field, no ``graph_fingerprint``):
+           One-time migration — discard with an info-level log message; treat as
+           "no checkpoint exists."  NOT a hard-fail: these checkpoints predate
+           the identity guard entirely.
+
+        2. Wave-0 #252 format (top-level ``graph_fingerprint`` string):
+           Promoted into a RunIdentity and checked normally.  Mismatch → hard-fail.
+
+        3. T2.4 format (``identity`` dict):
+           Standard path.  Mismatch → hard-fail.
+
+        Resume re-runs are scoped to nodes after the last completed_node.
+        Idempotency of side-effecting handlers is the handler's responsibility,
+        NOT the engine's.  See ``docs/designs/RECURRING-BUG-CLASSES.md``
+        Species S3 for context.
+
+        Spec Section 5.3: Resume behavior, T2.4 (RunIdentity hard-fail).
         """
         if not os.path.exists(self._checkpoint_path):
             return False
@@ -978,6 +1020,37 @@ class PipelineEngine:
         except (FileNotFoundError, KeyError, ValueError):
             logger.warning("Failed to load checkpoint, starting fresh")
             return False
+
+        # T2.4: Identity guard — must run BEFORE restoring context.
+        current_identity = RunIdentity.from_graph(self.graph)
+
+        if cp.identity is None:
+            # Pre-identity format (no identity field, no graph_fingerprint).
+            # This is a one-time migration: discard silently, start fresh.
+            # NOT a hard-fail — these checkpoints predate the identity guard.
+            logger.info(
+                "Pre-identity checkpoint format detected at %s; discarding "
+                "(one-time migration — new checkpoints will embed RunIdentity).",
+                self._checkpoint_path,
+            )
+            return False
+
+        if cp.identity != current_identity:
+            # Hard-fail: refuse to resume a checkpoint from a different graph.
+            # Silently restarting would re-apply side-effecting nodes.
+            raise CheckpointMismatchError(
+                f"Checkpoint identity mismatch at {self._checkpoint_path}.\n"
+                f"  Checkpoint identity : {cp.identity.graph_fingerprint[:12]}...\n"
+                f"  Current graph       : {current_identity.graph_fingerprint[:12]}...\n"
+                f"\n"
+                f"The pipeline graph has changed since this checkpoint was written.\n"
+                f"To avoid double-applying side-effecting nodes (git pushes,\n"
+                f"branch creation, file writes), resume is REFUSED.\n"
+                f"\n"
+                f"To start fresh: delete {self._checkpoint_path} and re-run."
+            )
+
+        # Identity matches — proceed with context restoration.
 
         # Restore context from checkpoint
         for key, value in cp.context_snapshot.items():
@@ -1045,6 +1118,7 @@ class PipelineEngine:
             node_outcomes=serialized_outcomes,
             timestamp=datetime.now(timezone.utc).isoformat(),
             logs=self.context.get_logs(),  # L-7: include logs in checkpoint
+            identity=RunIdentity.from_graph(self.graph),  # T2.4: scope to this graph
         )
         save_checkpoint(cp, self._checkpoint_path)
 
@@ -1152,6 +1226,7 @@ class PipelineEngine:
                     self.logs_root,
                     retry_policy,
                     hooks=self.hooks,
+                    engine=self,
                 )
             except Exception as exc:
                 outcome = Outcome(
@@ -1295,6 +1370,48 @@ class PipelineEngine:
         if target_id and target_id in self.graph.nodes:
             return self.graph.nodes[target_id]
         return None
+
+    def terminate_pipeline(
+        self,
+        *,
+        node_id: str,
+        upstream_outcome: Outcome | None,
+        termination_reason: str,
+    ) -> Outcome:
+        """The ONLY API for routing-termination Outcome construction.
+
+        Threads ``upstream_outcome.failure_reason`` automatically.  If no
+        upstream reason exists (or upstream_outcome is None), the routing
+        message becomes the failure_reason — today's behavior preserved for
+        outcome-less terminations.
+
+        Invariants (enforced by test_terminate_pipeline.py):
+        - Never raises.  (Totality test asserts this across full input space.)
+        - Preserves ``upstream_outcome.failure_reason`` as failure_reason
+          when present; routing message lives in notes.
+        - If upstream had no reason: failure_reason = routing message, notes = None.
+
+        Args:
+            node_id: ID of the node where routing terminated.  Not used in
+                result construction but available for caller context / logging.
+            upstream_outcome: The handler's outcome (or routing_outcome from
+                skip-path), or None for resume-path where no handler ran.
+            termination_reason: Human-readable routing message
+                (e.g. "No matching edge from node 'X'").
+
+        Returns:
+            An Outcome with status=FAIL and the threaded failure_reason / notes.
+
+        Sole-caller guard: the AST test in test_terminate_pipeline.py asserts
+        that no top-level Outcome construction with a "No matching edge from"
+        failure_reason pattern exists outside this method body.
+        """
+        upstream_reason = upstream_outcome.failure_reason if upstream_outcome else None
+        return Outcome(
+            status=StageStatus.FAIL,
+            failure_reason=upstream_reason or termination_reason,
+            notes=termination_reason if upstream_reason else None,
+        )
 
     # -- R12 M1-M4 helpers ---------------------------------------------------
 

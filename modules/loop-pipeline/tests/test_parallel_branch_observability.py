@@ -72,10 +72,13 @@ def _make_fanout_graph(branch_ids: list[str]) -> tuple[Node, Graph]:
     return par_node, graph
 
 
-async def _success_runner(
-    node_id: str, context: PipelineContext, graph: Graph, logs_root: str
-) -> Outcome:
-    return Outcome(status=StageStatus.SUCCESS, notes=f"{node_id} ran")
+class _SuccessEngine:
+    """Mock engine that always returns SUCCESS for any subgraph execution."""
+
+    async def run_subgraph(
+        self, node_id: str, *, context: PipelineContext | None = None
+    ) -> Outcome:
+        return Outcome(status=StageStatus.SUCCESS, notes=f"{node_id} ran")
 
 
 # ---------------------------------------------------------------------------
@@ -89,9 +92,11 @@ async def test_branch_nodes_emit_pipeline_node_start_events() -> None:
     hooks = FakeHooks()
     branch_ids = ["variant_opus", "variant_sonnet", "variant_haiku"]
     par_node, graph = _make_fanout_graph(branch_ids)
-    handler = ParallelHandler(subgraph_runner=_success_runner, hooks=hooks)
+    handler = ParallelHandler(hooks=hooks)
 
-    await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=_SuccessEngine()
+    )
 
     start_events = hooks.events_of_type(PIPELINE_NODE_START)
     started_node_ids = {e["node_id"] for e in start_events}
@@ -108,9 +113,11 @@ async def test_branch_nodes_emit_pipeline_node_complete_events() -> None:
     hooks = FakeHooks()
     branch_ids = ["variant_opus", "variant_sonnet", "variant_haiku"]
     par_node, graph = _make_fanout_graph(branch_ids)
-    handler = ParallelHandler(subgraph_runner=_success_runner, hooks=hooks)
+    handler = ParallelHandler(hooks=hooks)
 
-    await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=_SuccessEngine()
+    )
 
     complete_events = hooks.events_of_type(PIPELINE_NODE_COMPLETE)
     completed_node_ids = {e["node_id"] for e in complete_events}
@@ -127,15 +134,16 @@ async def test_branch_node_complete_carries_correct_status() -> None:
     hooks = FakeHooks()
     par_node, graph = _make_fanout_graph(["good_branch", "bad_branch"])
 
-    async def mixed_runner(
-        node_id: str, context: PipelineContext, graph: Graph, logs_root: str
-    ) -> Outcome:
-        if node_id == "bad_branch":
-            return Outcome(status=StageStatus.FAIL, failure_reason="bad")
-        return Outcome(status=StageStatus.SUCCESS, notes="ok")
+    class MixedEngine:
+        async def run_subgraph(self, node_id, *, context=None):
+            if node_id == "bad_branch":
+                return Outcome(status=StageStatus.FAIL, failure_reason="bad")
+            return Outcome(status=StageStatus.SUCCESS, notes="ok")
 
-    handler = ParallelHandler(subgraph_runner=mixed_runner, hooks=hooks)
-    await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    handler = ParallelHandler(hooks=hooks)
+    await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=MixedEngine()
+    )
 
     complete_events = hooks.events_of_type(PIPELINE_NODE_COMPLETE)
     by_node = {e["node_id"]: e for e in complete_events}
@@ -148,9 +156,11 @@ async def test_branch_node_events_carry_via_parallel_marker() -> None:
     """Branch node_start and node_complete events include via_parallel=True (Fix #1)."""
     hooks = FakeHooks()
     par_node, graph = _make_fanout_graph(["b0"])
-    handler = ParallelHandler(subgraph_runner=_success_runner, hooks=hooks)
+    handler = ParallelHandler(hooks=hooks)
 
-    await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=_SuccessEngine()
+    )
 
     start_events = hooks.events_of_type(PIPELINE_NODE_START)
     assert start_events, "Expected at least one pipeline:node_start event"
@@ -175,9 +185,11 @@ async def test_branch_node_complete_carries_duration_ms() -> None:
     hooks = FakeHooks()
     branch_ids = ["b0", "b1"]
     par_node, graph = _make_fanout_graph(branch_ids)
-    handler = ParallelHandler(subgraph_runner=_success_runner, hooks=hooks)
+    handler = ParallelHandler(hooks=hooks)
 
-    await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=_SuccessEngine()
+    )
 
     complete_events = hooks.events_of_type(PIPELINE_NODE_COMPLETE)
     # Guard: we must have one event per branch (not vacuously passing on empty list)
@@ -196,9 +208,11 @@ async def test_branch_node_events_ordered_within_parallel_envelope() -> None:
     """Branch node_start/complete appear after parallel_started and before parallel_completed."""
     hooks = FakeHooks()
     par_node, graph = _make_fanout_graph(["b1", "b2"])
-    handler = ParallelHandler(subgraph_runner=_success_runner, hooks=hooks)
+    handler = ParallelHandler(hooks=hooks)
 
-    await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=_SuccessEngine()
+    )
 
     names = hooks.event_names()
 
@@ -230,8 +244,10 @@ async def test_branch_node_events_ordered_within_parallel_envelope() -> None:
 async def test_no_branch_events_when_no_hooks() -> None:
     """ParallelHandler without hooks must not raise — fix is a no-op when hooks=None."""
     par_node, graph = _make_fanout_graph(["b0", "b1"])
-    handler = ParallelHandler(subgraph_runner=_success_runner, hooks=None)
+    handler = ParallelHandler(hooks=None)
 
     # Should run without raising
-    outcome = await handler.execute(par_node, PipelineContext(), graph, "/tmp/logs")
+    outcome = await handler.execute(
+        par_node, PipelineContext(), graph, "/tmp/logs", engine=_SuccessEngine()
+    )
     assert outcome.is_success

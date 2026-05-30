@@ -15,7 +15,10 @@ Ties are broken by node ID (lexicographic ascending).
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..engine import PipelineEngine
 
 from ..context import PipelineContext
 from ..graph import Graph, Node
@@ -63,6 +66,8 @@ class FanInHandler:
         context: PipelineContext,
         graph: Graph,
         logs_root: str,
+        *,
+        engine: "PipelineEngine | None" = None,
     ) -> Outcome:
         """Evaluate parallel results and select the best candidate.
 

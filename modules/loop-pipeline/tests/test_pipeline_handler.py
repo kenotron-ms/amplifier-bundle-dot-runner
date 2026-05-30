@@ -16,6 +16,7 @@ from amplifier_module_loop_pipeline.handlers.pipeline import (
     resolve_dot_path,
 )
 from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
 
 class _MockBackend:
@@ -30,7 +31,7 @@ def _make_registry_factory():
     from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 
     def factory():
-        return HandlerRegistry(backend=_MockBackend())
+        return HandlerRegistry(HandlerContext(backend=_MockBackend()))
 
     return factory
 
@@ -409,7 +410,7 @@ class TestPipelineHandlerRegistration:
         """Node with shape=folder resolves to PipelineHandler instance."""
         from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 
-        registry = HandlerRegistry()
+        registry = HandlerRegistry(HandlerContext())
         node = Node(id="sub", shape="folder")
         handler = registry.get(node)
         assert isinstance(handler, PipelineHandler)
@@ -418,7 +419,7 @@ class TestPipelineHandlerRegistration:
         """Node with type='pipeline' resolves to PipelineHandler instance."""
         from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 
-        registry = HandlerRegistry()
+        registry = HandlerRegistry(HandlerContext())
         node = Node(id="sub", shape="box", type="pipeline")
         handler = registry.get(node)
         assert isinstance(handler, PipelineHandler)
@@ -449,7 +450,7 @@ class TestPipelineHandlerE2E:
         graph.source_dir = FIXTURES_DIR
 
         context = PipelineContext()
-        registry = HandlerRegistry(backend=_MockBackend())
+        registry = HandlerRegistry(HandlerContext(backend=_MockBackend()))
         logs_root = str(tmp_path / "logs")
 
         engine = PipelineEngine(
@@ -477,7 +478,7 @@ class TestPipelineHandlerE2E:
         graph.source_dir = FIXTURES_DIR
 
         context = PipelineContext()
-        registry = HandlerRegistry()
+        registry = HandlerRegistry(HandlerContext())
         logs_root = str(tmp_path / "logs")
 
         engine = PipelineEngine(
@@ -532,7 +533,7 @@ class TestInterviewerForwarding:
         from amplifier_module_loop_pipeline.interviewer import AutoApproveInterviewer
 
         interviewer = AutoApproveInterviewer()
-        registry = HandlerRegistry(interviewer=interviewer)
+        registry = HandlerRegistry(HandlerContext(interviewer=interviewer))
 
         pipeline_handler = registry._handlers["pipeline"]
         assert isinstance(pipeline_handler, PipelineHandler)
@@ -554,7 +555,7 @@ class TestInterviewerForwarding:
         from amplifier_module_loop_pipeline.interviewer import AutoApproveInterviewer
 
         interviewer = AutoApproveInterviewer()
-        registry = HandlerRegistry(interviewer=interviewer)
+        registry = HandlerRegistry(HandlerContext(interviewer=interviewer))
 
         branch_registry = registry.clone_for_branch()
 
@@ -657,7 +658,7 @@ digraph parent_e2e {
         graph.source_dir = str(tmp_path)
 
         context = PipelineContext()
-        registry = HandlerRegistry(interviewer=AutoApproveInterviewer())
+        registry = HandlerRegistry(HandlerContext(interviewer=AutoApproveInterviewer()))
         logs_root = str(tmp_path / "logs")
 
         engine = PipelineEngine(
@@ -963,100 +964,88 @@ class TestChildRegistrySubgraphRunnerWiring:
     """Regression tests for issue #249.
 
     PipelineHandler.execute() was building the child HandlerRegistry without
-    passing subgraph_runner, leaving ManagerLoopHandler._runner and
-    ParallelHandler._runner as None.  Any child node with shape=house or
-    shape=component inside a shape=folder sub-pipeline therefore failed
-    immediately with "Manager loop requires a subgraph_runner".
+    any mechanism for child manager/parallel handlers to execute subgraphs.
+    Any child node with shape=house or shape=component inside a shape=folder
+    sub-pipeline therefore failed immediately with an error.
+
+    After the refactor (issue #250), the engine passes itself to each handler
+    via execute(engine=...).  ManagerLoopHandler and ParallelHandler use
+    engine.run_subgraph() directly — no subgraph_runner kwarg or _runner field
+    remains.  The original implementation check (._runner is not None) is
+    replaced by a behavioral check: the manager node in a child pipeline must
+    succeed end-to-end.
     """
 
     @pytest.mark.asyncio
     async def test_child_registry_has_subgraph_runners_wired(self, tmp_path):
-        """Child HandlerRegistry must have subgraph_runner on both ManagerLoopHandler and ParallelHandler.
+        """Child manager/parallel nodes inside a folder pipeline must be able to run subgraphs.
 
-        Pins the internal contract: after PipelineHandler.execute() builds the
-        child HandlerRegistry (the else-branch, no factory), both
-        ``_handlers["stack.manager_loop"]._runner`` and
-        ``_handlers["parallel"]._runner`` must not be None.
+        After the #250 refactor, this is verified behaviorally: the pipeline
+        completes successfully, proving that ManagerLoopHandler received the
+        engine and called engine.run_subgraph() without error.
 
-        Without the fix both are None, causing immediate FAIL on any child node
-        with shape=house or shape=component (issue #249).
+        Preserving tracking reference: issue #249 root cause was missing wiring.
+        The #250 refactor eliminates the wiring step entirely — engine carries
+        itself, so there is nothing to forget to wire.
         """
         from amplifier_module_loop_pipeline.engine import PipelineEngine
         from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 
         graph = _make_parent_graph_with_manager_child(tmp_path)
-
-        # Spy: capture every HandlerRegistry instance constructed during the run.
-        instances: list = []
-        original_init = HandlerRegistry.__init__
-
-        def _spy_init(self_reg, **kw):
-            original_init(self_reg, **kw)
-            instances.append(self_reg)
-
-        HandlerRegistry.__init__ = _spy_init
-
         context = PipelineContext()
         logs_root = str(tmp_path / "logs")
 
-        try:
-            # Build parent engine canonically (mirrors PipelineOrchestrator.execute()).
-            engine = PipelineEngine(
-                graph=graph,
-                context=context,
-                handler_registry=HandlerRegistry(),  # temp [0]
-                logs_root=logs_root,
-            )
-
-            async def _subgraph_runner(node_id, branch_context, _graph, _logs_root):
-                return await engine._run_from(node_id, context=branch_context)
-
-            engine.handler_registry = HandlerRegistry(  # real [1]
-                subgraph_runner=_subgraph_runner,
-                backend=_MockBackend(),
-            )
-
-            # Run: PipelineHandler.execute() will be called for "sub", building
-            # the child registry [2].  We don't care whether the full run
-            # succeeds — registry construction already happened by this point.
-            await engine.run(goal="test wiring")
-        except Exception:
-            pass  # Registry construction already happened; state check below is valid.
-        finally:
-            HandlerRegistry.__init__ = original_init
-
-        # Before fix: [0]=temp parent, [1]=real parent, [2]=child without runner  → runner=None
-        # After fix:  [0]=temp parent, [1]=real parent, [2]=child WITH runner wired → runner=SET
-        # In both cases len==3 and instances[-1]==instances[2] is the child registry.
-        assert len(instances) >= 3, (
-            f"Expected >=3 HandlerRegistry instances (temp+real parent + child), "
-            f"got {len(instances)}.  PipelineHandler.execute() may not have been reached."
+        # Canonical construction — no dance, no closure, no rewire.
+        engine = PipelineEngine(
+            graph=graph,
+            context=context,
+            handler_registry=HandlerRegistry(HandlerContext(backend=_MockBackend())),
+            logs_root=logs_root,
         )
-        child_registry = instances[2]
+        outcome = await engine.run(goal="test wiring")
 
-        mgr_runner = child_registry._handlers["stack.manager_loop"]._runner
-        par_runner = child_registry._handlers["parallel"]._runner
+        # Behavioral assertion: the pipeline must succeed end-to-end.
+        # If ManagerLoopHandler failed with "requires engine", outcome would be FAIL.
+        pipeline_handler = engine.handler_registry._handlers["pipeline"]
+        subgraph_run = pipeline_handler._subgraph_runs.get("sub")
+        assert subgraph_run is not None, (
+            "PipelineHandler did not record a subgraph run for node 'sub' — "
+            "the parent engine may not have reached the folder node"
+        )
 
-        assert mgr_runner is not None, (
-            "Child HandlerRegistry ManagerLoopHandler._runner is None — "
-            "subgraph_runner not wired (issue #249)"
+        mgr_outcome_data = subgraph_run["node_outcomes"].get("mgr")
+        assert mgr_outcome_data is not None, (
+            "Manager node 'mgr' not found in child subgraph node_outcomes"
         )
-        assert par_runner is not None, (
-            "Child HandlerRegistry ParallelHandler._runner is None — "
-            "subgraph_runner not wired (issue #249)"
+
+        # Key regression assertion (issue #249): manager must NOT fail with missing-engine error.
+        assert (
+            mgr_outcome_data["failure_reason"]
+            != "ManagerLoopHandler requires engine to be passed via execute(engine=...)"
+        ), (
+            "Manager node failed with engine-not-wired error — "
+            "the #250 refactor should have eliminated this failure mode"
         )
+
+        assert mgr_outcome_data["status"] == "success", (
+            f"Manager node did not succeed — status={mgr_outcome_data['status']!r}, "
+            f"failure_reason={mgr_outcome_data.get('failure_reason')!r}"
+        )
+        assert outcome.status == StageStatus.SUCCESS
 
     @pytest.mark.asyncio
     async def test_child_manager_node_runner_is_invoked(self, tmp_path):
-        """E2E: parent folder -> child house manager must invoke its subgraph_runner.
+        """E2E: parent folder -> child house manager must invoke its subgraph runner.
 
-        Before the fix:
+        Before the fix (issue #249):
           child manager:  FAIL "Manager loop requires a subgraph_runner"
           parent outcome: FAIL (edge selection re-surfaces child failure)
 
-        After the fix: child manager is wired, its subgraph_runner is invoked
-        (mock backend handles the branch work node), and the pipeline completes
-        with SUCCESS end-to-end.
+        After the fix (issue #249) and refactor (issue #250):
+          child manager receives engine via execute(engine=...), calls
+          engine.run_subgraph(), the mock backend handles the branch work
+          node, manager completes in 1 cycle, child pipeline succeeds,
+          and the parent pipeline succeeds end-to-end.
 
         Spec: issue #249 regression test.
         """
@@ -1067,20 +1056,12 @@ class TestChildRegistrySubgraphRunnerWiring:
         context = PipelineContext()
         logs_root = str(tmp_path / "logs")
 
-        # Build parent engine canonically (temp -> closure -> real registry).
+        # Canonical construction — no dance, no closure, no rewire.
         engine = PipelineEngine(
             graph=graph,
             context=context,
-            handler_registry=HandlerRegistry(),  # temp
+            handler_registry=HandlerRegistry(HandlerContext(backend=_MockBackend())),
             logs_root=logs_root,
-        )
-
-        async def _subgraph_runner(node_id, branch_context, _graph, _logs_root):
-            return await engine._run_from(node_id, context=branch_context)
-
-        engine.handler_registry = HandlerRegistry(
-            subgraph_runner=_subgraph_runner,
-            backend=_MockBackend(),
         )
 
         outcome = await engine.run(goal="test child manager runner")
@@ -1100,7 +1081,10 @@ class TestChildRegistrySubgraphRunnerWiring:
         )
 
         # Key regression assertion: manager must NOT fail with the missing-runner error.
-        assert mgr_outcome_data["failure_reason"] != "Manager loop requires a subgraph_runner", (
+        assert (
+            mgr_outcome_data["failure_reason"]
+            != "Manager loop requires a subgraph_runner"
+        ), (
             "Manager node failed with 'Manager loop requires a subgraph_runner' — "
             "subgraph_runner not wired in child HandlerRegistry (issue #249)"
         )
