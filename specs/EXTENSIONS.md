@@ -278,3 +278,39 @@ isolation is a natural consequence of the backend clone resetting mutable state.
 continuity regardless of branching, so no existing pipeline could have been relying on
 cross-branch conversation sharing. Authors who intend a shared thread to carry history across
 nodes must place those nodes in the same sequential path (not in sibling parallel branches).
+
+---
+
+## 14. `allow_partial` Applies on Node Timeout, Not Only Retry Exhaustion
+
+**What:** The canonical spec scopes `allow_partial` (§2.6) to a single trigger: "Accept
+PARTIAL_SUCCESS when retries are exhausted instead of failing" (§5.2 retry pseudocode). We
+extend it to a second trigger: when a node with `allow_partial` set exceeds its `timeout`
+(§2.6), the engine yields `PARTIAL_SUCCESS` instead of `FAIL`. Because `PARTIAL_SUCCESS` is
+success-class for routing (§5.2), the graph continues along the timed-out node's unconditional
+edge rather than terminating the run. Without `allow_partial`, a timeout still produces `FAIL`
+and flows through normal failure routing (§3.7) — unchanged.
+
+**Why:** For iterative loops (a node meant to make incremental progress across many
+executions, with progress recorded in context/files), a single slow iteration hitting its
+timeout would otherwise tear down the entire run via §3.7 termination. `allow_partial` is the
+author's explicit opt-in that an incomplete-but-progressing node is "good enough to proceed" —
+the same intent the spec already honors for retry exhaustion and that §4 honors for goal gates.
+Applying it on the timeout path extends that intent to the one other place a node can fail to
+fully complete. The behavior is gated entirely behind the opt-in attribute; nodes without it
+see no change.
+
+**Note on attribute spelling:** This extension also corrects a string-vs-bool defect at the
+`allow_partial` call sites. The DOT parser coerces *unquoted* `allow_partial=true` to bool
+`True` but leaves *quoted* `allow_partial="true"` as the string `"true"`; the call sites
+previously tested `attrs.get("allow_partial") is True`, which never matched the quoted form —
+so `allow_partial` was inert for the common quoted spelling on both the retry-exhaustion and
+timeout paths. Both call sites now accept bool `True` or the string `"true"`, so both DOT
+spellings behave identically (consistent with extension §1, BareValue, where quoted and
+unquoted values are equivalent).
+
+**Compatibility:** Fully backward-compatible. Nodes without `allow_partial` are unaffected
+(timeout still routes via §3.7). Nodes that set it now continue past a timeout where they
+previously terminated the run — moving observable behavior toward the author's stated intent.
+No spec-conformant `.dot` file can depend on the prior "single timeout kills the graph despite
+`allow_partial`" behavior, since that was the defect this corrects.

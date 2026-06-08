@@ -55,7 +55,14 @@ class MockBackend:
     def __init__(self, return_value: str = "done") -> None:
         self._return_value = return_value
 
-    async def run(self, node: Node, prompt: str, context: PipelineContext, incoming_edge=None, graph=None) -> str:
+    async def run(
+        self,
+        node: Node,
+        prompt: str,
+        context: PipelineContext,
+        incoming_edge=None,
+        graph=None,
+    ) -> str:
         return self._return_value
 
 
@@ -66,7 +73,12 @@ class FailingBackend:
         self._fail_node = fail_node
 
     async def run(
-        self, node: Node, prompt: str, context: PipelineContext, incoming_edge=None, graph=None
+        self,
+        node: Node,
+        prompt: str,
+        context: PipelineContext,
+        incoming_edge=None,
+        graph=None,
     ) -> str | Outcome:
         if node.id == self._fail_node:
             return Outcome(status=StageStatus.FAIL, failure_reason="intentional")
@@ -506,7 +518,12 @@ class SessionBackend:
         self._session_id = session_id
 
     async def run(
-        self, node: Node, prompt: str, context: PipelineContext, incoming_edge=None, graph=None
+        self,
+        node: Node,
+        prompt: str,
+        context: PipelineContext,
+        incoming_edge=None,
+        graph=None,
     ) -> str | Outcome:
         if node.id == self._session_node:
             return Outcome(status=StageStatus.SUCCESS, session_id=self._session_id)
@@ -595,7 +612,12 @@ class TestNodeCompleteSessionId:
 
         class SlowBackend:
             async def run(
-                self, node: Node, prompt: str, context: PipelineContext, incoming_edge=None, graph=None
+                self,
+                node: Node,
+                prompt: str,
+                context: PipelineContext,
+                incoming_edge=None,
+                graph=None,
             ) -> str:
                 await asyncio.sleep(10)  # will be timed out
                 return "done"
@@ -621,6 +643,86 @@ class TestNodeCompleteSessionId:
         for event in timeout_events:
             assert "session_id" in event
             assert event["session_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Timeout + allow_partial continuation
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutAllowPartialContinuation:
+    """A node that times out with allow_partial set yields PARTIAL_SUCCESS so the
+    graph continues, instead of terminating the whole run on one node timeout.
+
+    Regression guard for two coupled defects (branch fix/allow-partial-on-timeout):
+      1. The timeout handler ignored allow_partial and always returned FAIL, so a
+         single node timeout tore down the entire graph even when the node opted
+         into partial completion.
+      2. allow_partial parsed from a *quoted* DOT attribute (allow_partial="true")
+         is the string "true"; an `is True` identity check never matched, so the
+         feature was inert for the common quoted spelling.
+
+    Spec: PARTIAL_SUCCESS is success-class for routing (Section 5.2); allow_partial
+    is a Boolean node attribute (Section 2.6). Applying allow_partial on the timeout
+    path (not just retry exhaustion) is a documented extension (specs/EXTENSIONS.md).
+
+    The test parametrizes both DOT spellings so the quoted form (defect #2) is
+    exercised at the integration level alongside the timeout path (defect #1).
+    """
+
+    @pytest.mark.parametrize(
+        "allow_partial_attr", ['allow_partial="true"', "allow_partial=true"]
+    )
+    @pytest.mark.asyncio
+    async def test_timeout_with_allow_partial_continues(
+        self, tmp_path, allow_partial_attr
+    ):
+        import asyncio
+
+        hooks = MockHooks()
+
+        class SlowOnWorkBackend:
+            """Times out on `work`; runs normally everywhere else."""
+
+            async def run(
+                self,
+                node: Node,
+                prompt: str,
+                context: PipelineContext,
+                incoming_edge=None,
+                graph=None,
+            ) -> str:
+                if node.id == "work":
+                    await asyncio.sleep(10)  # exceeds the 0.01s node timeout
+                return "done"
+
+        engine = _make_engine(
+            dot_source=f"""
+            digraph {{
+                start [shape=Mdiamond]
+                work [prompt="Do work" timeout=0.01 {allow_partial_attr}]
+                after [prompt="Keep going"]
+                exit [shape=Msquare]
+                start -> work [label="*"]
+                work -> after [label="*"]
+                after -> exit [label="*"]
+            }}
+            """,
+            backend=SlowOnWorkBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        await engine.run()
+
+        completed = {e["node_id"] for e in hooks.get(PIPELINE_NODE_COMPLETE)}
+        # `after` runs only if the timed-out `work` node yielded a success-class
+        # outcome (PARTIAL_SUCCESS) and the graph continued past it. On the
+        # pre-fix code, `work` timed out -> FAIL -> the unconditional edge to
+        # `after` (runs_on=success) is blocked, so `after` never runs.
+        assert "after" in completed, (
+            "graph terminated at the timed-out node; allow_partial did not take "
+            f"effect (DOT spelling: {allow_partial_attr})"
+        )
 
 
 # ---------------------------------------------------------------------------
