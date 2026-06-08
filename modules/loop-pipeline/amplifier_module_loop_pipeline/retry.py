@@ -264,7 +264,8 @@ async def execute_with_retry(
             },
         )
 
-    if node.attrs.get("allow_partial") is True:
+    _ap = node.attrs.get("allow_partial")
+    if _ap is True or str(_ap).lower() == "true":
         return Outcome(
             status=StageStatus.PARTIAL_SUCCESS,
             notes="Retries exhausted, partial accepted",
