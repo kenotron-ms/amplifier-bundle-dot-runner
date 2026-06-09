@@ -531,8 +531,14 @@ class PipelineEngine:
                             )
                     except asyncio.TimeoutError:
                         node_duration_ms = (time.monotonic() - node_start_time) * 1000
+                        _ap = current_node.attrs.get("allow_partial")
+                        _timeout_status = (
+                            StageStatus.PARTIAL_SUCCESS
+                            if _ap is True or str(_ap).lower() == "true"
+                            else StageStatus.FAIL
+                        )
                         outcome = Outcome(
-                            status=StageStatus.FAIL,
+                            status=_timeout_status,
                             notes=f"Node '{current_node.id}' timed out after {timeout_s}s",
                             failure_reason="timeout",
                         )
