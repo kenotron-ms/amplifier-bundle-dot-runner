@@ -633,6 +633,20 @@ class AmplifierBackend:
         # Skip Outcome-parsing logic entirely; stash the JSON as the node output.
         if node.response_schema is not None:
             raw_json = result.text or ""
+            # Anthropic tool-extraction path: structured output lives in the
+            # __structured_output__ tool call arguments, not in result.text.
+            # Recover the JSON string when result.text is empty and a tool call is present.
+            if not raw_json.strip() and result.tool_calls:
+                _STRUCT_TOOL = "__structured_output__"
+                for _tc in result.tool_calls:
+                    if _tc.name == _STRUCT_TOOL:
+                        _args = _tc.arguments
+                        raw_json = (
+                            json.dumps(_args)
+                            if isinstance(_args, dict)
+                            else (str(_args) if _args else "")
+                        )
+                        break
             parsed_obj: Any = None
             if raw_json.strip():
                 try:
