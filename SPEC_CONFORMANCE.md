@@ -1,0 +1,132 @@
+# Spec Conformance Ledger
+
+A living record of where this implementation (`amplifier-bundle-attractor`) is **off-spec**
+relative to the upstream natural-language specs at [strongdm/attractor](https://github.com/strongdm/attractor),
+and the chosen disposition for each gap. The goal is not 100% literal conformance — it is that
+**every divergence is a deliberate, recorded choice**, trending over time toward one of:
+
+- **ALIGN** — fix the implementation to fulfill the spec.
+- **DIVERGE** — keep the implementation's behavior; record it as an intentional, documented
+  divergence (and fold it into the spec / `specs/EXTENSIONS.md` so the spec stops lying).
+- **IMPROVE** — implementation deliberately exceeds the spec; promote the idea upstream.
+
+## How to use this file
+
+1. Each gap has a stable ID (`ULM-*`, `CAL-*`, `ATX-*`), a spec reference, an impl reference,
+   a **status**, and a **disposition**.
+2. When you work a gap: update its status, add a dated line to the Changelog, and — if it's a
+   DIVERGE/IMPROVE — make sure `specs/EXTENSIONS.md` documents the real behavior.
+3. Keep evidence as `file:line`. Re-verify before flipping a status to DONE — a passing unit
+   test of request translation is not the same as proven live end-to-end behavior; note which
+   bar was met.
+
+## Status legend
+
+`OPEN` · `IN-PROGRESS` · `DONE` · `WONTFIX` (recorded divergence, no further action)
+
+## Baseline
+
+- Upstream specs read in full @ strongdm/attractor `fb57a55` (unified-llm 2169L, attractor 2090L,
+  coding-agent-loop 1467L).
+- Spec drift: our vendored `specs/` copies differ slightly from upstream (unified-llm −16L,
+  attractor −2L, coding-agent-loop −16L). Only `specs/canonical/attractor-spec-canonical.md` is
+  byte-identical to upstream. See `SYNC-1`.
+
+---
+
+## Summary
+
+| Spec | Areas reviewed | Off-spec gaps | Resolved | Open |
+|------|----------------|---------------|----------|------|
+| unified-llm | ~35 | 13 | 4 (structured output, all providers) | 9 |
+| coding-agent-loop | ~17 | 9 | 2 (bugs CAL-1, CAL-2) | 7 |
+| attractor | ~29 | 7 | 1 (bug ATX-1) | 6 |
+
+The engine layer (attractor) is the strongest — substantially a **superset** of the spec. The
+material weaknesses are concentrated in the LLM client's per-provider metadata and a small set
+of deliberate omissions (resume, tool-hooks, execution-environment).
+
+---
+
+## 1. unified-llm-spec → `modules/unified-llm-client`
+
+| ID | Area | Spec | Impl | Status | Disposition |
+|----|------|------|------|--------|-------------|
+| ULM-1 | Gemini native structured output (`responseMimeType`+`responseSchema`) | `:988` | `adapters/gemini.py` `_translate_request` | **DONE** (translation) | ALIGN |
+| ULM-2 | Anthropic structured-output fallback (tool-extraction) | `:989` | `adapters/anthropic.py` + `generate.py` `generate_object` | **DONE** (translation) | ALIGN |
+| ULM-3 | OpenAI native structured output | `:987` | `adapters/openai.py:296-313`, `openai_compat.py:453-466` | **DONE** (pre-existing; test added) | ALIGN |
+| ULM-4 | `generate_object` schema-validation depth (only required-keys + root type) | `§4.5` | `generate.py` `_validate_against_schema` | OPEN | ALIGN (secondary) |
+| ULM-5 | `Response.raw` never populated on success | `:599`, `:1615` | all three `_translate_response` | OPEN | ALIGN |
+| ULM-6 | `RateLimitInfo` / `x-ratelimit-*` never parsed | `:1616`, `:724` | no adapter populates `Response.rate_limit`; grep `x-ratelimit`=0 | OPEN | ALIGN |
+| ULM-7 | `reasoning_effort` no-op on Anthropic & Gemini | `:691`, `:701` | only `openai.py:316`; others drop it | OPEN | ALIGN |
+| ULM-8 | Anthropic `reasoning_tokens` estimate from thinking blocks | `:697` | `anthropic.py` `_map_usage` never sets it | OPEN | ALIGN |
+| ULM-9 | Error message-body classification (Quota/ContextLength/ContentFilter) | `:1394-1401` | only `model_not_found`; `QuotaExceededError` never raised | OPEN | ALIGN |
+| ULM-10 | Audio/Document content parts silently dropped | `:2016` | enum exists, no adapter branch | OPEN | ALIGN (fail-loud at minimum) |
+| ULM-11 | Image local-file-path convenience + OpenAI `detail` hint | `:486`, `:488` | not handled | OPEN | ALIGN |
+| ULM-12 | `StreamResult.partial_response` property | `:943` | missing | OPEN | ALIGN |
+| ULM-13 | `AdapterTimeout` granularity (connect/request/stream_read); `stream_object` true partials | `:1043`, `:1004` | single timeout float; whole-buffer JSON parse | OPEN | ALIGN |
+
+**Note on ULM-1/2/3:** request-translation is proven by deterministic SDK-mocked unit tests.
+**Live end-to-end (does each provider actually honor the schema) is UNPROVEN** — needs real API
+keys. Do not mark "live" until exercised against real providers (e.g. in a DTU with keys).
+
+---
+
+## 2. coding-agent-loop-spec → `modules/loop-agent`
+
+| ID | Area | Spec | Impl | Status | Disposition |
+|----|------|------|------|--------|-------------|
+| CAL-1 | `max_tool_rounds_per_input` `0 = unlimited` | `:150`, `:231` | `config.py:39`, `agent_session.py:314` | **DONE** | ALIGN |
+| CAL-2 | `ContextLengthError` → warn + continue (not CLOSED) | `:405`, `:1432` | `agent_session.py:348` | **DONE** | ALIGN |
+| CAL-3 | ExecutionEnvironment abstraction (§4) — swappable Local/Docker/SSH exec seam | `:729-768` | none; tools self-execute | OPEN | **DECIDE** (ALIGN vs DIVERGE) |
+| CAL-4 | Command timeouts (10s/600s, SIGTERM→SIGKILL) + env filtering wiring | `:558`, `:783-786` | config fields unread; `env_filter.py` unimported | OPEN | ALIGN / delegate-to-tools |
+| CAL-5 | ProviderProfile + `provider_options` passthrough (§3) | `:471-488` | flattened into SessionConfig + bundle profiles | OPEN | DIVERGE (likely) |
+| CAL-6 | Distinct `PROCESSING_END` event | `:422` | emits `session_end` only | OPEN | DIVERGE-or-ALIGN |
+| CAL-7 | System prompt: recent commit messages + knowledge-cutoff line (§6.4) | `:1036`, `:1025` | omitted | OPEN | ALIGN (cheap) |
+| CAL-8 | Subagents: start-then-`wait` semantics, default unlimited turns | `:1069`, `:1075` | lazy spawn, default 50, host-dependent | OPEN | DIVERGE-or-ALIGN |
+| CAL-9 | Graceful shutdown closes active subagents + cancels in-flight stream | `:1436-1449` | partial | OPEN | ALIGN |
+
+---
+
+## 3. attractor-spec → `modules/loop-pipeline` (+ supporting tool/hook modules)
+
+| ID | Area | Spec | Impl | Status | Disposition |
+|----|------|------|------|--------|-------------|
+| ATX-1 | Node `timeout` unit mismatch (ms stored, consumed as seconds) | `timeout_seconds` | `engine.py:485`, `handlers/tool.py:105` | **DONE** | ALIGN |
+| ATX-2 | Checkpoint-based RESUME (restore context/completed/retry, continue after `current_node`; `full`→`summary:high` degrade) | `§5.3`, DoD `:1857` | engine always restarts from start; `load_checkpoint()` never rehydrates | OPEN | **DECIDE** (ALIGN vs DIVERGE) |
+| ATX-3 | Tool-call hooks `tool_hooks.pre`/`.post` (shell around each LLM tool call) | `§9.7` `:1650` | grep `tool_hooks`=0 | OPEN | **DECIDE** (ALIGN vs DIVERGE) |
+| ATX-4 | HTTP server mode (REST + SSE) | `§9.5` (optional) | not present; programmatic tools instead | OPEN | DIVERGE (spec-optional) |
+| ATX-5 | `outcome=` condition resolves to `preferred_label` first | `§10.4 :1693` | `conditions.py:75` returns `preferred_label or status` | OPEN | DIVERGE (intentional; load-bearing for report_outcome routing) |
+| ATX-6 | Retry on FAIL | spec self-contradicts: `§3.5 :519` (no) vs DoD `:1833` (yes) | retries RETRY only (`retry.py:238`) | OPEN | ALIGN-spec-first (reconcile the spec) |
+| ATX-7 | `stack.child_workdir`; condition literal unquoting (`§10.5`) | `:1743` | not handled | OPEN | ALIGN (minor) |
+
+**Shipped extensions (IMPROVE — fold into `specs/EXTENSIONS.md`):** fail-fast edge routing with
+`runs_on`/`continue_on_fail`; skip-propagation contracts (`requires=`/`outputs=`/`failed_outputs`,
+`PIPELINE_NODE_SKIPPED`/`PIPELINE_NODE_CONTRACT_VIOLATION`); parallel `k_of_n`/`quorum`/`error_policy`;
+human `freeform` mode + attachments; tool `parse_json`/`tool_env`/`tool.last_line`; `$param`/`${key}`
+substitution beyond `$goal`.
+
+---
+
+## Cross-cutting
+
+| ID | Item | Status | Disposition |
+|----|------|--------|-------------|
+| SYNC-1 | Re-sync vendored `specs/canonical/` to upstream byte-for-byte | **DONE** (canonical @ `fb57a55`) | ALIGN |
+| DEAD-1 | Dead `SessionConfig` fields implying coverage that isn't wired (`tool_output_limits`, `tool_line_limits`, `default_command_timeout_ms`, `max_command_timeout_ms`, `get_max_tool_rounds`) | **DONE** | DIVERGE (all deleted + documented) |
+| ATX-8 | DOT `response_schema` node attribute → per-provider structured output (NOT in canonical spec; §4.5 keeps output format at backend) | **DONE** (wiring; live UNPROVEN) | IMPROVE (extension §23) |
+
+---
+
+## Changelog
+
+### 2026-06-24
+- **CAL-1 DONE** — `max_tool_rounds_per_input` `0 = unlimited`: loop guard now `_max_rounds <= 0 or round_count < _max_rounds` (`agent_session.py:314`); default aligned to spec `0` (`config.py:39`). Tests added; loop-agent suite 493 passed.
+- **CAL-2 DONE** — `ContextLengthError` now emits `AGENT_CONTEXT_WARNING` and returns to IDLE (session stays usable) instead of `fatal_error()` → CLOSED (`agent_session.py:348`). Tests added.
+- **ATX-1 DONE** — node `timeout` unit fix: consumers divide parser-ms by 1000 (`engine.py:485`, `handlers/tool.py:105`); `max_pipeline_duration` (ms) untouched. New `tests/test_node_timeout_units.py` (7 tests); loop-pipeline suite 1330 passed.
+- **ULM-1/2/3 DONE (translation)** — per-provider structured output: Gemini native `response_mime_type`+`response_schema`; Anthropic tool-based extraction (`__structured_output__` forced tool_choice) with `generate_object` reading tool args; OpenAI confirmed. Fail-loud (`ConfigurationError`) on Anthropic json-without-schema. 9 tests added; unified-llm suite 636 passed. **Live end-to-end remains UNPROVEN (needs real API keys).**
+- **DEAD-1 DONE** — investigated wiring `tool_output_limits`/`tool_line_limits` into `hooks-tool-truncation`: NO clean seam (the hook reads its own config; the `tool:post` event payload has no limits slot; wiring would need a new cross-module channel). Per "wire-it-or-delete-it / don't invent a channel," **deleted all 5 fields** (+ getters + orphaned constants) and documented the real control points in `config.py` (truncation → `hooks-tool-truncation` config; command timeouts → shell tool, see CAL-3/CAL-4). loop-agent 478 passed; 0 references remain in source/tests. (Plan said "wire the truncation pair"; reality said no clean seam, so delete+document — the honest outcome.)
+- **ATX-8 DONE (wiring)** — `response_schema` node attribute added as backward-compatible extension (EXTENSIONS §23). Promoted in `graph.py`; resolved (inline JSON or file path) in `transforms.py`; fail-loud validation; threaded to `unified_llm.generate(response_format=ResponseFormat(json_schema=...))` on the direct-LLM path (`backend.py`, `__init__.py`); spawned-agent path **fails loud** ("only supported on direct-LLM nodes yet"). Structured result stored as `outcome.notes` + parsed into `context_updates[node.id]`. 30 tests; loop-pipeline 1360 passed. **Live end-to-end UNPROVEN (needs API keys).**
+- **SYNC-1 DONE** — refreshed all three `specs/canonical/*-canonical.md` to upstream `fb57a55` (byte-identical). Working `specs/*.md` left as-is (they carry local edits documented in EXTENSIONS.md).
+- **Extensions documented** — added `specs/EXTENSIONS.md` §16–22 for shipped-but-unspec'd attractor features (fail-fast routing/`runs_on`, I/O contracts `requires`/`outputs`, parallel `k_of_n`/`quorum`, human `freeform`, tool `parse_json`/`tool_env`, `$param`/`${key}`, `outcome`→`preferred_label`). ATX-5 cross-referenced.
+- Ledger created.
