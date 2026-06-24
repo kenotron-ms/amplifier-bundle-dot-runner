@@ -475,10 +475,14 @@ class PipelineEngine:
             else:
                 # Per-node timeout enforcement: wrap handler execution with
                 # asyncio.timeout when the node declares a timeout attribute.
-                # DOT timeout values are in seconds (per NLSpec timeout_seconds).
+                # The DOT parser stores all durations as milliseconds (see
+                # dot_parser._DURATION_UNITS). Divide by 1000 to get seconds
+                # for asyncio.timeout. (Graph-level max_pipeline_duration is
+                # also in ms and is compared against elapsed_ms — do not
+                # change that path.)
                 node_timeout_raw = current_node.timeout
                 if node_timeout_raw:
-                    timeout_s = float(node_timeout_raw)
+                    timeout_s = float(node_timeout_raw) / 1000.0
                     try:
                         async with asyncio.timeout(timeout_s):
                             outcome = await execute_with_retry(
