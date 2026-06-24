@@ -351,6 +351,20 @@ class AmplifierBackend:
         """Spawn a full child session via the CLI's session.spawn capability."""
         assert self._spawn_fn is not None  # guaranteed by caller
 
+        # EXT-23: response_schema requires direct LLM generation; structured
+        # output cannot be threaded through the spawned-agent protocol yet.
+        if node.response_schema is not None:
+            return Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=(
+                    "response_schema is only supported on direct-LLM nodes "
+                    "(not spawned-agent nodes) yet. "
+                    "Either use a backend without session.spawn (e.g., "
+                    "DirectProviderBackend) or remove response_schema from "
+                    f"node '{node.id}'."
+                ),
+            )
+
         # Obtain parent_session from coordinator
         parent_session = getattr(self._coordinator, "session", None)
 
@@ -507,6 +521,10 @@ class AmplifierBackend:
         Delegates the full agentic tool loop to the unified-llm-client
         library, which handles LLM calls, tool execution, retry, and
         error mapping internally.
+
+        EXT-23: When ``node.response_schema`` is set, passes a
+        ``ResponseFormat(type="json_schema", ...)`` to ``generate()`` and
+        returns the raw JSON text as the node output (SUCCESS outcome).
         """
         import unified_llm
 
@@ -514,6 +532,15 @@ class AmplifierBackend:
         model = _resolve_model(node)
         provider_name = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
         tools = _build_unified_tools(self._tools)
+
+        # EXT-23: Build response_format when response_schema is set
+        response_format: Any = None
+        if node.response_schema is not None:
+            response_format = unified_llm.ResponseFormat(
+                type="json_schema",
+                json_schema=node.response_schema,
+                strict=True,
+            )
 
         # Set node context for the hook bridge middleware
         token = set_node_context({"node_id": node.id})
@@ -552,6 +579,7 @@ class AmplifierBackend:
                 reasoning_effort=reasoning_effort,
                 provider=provider_name,
                 client=client,
+                response_format=response_format,
             )
         except unified_llm.SDKError as exc:
             logger.warning("unified_llm.generate failed for node %s: %s", node.id, exc)
@@ -600,6 +628,28 @@ class AmplifierBackend:
                 "step_count": len(result.steps),
             },
         )
+
+        # EXT-23: Structured output mode — result.text is the JSON response, not an Outcome.
+        # Skip Outcome-parsing logic entirely; stash the JSON as the node output.
+        if node.response_schema is not None:
+            raw_json = result.text or ""
+            parsed_obj: Any = None
+            if raw_json.strip():
+                try:
+                    parsed_obj = json.loads(raw_json)
+                except json.JSONDecodeError:
+                    pass
+            ctx_updates: dict[str, Any] = {
+                "last_stage": node.id,
+                "last_response": raw_json[:200],
+            }
+            if parsed_obj is not None:
+                ctx_updates[node.id] = parsed_obj
+            return Outcome(
+                status=StageStatus.SUCCESS,
+                notes=raw_json,
+                context_updates=ctx_updates,
+            )
 
         # Map GenerateResult → Outcome
         #
