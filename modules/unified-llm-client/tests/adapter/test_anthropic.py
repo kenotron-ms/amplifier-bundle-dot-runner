@@ -267,6 +267,106 @@ class TestRequestTranslation:
         assert kwargs["extra_headers"] == {"anthropic-beta": "some-feature"}
         assert kwargs["metadata"] == {"user_id": "user-123"}
 
+    # ------------------------------------------------------------------
+    # Structured output (Spec §4.5 / capability matrix :989)
+    # ------------------------------------------------------------------
+
+    def test_json_schema_response_format_injects_extraction_tool(self) -> None:
+        """json_schema response_format injects __structured_output__ tool.
+
+        Asserts the outgoing request carries a synthetic extraction tool whose
+        input_schema matches the caller's JSON schema, enabling tool-based
+        structured output extraction (Anthropic has no native json_schema mode).
+        """
+        from unified_llm.types import ResponseFormat
+
+        # Convention: the extraction tool name is "__structured_output__".
+        # Must match STRUCTURED_OUTPUT_TOOL_NAME in adapters/anthropic.py
+        # and _ANTHROPIC_STRUCTURED_OUTPUT_TOOL in generate.py.
+        _TOOL_NAME = "__structured_output__"
+
+        adapter = _make_adapter()
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+            "required": ["name", "age"],
+        }
+        request = Request(
+            model="claude-sonnet-4-20250514",
+            messages=[Message.user("Extract info")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=schema,
+                strict=True,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        # A tools list must be present containing the extraction tool
+        tools = kwargs.get("tools", [])
+        extraction = next(
+            (t for t in tools if t.get("name") == _TOOL_NAME),
+            None,
+        )
+        assert extraction is not None, (
+            f"Expected '{_TOOL_NAME}' tool to be injected, "
+            f"got tools: {[t.get('name') for t in tools]}"
+        )
+        # The tool's input_schema must BE the caller's schema
+        assert extraction["input_schema"] == schema
+
+    def test_json_schema_response_format_forces_tool_choice(self) -> None:
+        """json_schema response_format forces tool_choice to the extraction tool.
+
+        Anthropic will only call the extraction tool if tool_choice is explicitly
+        set to that tool name — otherwise it may choose to generate text.
+        """
+        from unified_llm.types import ResponseFormat
+
+        _TOOL_NAME = "__structured_output__"
+
+        adapter = _make_adapter()
+        schema = {
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+            "required": ["result"],
+        }
+        request = Request(
+            model="claude-sonnet-4-20250514",
+            messages=[Message.user("Hi")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=schema,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        tc = kwargs.get("tool_choice", {})
+        assert tc.get("type") == "tool", (
+            "tool_choice type must be 'tool' to force a named call"
+        )
+        assert tc.get("name") == _TOOL_NAME
+
+    def test_json_response_format_without_schema_raises(self) -> None:
+        """Plain json response_format (no schema) raises ConfigurationError on Anthropic.
+
+        Anthropic cannot guarantee structured output without a schema, so we
+        fail loud rather than silently degrade (Spec: no silent fallback).
+        """
+        import pytest
+
+        from unified_llm.errors import ConfigurationError
+        from unified_llm.types import ResponseFormat
+
+        adapter = _make_adapter()
+        request = Request(
+            model="claude-sonnet-4-20250514",
+            messages=[Message.user("Hi")],
+            response_format=ResponseFormat(type="json"),
+        )
+        with pytest.raises(ConfigurationError):
+            adapter._translate_request(request)
+
     def test_thinking_blocks_preserved_in_assistant(self) -> None:
         """Thinking blocks in assistant messages round-trip with signatures."""
         adapter = _make_adapter()
@@ -1227,7 +1327,9 @@ class TestPromptCaching:
             ],
             provider_options={
                 "anthropic": {
-                    "extra_headers": {"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+                    "extra_headers": {
+                        "anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"
+                    },
                 }
             },
         )

@@ -34,6 +34,12 @@ from unified_llm.types import (
     ToolResult,
 )
 
+# Tool name injected by the Anthropic adapter for tool-based structured output extraction.
+# generate_object() checks for this name in result.tool_calls to recover the structured
+# arguments rather than parsing free-form text.
+# Must match _STRUCTURED_OUTPUT_TOOL_NAME in adapters/anthropic.py.
+_ANTHROPIC_STRUCTURED_OUTPUT_TOOL = "__structured_output__"
+
 
 # ---------------------------------------------------------------------------
 # Abort + Timeout — Spec §4.7
@@ -676,9 +682,44 @@ async def generate_object(
         max_tool_rounds=0,  # No tool loop for structured output
     )
 
-    # Parse JSON from response text
-    raw_text = result.text.strip()
-    parsed = _parse_json_response(raw_text)
+    # Recover structured output from the correct source:
+    #
+    #  • Anthropic tool-based extraction path: the response contains a tool_call
+    #    named _ANTHROPIC_STRUCTURED_OUTPUT_TOOL whose .arguments dict IS the
+    #    structured object.  Extract it directly — no JSON text parsing needed.
+    #
+    #  • All other providers (OpenAI, Gemini): the model returns the JSON as
+    #    text; parse it with _parse_json_response().
+    import json as _json
+
+    extraction_call = next(
+        (
+            tc
+            for tc in result.tool_calls
+            if tc.name == _ANTHROPIC_STRUCTURED_OUTPUT_TOOL
+        ),
+        None,
+    )
+    if extraction_call is not None:
+        raw_args = extraction_call.arguments
+        if isinstance(raw_args, str):
+            try:
+                parsed = _json.loads(raw_args)
+            except _json.JSONDecodeError as exc:
+                raise NoObjectGeneratedError(
+                    f"Failed to parse structured output tool arguments: {exc}",
+                ) from exc
+        else:
+            # Already a dict (Anthropic SDK returns block.input as a dict)
+            parsed = raw_args
+    else:
+        raw_text = result.text.strip()
+        if not raw_text:
+            raise NoObjectGeneratedError(
+                "Provider returned empty text and no structured-output tool call. "
+                "Structured output is unavailable for this request."
+            )
+        parsed = _parse_json_response(raw_text)
 
     # Validate against schema (basic required-field check)
     _validate_against_schema(parsed, schema)

@@ -274,6 +274,17 @@ class GeminiAdapter:
             if tc_config:
                 config["tool_config"] = tc_config
 
+        # Structured output — native Gemini pass-through (Spec §4.5, capability matrix :988)
+        # Sets response_mime_type="application/json" and response_schema=<schema> so the
+        # provider enforces the schema on its side rather than relying on text parsing alone.
+        if request.response_format:
+            fmt = request.response_format
+            if fmt.type == "json_schema" and fmt.json_schema:
+                config["response_mime_type"] = "application/json"
+                config["response_schema"] = fmt.json_schema
+            elif fmt.type == "json":
+                config["response_mime_type"] = "application/json"
+
         if config:
             kwargs["config"] = config
 

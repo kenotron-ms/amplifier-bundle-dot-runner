@@ -363,6 +363,45 @@ class TestRequestTranslation:
         kwargs = adapter._translate_request(request)
         assert "max_output_tokens" not in kwargs
 
+    # ------------------------------------------------------------------
+    # Structured output (Spec §4.5 / capability matrix :987)
+    # ------------------------------------------------------------------
+
+    def test_json_schema_response_format_sets_text_format(self) -> None:
+        """json_schema response_format → text.format with json_schema type (Responses API).
+
+        Asserts the outgoing request carries json_schema in text.format so the
+        OpenAI Responses API enforces the schema server-side.
+        """
+        from unified_llm.types import ResponseFormat
+
+        adapter = _make_adapter()
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+            "required": ["name", "age"],
+        }
+        request = Request(
+            model="gpt-4.1",
+            messages=[Message.user("Extract info")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=schema,
+                strict=True,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        # Responses API structured output: text.format.type == "json_schema"
+        assert "text" in kwargs, "OpenAI Responses API expects 'text' kwarg for format"
+        text_fmt = kwargs["text"]["format"]
+        assert text_fmt["type"] == "json_schema"
+        assert text_fmt["strict"] is True
+        # The schema must be present under "schema" key
+        assert "schema" in text_fmt
+        assert text_fmt["schema"]["type"] == "object"
+        assert "name" in text_fmt["schema"]["properties"]
+
 
 # ---------------------------------------------------------------------------
 # Task 29: OpenAI Response Translation

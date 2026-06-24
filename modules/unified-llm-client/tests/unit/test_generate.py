@@ -1214,6 +1214,122 @@ class TestGenerateObject:
         except ConfigurationError:
             pass
 
+    # ------------------------------------------------------------------
+    # Anthropic tool-extraction path (Spec §4.5 / capability matrix :989)
+    # ------------------------------------------------------------------
+
+    def test_tool_extraction_path_returns_tool_arguments_as_output(self) -> None:
+        """generate_object() extracts output from __structured_output__ tool call.
+
+        When the Anthropic adapter uses tool-based extraction, the provider
+        returns a tool_call instead of JSON text.  generate_object() must
+        detect the extraction tool by name and use its .arguments dict
+        directly rather than attempting to parse an empty text body.
+        """
+        from unified_llm.generate import generate_object
+
+        # Convention: the extraction tool name is "__structured_output__"
+        # (matches STRUCTURED_OUTPUT_TOOL_NAME in adapters/anthropic.py and
+        #  _ANTHROPIC_STRUCTURED_OUTPUT_TOOL in generate.py).
+        _TOOL_NAME = "__structured_output__"
+
+        structured_data = {"name": "Alice", "age": 30}
+        tool_call_response = Response(
+            id="r1",
+            model="test",
+            provider="mock",
+            message=Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ContentPart(
+                        kind=ContentKind.TOOL_CALL,
+                        tool_call=ToolCallData(
+                            id="tc_1",
+                            name=_TOOL_NAME,
+                            arguments=structured_data,
+                        ),
+                    )
+                ],
+            ),
+            finish_reason=FinishReason(reason="tool_calls"),
+            usage=Usage(input_tokens=10, output_tokens=20, total_tokens=30),
+        )
+
+        adapter = _MockAdapter(responses=[tool_call_response])
+        _, client = _make_client(adapter)
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "integer"},
+            },
+            "required": ["name", "age"],
+        }
+
+        result = asyncio.run(
+            generate_object(
+                model="test",
+                prompt="Extract info",
+                schema=schema,
+                provider="mock",
+                client=client,
+            )
+        )
+        assert result.output == structured_data, (
+            f"Expected {structured_data}, got {result.output}"
+        )
+
+    def test_empty_text_and_no_extraction_tool_raises(self) -> None:
+        """generate_object() raises NoObjectGeneratedError when text is empty and no extraction tool.
+
+        Ensures the fail-loud requirement: a provider that returns no text and no
+        structured-output tool call triggers an error rather than silent success.
+        """
+        from unified_llm.errors import NoObjectGeneratedError
+        from unified_llm.generate import generate_object
+
+        # Response with an unrelated tool call (not the extraction tool) and no text
+        unrelated_response = Response(
+            id="r2",
+            model="test",
+            provider="mock",
+            message=Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ContentPart(
+                        kind=ContentKind.TOOL_CALL,
+                        tool_call=ToolCallData(
+                            id="tc_2",
+                            name="some_other_tool",
+                            arguments={"x": 1},
+                        ),
+                    )
+                ],
+            ),
+            finish_reason=FinishReason(reason="tool_calls"),
+            usage=Usage(input_tokens=5, output_tokens=5, total_tokens=10),
+        )
+
+        adapter = _MockAdapter(responses=[unrelated_response])
+        _, client = _make_client(adapter)
+
+        schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
+
+        try:
+            asyncio.run(
+                generate_object(
+                    model="test",
+                    prompt="Extract",
+                    schema=schema,
+                    provider="mock",
+                    client=client,
+                )
+            )
+            assert False, "Should raise NoObjectGeneratedError"
+        except NoObjectGeneratedError:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Task 44: stream_object() — Streaming Structured Output

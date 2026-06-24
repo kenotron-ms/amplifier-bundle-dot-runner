@@ -34,6 +34,13 @@ from unified_llm.types import (
 )
 
 
+# Tool name used for structured output extraction via tool-based extraction path.
+# generate_object() checks for this name in tool_calls to recover the structured result.
+# Public so test code can import it for assertions without triggering pyright warnings.
+# Must stay in sync with the constant of the same value in generate.py.
+STRUCTURED_OUTPUT_TOOL_NAME = "__structured_output__"
+
+
 class AnthropicAdapter:
     """Anthropic Messages API adapter."""
 
@@ -267,6 +274,38 @@ class AnthropicAdapter:
             kwargs["top_p"] = request.top_p
         if request.stop_sequences:
             kwargs["stop_sequences"] = request.stop_sequences
+
+        # Structured output — tool-based extraction (Spec §4.5, capability matrix :989)
+        # Anthropic has no native json_schema mode.  We define a synthetic single-tool
+        # whose input_schema IS the caller's JSON schema and force-invoke it so the model
+        # MUST populate its structured arguments.  generate_object() (generate.py)
+        # detects the _STRUCTURED_OUTPUT_TOOL_NAME tool call and extracts the arguments
+        # instead of parsing free-form text.
+        if request.response_format:
+            fmt = request.response_format
+            if fmt.type == "json_schema" and fmt.json_schema:
+                extraction_tool: dict[str, Any] = {
+                    "name": STRUCTURED_OUTPUT_TOOL_NAME,
+                    "description": (
+                        "Return a structured JSON object that strictly matches the "
+                        "required schema. Populate every required field."
+                    ),
+                    "input_schema": fmt.json_schema,
+                }
+                existing_tools: list[dict[str, Any]] = list(kwargs.get("tools", []))
+                kwargs["tools"] = existing_tools + [extraction_tool]
+                # Force the model to call this tool (overrides any user tool_choice)
+                kwargs["tool_choice"] = {
+                    "type": "tool",
+                    "name": STRUCTURED_OUTPUT_TOOL_NAME,
+                }
+            elif fmt.type == "json":
+                # Plain json without schema: cannot guarantee structured output.
+                # Fail loud per spec requirement — do not silently degrade.
+                raise errors.ConfigurationError(
+                    "Anthropic does not support unschemaed JSON output mode. "
+                    "Use response_format with type='json_schema' and a JSON schema."
+                )
 
         # Provider options escape hatch
         if request.provider_options and "anthropic" in request.provider_options:
