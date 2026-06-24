@@ -456,14 +456,19 @@ class TestComplete:
                 total_tokens=8,
             ),
         )
-        adapter._client.chat.completions.create = AsyncMock(return_value=mock_raw)
+        _mock_raw_http = MagicMock()
+        _mock_raw_http.parse.return_value = mock_raw
+        _mock_raw_http.headers = {}
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            return_value=_mock_raw_http
+        )
 
         request = Request(model="llama-3.1-8b", messages=[Message.user("Hello")])
         response = await adapter.complete(request)
 
         assert response.text == "Hello from vLLM!"
         assert response.provider == "openai_compat"
-        adapter._client.chat.completions.create.assert_called_once()
+        adapter._client.chat.completions.with_raw_response.create.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +488,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=401, headers={}),
             body={"error": {"message": "Invalid API key"}},
         )
-        adapter._client.chat.completions.create = AsyncMock(side_effect=api_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.AuthenticationError):
@@ -498,7 +505,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=429, headers={}),
             body={"error": {"message": "Rate limited"}},
         )
-        adapter._client.chat.completions.create = AsyncMock(side_effect=api_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.RateLimitError):
@@ -513,7 +522,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=404, headers={}),
             body={"error": {"message": "Model not found"}},
         )
-        adapter._client.chat.completions.create = AsyncMock(side_effect=api_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="nonexistent", messages=[Message.user("Hi")])
 
         with pytest.raises(E.NotFoundError):
@@ -524,7 +535,9 @@ class TestErrorTranslation:
         """Timeout → RequestTimeoutError."""
         adapter = _make_adapter()
         timeout_error = openai.APITimeoutError(request=MagicMock())
-        adapter._client.chat.completions.create = AsyncMock(side_effect=timeout_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=timeout_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.RequestTimeoutError):
@@ -535,7 +548,9 @@ class TestErrorTranslation:
         """Connection error → NetworkError."""
         adapter = _make_adapter()
         conn_error = openai.APIConnectionError(request=MagicMock())
-        adapter._client.chat.completions.create = AsyncMock(side_effect=conn_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=conn_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.NetworkError):

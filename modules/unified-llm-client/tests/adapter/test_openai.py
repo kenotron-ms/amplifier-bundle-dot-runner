@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
 import pytest
@@ -735,21 +735,21 @@ class TestCompleteIntegration:
         with patch("unified_llm.adapters.openai.openai.AsyncOpenAI") as mock_cls:
             adapter = OpenAIAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.responses = AsyncMock()
-            mock_client.responses.create = AsyncMock(
-                return_value=_mock_openai_response(
-                    output=[
-                        SimpleNamespace(
-                            type="message",
-                            role="assistant",
-                            content=[
-                                SimpleNamespace(
-                                    type="output_text", text="Hello from GPT!"
-                                )
-                            ],
-                        )
-                    ],
-                )
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_openai_response(
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        content=[
+                            SimpleNamespace(type="output_text", text="Hello from GPT!")
+                        ],
+                    )
+                ],
+            )
+            _mock_raw.headers = {}
+            mock_client.responses.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -761,16 +761,18 @@ class TestCompleteIntegration:
             assert response.text == "Hello from GPT!"
             assert response.provider == "openai"
             assert response.finish_reason.reason == "stop"
-            mock_client.responses.create.assert_called_once()
+            mock_client.responses.with_raw_response.create.assert_called_once()
 
     def test_complete_passes_translated_kwargs(self) -> None:
         """complete() passes correctly translated kwargs to SDK."""
         with patch("unified_llm.adapters.openai.openai.AsyncOpenAI") as mock_cls:
             adapter = OpenAIAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.responses = AsyncMock()
-            mock_client.responses.create = AsyncMock(
-                return_value=_mock_openai_response()
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_openai_response()
+            _mock_raw.headers = {}
+            mock_client.responses.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -784,7 +786,7 @@ class TestCompleteIntegration:
             )
             asyncio.run(adapter.complete(request))
 
-            call_kwargs = mock_client.responses.create.call_args[1]
+            call_kwargs = mock_client.responses.with_raw_response.create.call_args[1]
             assert call_kwargs["model"] == "gpt-4.1"
             assert call_kwargs["max_output_tokens"] == 1024
             assert call_kwargs["temperature"] == 0.5
@@ -795,8 +797,7 @@ class TestCompleteIntegration:
         with patch("unified_llm.adapters.openai.openai.AsyncOpenAI") as mock_cls:
             adapter = OpenAIAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.responses = AsyncMock()
-            mock_client.responses.create = AsyncMock(
+            mock_client.responses.with_raw_response.create = AsyncMock(
                 side_effect=_make_api_status_error(429, "Rate limited")
             )
 
@@ -812,8 +813,7 @@ class TestCompleteIntegration:
         with patch("unified_llm.adapters.openai.openai.AsyncOpenAI") as mock_cls:
             adapter = OpenAIAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.responses = AsyncMock()
-            mock_client.responses.create = AsyncMock(
+            mock_client.responses.with_raw_response.create = AsyncMock(
                 side_effect=openai.APIConnectionError(
                     request=SimpleNamespace(url="test")  # type: ignore[arg-type]
                 )
@@ -831,19 +831,21 @@ class TestCompleteIntegration:
         with patch("unified_llm.adapters.openai.openai.AsyncOpenAI") as mock_cls:
             adapter = OpenAIAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.responses = AsyncMock()
-            mock_client.responses.create = AsyncMock(
-                return_value=_mock_openai_response(
-                    output=[
-                        SimpleNamespace(
-                            type="function_call",
-                            call_id="call_1",
-                            name="get_weather",
-                            arguments='{"city": "SF"}',
-                        ),
-                    ],
-                    status="completed",
-                )
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_openai_response(
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        call_id="call_1",
+                        name="get_weather",
+                        arguments='{"city": "SF"}',
+                    ),
+                ],
+                status="completed",
+            )
+            _mock_raw.headers = {}
+            mock_client.responses.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(

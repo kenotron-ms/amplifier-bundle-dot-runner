@@ -138,7 +138,12 @@ class TestCompleteReturnsResponse:
                 input_tokens_details=None,
             ),
         )
-        adapter._client.responses.create = AsyncMock(return_value=mock_raw)
+        _mock_raw_http = MagicMock()
+        _mock_raw_http.parse.return_value = mock_raw
+        _mock_raw_http.headers = {}
+        adapter._client.responses.with_raw_response.create = AsyncMock(
+            return_value=_mock_raw_http
+        )
         request = Request(model="gpt-4.1", messages=[Message.user("Hello")])
         response = asyncio.run(adapter.complete(request))
         assert response.text == "Hi!"
@@ -154,7 +159,12 @@ class TestCompleteReturnsResponse:
             content=[SimpleNamespace(type="text", text="Hello!")],
             usage=SimpleNamespace(input_tokens=10, output_tokens=3),
         )
-        adapter._client.messages.create = AsyncMock(return_value=mock_raw)
+        _mock_raw_http = MagicMock()
+        _mock_raw_http.parse.return_value = mock_raw
+        _mock_raw_http.headers = {}
+        adapter._client.messages.with_raw_response.create = AsyncMock(
+            return_value=_mock_raw_http
+        )
         request = Request(
             model="claude-sonnet-4-20250514",
             messages=[Message.user("Hi")],
@@ -288,7 +298,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=401, headers={}),
             body={"error": {"message": "Bad key"}},
         )
-        adapter._client.responses.create = AsyncMock(side_effect=api_error)
+        adapter._client.responses.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="gpt-4.1", messages=[Message.user("Hi")])
         with pytest.raises(AuthenticationError):
             asyncio.run(adapter.complete(request))
@@ -302,7 +314,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=429, headers=MagicMock(get=lambda k: None)),
             body={"error": {"message": "Rate limited", "type": "rate_limit_error"}},
         )
-        adapter._client.messages.create = AsyncMock(side_effect=api_error)
+        adapter._client.messages.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(
             model="claude-sonnet-4-20250514",
             messages=[Message.user("Hi")],
@@ -330,7 +344,9 @@ class TestRetryAfterHeader:
             response=mock_response,
             body={"error": {"message": "Rate limited"}},
         )
-        adapter._client.responses.create = AsyncMock(side_effect=api_error)
+        adapter._client.responses.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="gpt-4.1", messages=[Message.user("Hi")])
         try:
             asyncio.run(adapter.complete(request))

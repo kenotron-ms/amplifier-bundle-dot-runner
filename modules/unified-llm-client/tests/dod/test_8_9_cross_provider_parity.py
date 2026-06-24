@@ -153,9 +153,19 @@ def _mock_text_response(provider: str, text: str = "Hello!") -> Any:
 def _setup_complete_mock(adapter: Any, provider: str, response: Any) -> None:
     """Wire up the mock to return the response from complete()."""
     if provider == "openai":
-        adapter._client.responses.create = AsyncMock(return_value=response)
+        _raw_http = MagicMock()
+        _raw_http.parse.return_value = response
+        _raw_http.headers = {}
+        adapter._client.responses.with_raw_response.create = AsyncMock(
+            return_value=_raw_http
+        )
     elif provider == "anthropic":
-        adapter._client.messages.create = AsyncMock(return_value=response)
+        _raw_http = MagicMock()
+        _raw_http.parse.return_value = response
+        _raw_http.headers = {}
+        adapter._client.messages.with_raw_response.create = AsyncMock(
+            return_value=_raw_http
+        )
     elif provider == "gemini":
         adapter._client.aio.models.generate_content = AsyncMock(return_value=response)
 
@@ -564,7 +574,7 @@ def _run_error_handling_401(provider: str) -> None:
             response=MagicMock(status_code=401, headers={}),
             body={"error": {"message": "Bad key"}},
         )
-        adapter._client.responses.create = AsyncMock(side_effect=err)
+        adapter._client.responses.with_raw_response.create = AsyncMock(side_effect=err)
     elif provider == "anthropic":
         import anthropic
 
@@ -573,7 +583,7 @@ def _run_error_handling_401(provider: str) -> None:
             response=MagicMock(status_code=401, headers=MagicMock(get=lambda k: None)),
             body={"error": {"message": "Bad key", "type": "authentication_error"}},
         )
-        adapter._client.messages.create = AsyncMock(side_effect=err)
+        adapter._client.messages.with_raw_response.create = AsyncMock(side_effect=err)
     elif provider == "gemini":
         from google.genai import errors as genai_errors
 
@@ -600,7 +610,7 @@ def _run_error_handling_429(provider: str) -> None:
             response=MagicMock(status_code=429, headers={}),
             body={"error": {"message": "Rate limited"}},
         )
-        adapter._client.responses.create = AsyncMock(side_effect=err)
+        adapter._client.responses.with_raw_response.create = AsyncMock(side_effect=err)
     elif provider == "anthropic":
         import anthropic
 
@@ -609,7 +619,7 @@ def _run_error_handling_429(provider: str) -> None:
             response=MagicMock(status_code=429, headers=MagicMock(get=lambda k: None)),
             body={"error": {"message": "Rate limited", "type": "rate_limit_error"}},
         )
-        adapter._client.messages.create = AsyncMock(side_effect=err)
+        adapter._client.messages.with_raw_response.create = AsyncMock(side_effect=err)
     elif provider == "gemini":
         from google.genai import errors as genai_errors
 

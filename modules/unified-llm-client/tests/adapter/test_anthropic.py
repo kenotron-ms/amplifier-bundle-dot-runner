@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
 import pytest
@@ -806,11 +806,13 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                return_value=_mock_anthropic_response(
-                    content=[SimpleNamespace(type="text", text="Hello from Claude!")],
-                )
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_anthropic_response(
+                content=[SimpleNamespace(type="text", text="Hello from Claude!")],
+            )
+            _mock_raw.headers = {}
+            mock_client.messages.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -822,7 +824,7 @@ class TestCompleteIntegration:
             assert response.text == "Hello from Claude!"
             assert response.provider == "anthropic"
             assert response.finish_reason.reason == "stop"
-            mock_client.messages.create.assert_called_once()
+            mock_client.messages.with_raw_response.create.assert_called_once()
 
     def test_complete_passes_translated_kwargs(self) -> None:
         """complete() passes correctly translated kwargs to SDK."""
@@ -831,9 +833,11 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                return_value=_mock_anthropic_response()
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_anthropic_response()
+            _mock_raw.headers = {}
+            mock_client.messages.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -847,7 +851,7 @@ class TestCompleteIntegration:
             )
             asyncio.run(adapter.complete(request))
 
-            call_kwargs = mock_client.messages.create.call_args[1]
+            call_kwargs = mock_client.messages.with_raw_response.create.call_args[1]
             assert call_kwargs["model"] == "claude-sonnet-4-20250514"
             assert call_kwargs["max_tokens"] == 1024
             assert call_kwargs["temperature"] == 0.5
@@ -860,8 +864,7 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
+            mock_client.messages.with_raw_response.create = AsyncMock(
                 side_effect=_make_api_status_error(429, "Rate limited")
             )
 
@@ -879,8 +882,7 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
+            mock_client.messages.with_raw_response.create = AsyncMock(
                 side_effect=anthropic.APIConnectionError(
                     request=SimpleNamespace(url="test")
                 )
@@ -900,19 +902,21 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                return_value=_mock_anthropic_response(
-                    content=[
-                        SimpleNamespace(
-                            type="tool_use",
-                            id="toolu_1",
-                            name="get_weather",
-                            input={"city": "SF"},
-                        ),
-                    ],
-                    stop_reason="tool_use",
-                )
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_anthropic_response(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="toolu_1",
+                        name="get_weather",
+                        input={"city": "SF"},
+                    ),
+                ],
+                stop_reason="tool_use",
+            )
+            _mock_raw.headers = {}
+            mock_client.messages.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(

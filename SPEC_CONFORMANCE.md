@@ -52,12 +52,14 @@ of deliberate omissions (resume, tool-hooks, execution-environment).
 
 | ID | Area | Spec | Impl | Status | Disposition |
 |----|------|------|------|--------|-------------|
-| ULM-1 | Gemini native structured output (`responseMimeType`+`responseSchema`) | `:988` | `adapters/gemini.py` `_translate_request` | **DONE** (translation) | ALIGN |
-| ULM-2 | Anthropic structured-output fallback (tool-extraction) | `:989` | `adapters/anthropic.py` + `generate.py` `generate_object` | **DONE** (translation) | ALIGN |
-| ULM-3 | OpenAI native structured output | `:987` | `adapters/openai.py:296-313`, `openai_compat.py:453-466` | **DONE** (pre-existing; test added) | ALIGN |
+| ULM-1 | Gemini native structured output (`responseMimeType`+`responseSchema`) | `:988` | `adapters/gemini.py` `_translate_request` | **DONE — LIVE-PROVEN** (gemini-2.5-flash-lite) | ALIGN |
+| ULM-2 | Anthropic structured-output fallback (tool-extraction) | `:989` | `adapters/anthropic.py` + `generate.py` `generate_object` | **DONE — LIVE-PROVEN** (claude-haiku-4-5) | ALIGN |
+| ULM-3 | OpenAI native structured output | `:987` | `adapters/openai.py:296-313`, `openai_compat.py:453-466` | **DONE — LIVE-PROVEN** (gpt-4o-mini) | ALIGN |
 | ULM-4 | `generate_object` schema-validation depth (only required-keys + root type) | `§4.5` | `generate.py` `_validate_against_schema` | OPEN | ALIGN (secondary) |
-| ULM-5 | `Response.raw` never populated on success | `:599`, `:1615` | all three `_translate_response` | OPEN | ALIGN |
-| ULM-6 | `RateLimitInfo` / `x-ratelimit-*` never parsed | `:1616`, `:724` | no adapter populates `Response.rate_limit`; grep `x-ratelimit`=0 | OPEN | ALIGN |
+| ULM-5 | `Response.raw` never populated on success | `:599`, `:1615` | all 4 adapters now via `with_raw_response` + `_serialize_raw()` | **DONE** | ALIGN |
+| ULM-6 | `RateLimitInfo` / `x-ratelimit-*` never parsed | `:1616`, `:724` | OpenAI/Anthropic/openai_compat parse headers; **Gemini deferred (SDK exposes no headers)** | **DONE (partial; Gemini N/A)** | ALIGN |
+| ULM-14 | Gemini rejects unsupported JSON-Schema keywords (`additionalProperties`, `$schema`, …) in `response_schema` | live 400 INVALID_ARGUMENT | `adapters/gemini.py` `_sanitize_gemini_schema()` | **DONE** (live-found + fixed) | ALIGN |
+| ULM-15 | Smoke-test/catalog staleness: `claude-sonnet-4-20250514` 404s on gateway; reasoning-model smoke tests use `max_tokens=16` (0 output budget) | n/a (test fixtures + `models.json`) | `tests/dod/test_8_10_integration_smoke.py`, `data/models.json` | OPEN | ALIGN (test/catalog hygiene) |
 | ULM-7 | `reasoning_effort` no-op on Anthropic & Gemini | `:691`, `:701` | only `openai.py:316`; others drop it | OPEN | ALIGN |
 | ULM-8 | Anthropic `reasoning_tokens` estimate from thinking blocks | `:697` | `anthropic.py` `_map_usage` never sets it | OPEN | ALIGN |
 | ULM-9 | Error message-body classification (Quota/ContextLength/ContentFilter) | `:1394-1401` | only `model_not_found`; `QuotaExceededError` never raised | OPEN | ALIGN |
@@ -114,7 +116,53 @@ substitution beyond `$goal`.
 |----|------|--------|-------------|
 | SYNC-1 | Re-sync vendored `specs/canonical/` to upstream byte-for-byte | **DONE** (canonical @ `fb57a55`) | ALIGN |
 | DEAD-1 | Dead `SessionConfig` fields implying coverage that isn't wired (`tool_output_limits`, `tool_line_limits`, `default_command_timeout_ms`, `max_command_timeout_ms`, `get_max_tool_rounds`) | **DONE** | DIVERGE (all deleted + documented) |
-| ATX-8 | DOT `response_schema` node attribute → per-provider structured output (NOT in canonical spec; §4.5 keeps output format at backend) | **DONE** (wiring; live UNPROVEN) | IMPROVE (extension §23) |
+| ATX-8 | DOT `response_schema` node attribute → per-provider structured output (NOT in canonical spec; §4.5 keeps output format at backend) | **DONE — LIVE-PROVEN** (all 3 providers via DOT pipeline) | IMPROVE (extension §23) |
+| ATX-9 | DOT backends didn't recover Anthropic structured output from the `__structured_output__` tool call (only read `result.text`, which is empty on the tool-extraction path) | live: `outcome.notes=''` | `loop-pipeline/__init__.py`, `backend.py` | **DONE** (live-found + fixed) | ALIGN |
+
+---
+
+## DECIDE items — context for a future decision
+
+Deferred by owner; not decided yet. Captured context so the future call is well-informed.
+Each is currently **OPEN** with disposition pending (ALIGN vs DIVERGE).
+
+### CAL-3 — ExecutionEnvironment abstraction (coding-agent-loop §4)
+- **Spec wants:** a swappable `read_file/write_file/exec_command/grep/glob/list_directory` seam with
+  Local/Docker/K8s/WASM/SSH implementations + platform metadata.
+- **Reality now:** tools self-execute; no environment object is threaded; command timeouts + env
+  filtering are owned by the (external) shell/bash tool. `environment.py` only builds the prompt's
+  `<environment>` text block, not an execution seam.
+- **Coupled to:** CAL-4 (command-timeout/env-filter wiring) and DEAD-1 (we deleted the
+  command-timeout `SessionConfig` fields and pointed at the shell tool).
+- **Decision hinges on:** do we need sandboxed/remote execution (Docker/SSH/WASM)? If all execution
+  stays local via mounted tools → **DIVERGE** (document "tools own execution"). If we want isolation
+  or remote targets → **ALIGN** (build the seam). Note Amplifier already provides isolation at a
+  different layer (DTU), which may make a loop-level ExecutionEnvironment redundant.
+- **Cost if ALIGN:** new abstraction crossing the tool boundary; touches every tool's call contract.
+
+### ATX-2 — Checkpoint-based resume (attractor §5.3)
+- **Spec wants:** load `checkpoint.json` → restore context/completed-nodes/retry counters → continue
+  from the node after `current_node`; degrade `full`→`summary:high` one hop on resume.
+- **Reality now:** engine always restarts from the start node; `checkpoint.py` is an observability
+  record (explicitly "not a resume marker"); `load_checkpoint()` is never used to rehydrate.
+  Idempotency is **graph-owned**: handlers skip already-done work (see `examples/pipelines/12-graph-resume`).
+- **Decision hinges on:** is true crash-resume *with in-memory context restoration* needed, or is
+  handler-level idempotency ("don't redo finished work") sufficient? If the latter → **DIVERGE**
+  (document the graph-owned-idempotency model as the intentional design). If we need resume-after-crash
+  that restores accumulated context mid-pipeline → **ALIGN**.
+- **Cost if ALIGN:** real state-serialization + rehydration surface; the `full`→`summary:high`
+  degrade rule; correctness testing across partial-completion states.
+
+### ATX-3 — Tool-call hooks (attractor §9.7)
+- **Spec wants:** `tool_hooks.pre` / `tool_hooks.post` shell commands wrapping every LLM tool call;
+  a non-zero pre-hook exit skips the tool call.
+- **Reality now:** not implemented (grep `tool_hooks` = 0). A separate `hooks-tool-truncation` module
+  exists but implements output truncation, not this pre/post shell contract.
+- **Decision hinges on:** do we want per-tool-call shell guards expressed at the *DOT* layer, or is
+  this better served by Amplifier's existing kernel/bundle **hook** mechanism (code-decided lifecycle
+  hooks)? If the kernel hook system covers the real need → **DIVERGE** (document the alternative). If
+  DOT-author-level per-call guards are genuinely wanted → **ALIGN**.
+- **Cost if ALIGN:** moderate; a new node/graph attribute + a guarded tool-call execution path.
 
 ---
 
