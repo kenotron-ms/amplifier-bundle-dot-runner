@@ -92,28 +92,28 @@ class TestGate4TokenizerTotality:
 
     def test_sorted_does_not_raise(self) -> None:
         """sorted() over mixed claude-3.x / claude-sonnet-4 shapes must not raise."""
-        mixed = ["claude-3-5-sonnet-20241022", "claude-sonnet-4-20250514"]
+        mixed = ["claude-3-5-sonnet-20241022", "claude-sonnet-4-6"]
         # This line is the gate: TypeError here means int/str comparison in key.
         sorted_result = sorted(mixed, key=_version_key)
         assert isinstance(sorted_result, list)
         assert len(sorted_result) == 2
 
     def test_select_latest_picks_sonnet4(self) -> None:
-        """claude-sonnet-4-20250514 wins over claude-3-5-sonnet-20241022.
+        """claude-sonnet-4-6 wins over claude-3-5-sonnet-20241022.
 
         Version key explanation:
         - claude-3-5-sonnet-20241022: strip -20241022, tokens for 'claude-3-5-sonnet'.
           First triple: (0, 0, 'claude-').
-        - claude-sonnet-4-20250514: strip -20250514, tokens for 'claude-sonnet-4'.
+        - claude-sonnet-4-6: no date suffix to strip, tokens for 'claude-sonnet-4-6'.
           First triple: (0, 0, 'claude-sonnet-').
         - 'claude-sonnet-' > 'claude-' (longer prefix, 'sonnet' chars follow '-').
-        - Therefore claude-sonnet-4-20250514 has the larger key → wins.
+        - Therefore claude-sonnet-4-6 has the larger key → wins.
         """
         result = select_latest(
-            ["claude-3-5-sonnet-20241022", "claude-sonnet-4-20250514"],
+            ["claude-3-5-sonnet-20241022", "claude-sonnet-4-6"],
             "*sonnet*",
         )
-        assert result == "claude-sonnet-4-20250514"
+        assert result == "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------

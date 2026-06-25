@@ -66,7 +66,7 @@ class TestIntegrationSmoke:
             result = await generate(
                 model=latest.id,
                 prompt="Say hello in one sentence.",
-                max_tokens=100,
+                max_tokens=512,  # reasoning models consume budget on internal thinking; 512 ensures visible output
                 provider=provider,
                 client=client,
                 max_retries=2,
@@ -82,7 +82,7 @@ class TestIntegrationSmoke:
     async def test_streaming(self) -> None:
         """Spec: concatenated deltas == response.text.
 
-        stream_result = stream(model="claude-sonnet-4-20250514", prompt="Write a haiku.")
+        stream_result = stream(model="claude-sonnet-4-6", prompt="Write a haiku.")
         text_chunks = []
         FOR EACH event IN stream_result:
             IF event.type == TEXT_DELTA: text_chunks.APPEND(event.delta)
@@ -117,7 +117,7 @@ class TestIntegrationSmoke:
         """Spec: tool loop with parallel execution, steps >= 2.
 
         result = generate(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             prompt="What is the weather in San Francisco and New York?",
             tools=[weather_tool],
             max_tool_rounds=3
@@ -180,7 +180,7 @@ class TestIntegrationSmoke:
         """Spec: image input produces non-empty response.
 
         result = generate(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             messages=[Message(role=USER, content=[
                 ContentPart(kind=TEXT, text="What do you see?"),
                 ContentPart(kind=IMAGE, image=ImageData(data=<png_bytes>, media_type="image/png"))
@@ -324,7 +324,7 @@ class TestModelIdStalenessGuard:
         result = await generate(
             model=latest.id,
             prompt="Reply with just 'ok'.",
-            max_tokens=16,  # 16 avoids provider min-token floors on reasoning models
+            max_tokens=512,  # reasoning models consume budget on internal thinking; 512 ensures visible output tokens
             provider="anthropic",
             client=client,
             max_retries=0,
@@ -348,7 +348,7 @@ class TestModelIdStalenessGuard:
         result = await generate(
             model=latest.id,
             prompt="Reply with just 'ok'.",
-            max_tokens=16,  # 16 satisfies o4-mini's minimum of 16 max_output_tokens
+            max_tokens=512,  # reasoning models consume budget on internal thinking; 512 ensures visible output tokens
             provider="openai",
             client=client,
             max_retries=0,
@@ -373,7 +373,7 @@ class TestModelIdStalenessGuard:
         result = await generate(
             model=latest.id,
             prompt="Reply with just 'ok'.",
-            max_tokens=16,  # 16 avoids 0-output edge case from max_tokens=1 truncation
+            max_tokens=512,  # reasoning models consume budget on internal thinking; 512 ensures visible output tokens
             provider="gemini",
             client=client,
             max_retries=0,
