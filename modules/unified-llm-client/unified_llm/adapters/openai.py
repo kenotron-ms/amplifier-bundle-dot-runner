@@ -472,6 +472,13 @@ class OpenAIAdapter:
                             "image_url": f"data:{media_type};base64,{b64}",
                         }
                     )
+            else:
+                # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                raise errors.ConfigurationError(
+                    f"OpenAI adapter: unsupported content kind {part.kind!r} in user "
+                    "message. Only TEXT and IMAGE parts are supported for OpenAI user "
+                    "messages. AUDIO and DOCUMENT parts are not yet implemented."
+                )
         return result
 
     def _translate_assistant_to_input(
@@ -510,6 +517,13 @@ class OpenAIAdapter:
                         "name": tc.name,
                         "arguments": arguments,
                     }
+                )
+            else:
+                # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                raise errors.ConfigurationError(
+                    f"OpenAI adapter: unsupported content kind {part.kind!r} in "
+                    "assistant message. Supported: TEXT, TOOL_CALL. AUDIO and DOCUMENT "
+                    "parts are not supported."
                 )
 
         # Flush remaining text

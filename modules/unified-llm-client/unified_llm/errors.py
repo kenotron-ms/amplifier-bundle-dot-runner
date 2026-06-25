@@ -227,6 +227,53 @@ _STATUS_MAP: dict[int, type[ProviderError]] = {
     504: ServerError,
 }
 
+# ---------------------------------------------------------------------------
+# ULM-9: Error message-body classification (Spec §6.5)
+# ---------------------------------------------------------------------------
+
+# Conservative phrase sets — ordered most-specific first within each group.
+# Keep these narrow: false positives are worse than false negatives.
+_QUOTA_PHRASES: tuple[str, ...] = (
+    "insufficient_quota",
+    "quota exceeded",
+    "billing",
+    "rate limit",
+    "quota",
+)
+_CONTEXT_PHRASES: tuple[str, ...] = (
+    "context length",
+    "maximum context",
+    "too many tokens",
+    "prompt is too long",
+)
+_CONTENT_FILTER_PHRASES: tuple[str, ...] = (
+    "content filter",
+    "content_policy",
+    "safety",
+    "blocked",
+)
+
+
+def _classify_by_message(message: str) -> type[ProviderError] | None:
+    """Return a more-specific error class when the message body contains
+    known classification phrases (Spec §6.5).
+
+    Applied as a secondary signal after status-code mapping.  Only promotes
+    from generic types; never demotes a specific type already determined by
+    the status code.
+    """
+    msg_lower = message.lower()
+    for phrase in _QUOTA_PHRASES:
+        if phrase in msg_lower:
+            return QuotaExceededError
+    for phrase in _CONTEXT_PHRASES:
+        if phrase in msg_lower:
+            return ContextLengthError
+    for phrase in _CONTENT_FILTER_PHRASES:
+        if phrase in msg_lower:
+            return ContentFilterError
+    return None
+
 
 def error_from_status_code(
     *,
@@ -238,7 +285,12 @@ def error_from_status_code(
     retry_after: float | None = None,
     cause: Exception | None = None,
 ) -> SDKError:
-    """Map an HTTP status code to the appropriate error type (Spec §6.4)."""
+    """Map an HTTP status code to the appropriate error type (Spec §6.4).
+
+    After status-code mapping, applies message-body classification (Spec §6.5)
+    to promote generic errors (InvalidRequestError, unknown status) to more
+    specific types when phrase signals are present.
+    """
     if status_code == 408:
         return RequestTimeoutError(message, cause=cause)
 
@@ -255,7 +307,18 @@ def error_from_status_code(
             cause=cause,
         )
 
-    cls = _STATUS_MAP.get(status_code)
+    cls: type[ProviderError] | None = _STATUS_MAP.get(status_code)
+
+    # ULM-9: message-body classification — promote when status code gives a
+    # generic type (InvalidRequestError) or is unknown (cls is None).
+    # Do NOT override specific types already determined by the status code
+    # (e.g. AuthenticationError, RateLimitError, ContextLengthError).
+    _GENERIC_TYPES: tuple[type[ProviderError], ...] = (InvalidRequestError,)
+    if cls is None or cls in _GENERIC_TYPES:
+        msg_cls = _classify_by_message(message)
+        if msg_cls is not None:
+            cls = msg_cls
+
     if cls is None:
         # Unknown status codes default to retryable (Spec §6.3)
         return ProviderError(

@@ -37,6 +37,27 @@ from unified_llm.types import (
 )
 
 
+# ---------------------------------------------------------------------------
+# ULM-7: reasoning_effort → Anthropic extended-thinking budget mapping
+# ---------------------------------------------------------------------------
+
+# Token budgets for each effort level.
+# Anthropic constraint: budget_tokens >= 1024 AND budget_tokens < max_tokens.
+_EFFORT_TO_BUDGET: dict[str, int] = {
+    "low": 1024,
+    "medium": 8000,
+    "high": 16000,
+}
+
+# Beta header required for extended thinking (interleaved thinking, Claude 3.7+).
+_THINKING_BETA = "interleaved-thinking-2025-05-14"
+
+
+def _effort_to_budget(effort: str) -> int:
+    """Map reasoning_effort ('low'|'medium'|'high') to a thinking token budget."""
+    return _EFFORT_TO_BUDGET.get(effort.lower(), 8000)
+
+
 def _serialize_raw(obj: Any) -> dict[str, Any] | None:
     """Defensively serialize a provider SDK response to a JSON-serializable dict.
 
@@ -425,6 +446,35 @@ class AnthropicAdapter:
                     "Use response_format with type='json_schema' and a JSON schema."
                 )
 
+        # ULM-7: Extended thinking via reasoning_effort
+        # Activated ONLY when reasoning_effort is explicitly set.
+        # Anthropic constraints:
+        #   - budget_tokens >= 1024
+        #   - budget_tokens STRICTLY < max_tokens
+        #   - temperature must be 1.0 when thinking is enabled
+        # If max_tokens is too small to satisfy these constraints, skip thinking.
+        if request.reasoning_effort is not None:
+            budget = _effort_to_budget(request.reasoning_effort)
+            max_tokens_val = kwargs["max_tokens"]
+            if max_tokens_val > 1024:
+                # Clamp: budget must be in [1024, max_tokens - 1]
+                budget = min(budget, max_tokens_val - 1)
+                budget = max(budget, 1024)
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # Anthropic requires temperature=1 when extended thinking is on.
+                # Override any caller-specified value; the constraint is absolute.
+                kwargs["temperature"] = 1.0
+                # Add the interleaved-thinking beta header.
+                extra_headers = kwargs.get("extra_headers", {})
+                existing_beta = extra_headers.get("anthropic-beta", "")
+                if _THINKING_BETA not in existing_beta:
+                    extra_headers["anthropic-beta"] = (
+                        f"{existing_beta},{_THINKING_BETA}".lstrip(",")
+                    )
+                kwargs["extra_headers"] = extra_headers
+            # else: max_tokens <= 1024 — cannot satisfy Anthropic's constraints;
+            # skip thinking rather than sending a request that will be rejected.
+
         # Provider options escape hatch
         if request.provider_options and "anthropic" in request.provider_options:
             opts = request.provider_options["anthropic"]
@@ -469,6 +519,13 @@ class AnthropicAdapter:
                             },
                         }
                     )
+            else:
+                # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                raise errors.ConfigurationError(
+                    f"Anthropic adapter: unsupported content kind {part.kind!r} in user "
+                    "message. Only TEXT and IMAGE parts are supported for Anthropic user "
+                    "messages. AUDIO and DOCUMENT parts are not yet implemented."
+                )
         return result
 
     def _translate_assistant_content(
@@ -508,6 +565,13 @@ class AnthropicAdapter:
                         "type": "redacted_thinking",
                         "data": part.thinking.text,
                     }
+                )
+            else:
+                # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                raise errors.ConfigurationError(
+                    f"Anthropic adapter: unsupported content kind {part.kind!r} in "
+                    "assistant message. Supported: TEXT, TOOL_CALL, THINKING, "
+                    "REDACTED_THINKING. AUDIO and DOCUMENT parts are not supported."
                 )
         return result
 

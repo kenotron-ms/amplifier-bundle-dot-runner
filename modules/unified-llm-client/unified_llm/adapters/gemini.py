@@ -37,6 +37,23 @@ from unified_llm.types import (
 )
 
 
+# ---------------------------------------------------------------------------
+# ULM-7: reasoning_effort → Gemini thinking budget mapping
+# ---------------------------------------------------------------------------
+
+# Token budgets for each effort level — mirrors the Anthropic mapping.
+_EFFORT_TO_BUDGET: dict[str, int] = {
+    "low": 1024,
+    "medium": 8000,
+    "high": 16000,
+}
+
+
+def _effort_to_budget(effort: str) -> int:
+    """Map reasoning_effort ('low'|'medium'|'high') to a thinking token budget."""
+    return _EFFORT_TO_BUDGET.get(effort.lower(), 8000)
+
+
 def _serialize_raw(obj: Any) -> dict[str, Any] | None:
     """Defensively serialize a provider SDK response to a JSON-serializable dict.
 
@@ -324,6 +341,15 @@ class GeminiAdapter:
             if tc_config:
                 config["tool_config"] = tc_config
 
+        # ULM-7: Extended thinking via reasoning_effort.
+        # Activated ONLY when reasoning_effort is explicitly set.
+        # Uses ThinkingConfig(thinking_budget=N) in the generation config.
+        if request.reasoning_effort is not None:
+            from google.genai.types import ThinkingConfig
+
+            budget = _effort_to_budget(request.reasoning_effort)
+            config["thinking_config"] = ThinkingConfig(thinking_budget=budget)
+
         # Structured output — native Gemini pass-through (Spec §4.5, capability matrix :988)
         # Sets response_mime_type="application/json" and response_schema=<schema> so the
         # provider enforces the schema on its side rather than relying on text parsing alone.
@@ -331,7 +357,9 @@ class GeminiAdapter:
             fmt = request.response_format
             if fmt.type == "json_schema" and fmt.json_schema:
                 config["response_mime_type"] = "application/json"
-                config["response_schema"] = self._sanitize_gemini_schema(fmt.json_schema)
+                config["response_schema"] = self._sanitize_gemini_schema(
+                    fmt.json_schema
+                )
             elif fmt.type == "json":
                 config["response_mime_type"] = "application/json"
 
@@ -373,6 +401,13 @@ class GeminiAdapter:
                             }
                         }
                     )
+            else:
+                # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                raise errors.ConfigurationError(
+                    f"Gemini adapter: unsupported content kind {part.kind!r} in user "
+                    "message. Only TEXT and IMAGE parts are supported for Gemini user "
+                    "messages. AUDIO and DOCUMENT parts are not yet implemented."
+                )
         return result
 
     def _translate_model_parts(self, parts: list[ContentPart]) -> list[dict[str, Any]]:
@@ -395,6 +430,13 @@ class GeminiAdapter:
                             "args": args,
                         }
                     }
+                )
+            else:
+                # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                raise errors.ConfigurationError(
+                    f"Gemini adapter: unsupported content kind {part.kind!r} in "
+                    "assistant message. Supported: TEXT, TOOL_CALL. AUDIO and DOCUMENT "
+                    "parts are not supported."
                 )
         return result
 
@@ -651,11 +693,7 @@ class GeminiAdapter:
 
         def _clean(node: object) -> object:
             if isinstance(node, dict):
-                return {
-                    k: _clean(v)
-                    for k, v in node.items()
-                    if k not in _UNSUPPORTED
-                }
+                return {k: _clean(v) for k, v in node.items() if k not in _UNSUPPORTED}
             if isinstance(node, list):
                 return [_clean(item) for item in node]
             return node
