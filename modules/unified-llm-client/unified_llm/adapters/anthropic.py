@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import anthropic
@@ -20,6 +22,7 @@ from unified_llm.types import (
     ContentPart,
     FinishReason,
     Message,
+    RateLimitInfo,
     Request,
     Response,
     Role,
@@ -32,6 +35,119 @@ from unified_llm.types import (
     ToolChoice,
     Usage,
 )
+
+
+def _serialize_raw(obj: Any) -> dict[str, Any] | None:
+    """Defensively serialize a provider SDK response to a JSON-serializable dict.
+
+    Tries, in order:
+    1. Already a dict — return as-is.
+    2. Pydantic model_dump() — Anthropic SDK objects are pydantic v2 BaseModel.
+    3. to_dict() — fallback for other SDK styles.
+    4. vars() — for SimpleNamespace and plain objects.
+    5. Fallback sentinel {"_unserializable": repr(obj)}.
+
+    Returns None only if *obj* is None.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        try:
+            result = model_dump()
+            if isinstance(result, dict):
+                return result
+        except Exception:
+            pass
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        try:
+            result = to_dict()
+            if isinstance(result, dict):
+                return result
+        except Exception:
+            pass
+    try:
+        d = vars(obj)
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return {"_unserializable": repr(obj)}
+
+
+def _parse_ratelimit_headers(headers: Any) -> RateLimitInfo | None:
+    """Parse x-ratelimit-* HTTP headers into a RateLimitInfo.
+
+    Supports both integer fields and the reset timestamp, which providers
+    encode as either an ISO-8601 string or a Go-style duration
+    (e.g. ``"6m5.128s"``, ``"1m"``, ``"100ms"``).
+
+    Returns None when no recognised rate-limit header is present.
+    """
+
+    def _int(key: str) -> int | None:
+        v = headers.get(key)
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None
+
+    def _reset_dt(key: str) -> datetime | None:
+        v = headers.get(key)
+        if not v:
+            return None
+        # ISO-8601 path
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        # Go-style duration: "6m5.128s", "1m30s", "5s", "100ms"
+        m = re.fullmatch(
+            r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?",
+            v.strip(),
+        )
+        if m and any(g is not None for g in m.groups()):
+            hours = int(m.group(1) or 0)
+            minutes = int(m.group(2) or 0)
+            seconds = float(m.group(3) or 0)
+            millis = int(m.group(4) or 0)
+            delta = timedelta(
+                hours=hours, minutes=minutes, seconds=seconds, milliseconds=millis
+            )
+            return datetime.now(timezone.utc) + delta
+        return None
+
+    limit_req = _int("x-ratelimit-limit-requests")
+    remaining_req = _int("x-ratelimit-remaining-requests")
+    limit_tok = _int("x-ratelimit-limit-tokens")
+    remaining_tok = _int("x-ratelimit-remaining-tokens")
+    reset_at = _reset_dt("x-ratelimit-reset-requests")
+
+    if all(
+        v is None
+        for v in [limit_req, remaining_req, limit_tok, remaining_tok, reset_at]
+    ):
+        return None
+
+    return RateLimitInfo(
+        requests_limit=limit_req,
+        requests_remaining=remaining_req,
+        tokens_limit=limit_tok,
+        tokens_remaining=remaining_tok,
+        reset_at=reset_at,
+    )
+
+
+# Tool name used for structured output extraction via tool-based extraction path.
+# generate_object() checks for this name in tool_calls to recover the structured result.
+# Public so test code can import it for assertions without triggering pyright warnings.
+# Must stay in sync with the constant of the same value in generate.py.
+STRUCTURED_OUTPUT_TOOL_NAME = "__structured_output__"
 
 
 class AnthropicAdapter:
@@ -68,8 +184,17 @@ class AnthropicAdapter:
         """Send a request, block until done, return full Response."""
         try:
             kwargs = self._translate_request(request)
-            raw = await self._client.messages.create(**kwargs)
-            return self._translate_response(raw)
+            # ULM-5/ULM-6: use with_raw_response to access HTTP headers for
+            # rate-limit info while still getting the parsed SDK object.
+            raw_http = await self._client.messages.with_raw_response.create(**kwargs)
+            raw = raw_http.parse()
+            headers = raw_http.headers
+            response = self._translate_response(raw)
+            response.raw = _serialize_raw(raw)
+            rate_limit = _parse_ratelimit_headers(headers)
+            if rate_limit is not None:
+                response.rate_limit = rate_limit
+            return response
         except (anthropic.APIError, anthropic.APIConnectionError) as e:
             raise self._translate_error(e) from e
 
@@ -267,6 +392,38 @@ class AnthropicAdapter:
             kwargs["top_p"] = request.top_p
         if request.stop_sequences:
             kwargs["stop_sequences"] = request.stop_sequences
+
+        # Structured output — tool-based extraction (Spec §4.5, capability matrix :989)
+        # Anthropic has no native json_schema mode.  We define a synthetic single-tool
+        # whose input_schema IS the caller's JSON schema and force-invoke it so the model
+        # MUST populate its structured arguments.  generate_object() (generate.py)
+        # detects the _STRUCTURED_OUTPUT_TOOL_NAME tool call and extracts the arguments
+        # instead of parsing free-form text.
+        if request.response_format:
+            fmt = request.response_format
+            if fmt.type == "json_schema" and fmt.json_schema:
+                extraction_tool: dict[str, Any] = {
+                    "name": STRUCTURED_OUTPUT_TOOL_NAME,
+                    "description": (
+                        "Return a structured JSON object that strictly matches the "
+                        "required schema. Populate every required field."
+                    ),
+                    "input_schema": fmt.json_schema,
+                }
+                existing_tools: list[dict[str, Any]] = list(kwargs.get("tools", []))
+                kwargs["tools"] = existing_tools + [extraction_tool]
+                # Force the model to call this tool (overrides any user tool_choice)
+                kwargs["tool_choice"] = {
+                    "type": "tool",
+                    "name": STRUCTURED_OUTPUT_TOOL_NAME,
+                }
+            elif fmt.type == "json":
+                # Plain json without schema: cannot guarantee structured output.
+                # Fail loud per spec requirement — do not silently degrade.
+                raise errors.ConfigurationError(
+                    "Anthropic does not support unschemaed JSON output mode. "
+                    "Use response_format with type='json_schema' and a JSON schema."
+                )
 
         # Provider options escape hatch
         if request.provider_options and "anthropic" in request.provider_options:

@@ -390,6 +390,72 @@ class TestRequestTranslation:
         kwargs = adapter._translate_request(request)
         assert len(kwargs["contents"]) == 1
 
+    # ------------------------------------------------------------------
+    # Structured output (Spec §4.5 / capability matrix :988)
+    # ------------------------------------------------------------------
+
+    def test_json_schema_response_format_sets_config_fields(self) -> None:
+        """json_schema response_format → response_mime_type + response_schema in config.
+
+        Asserts the outgoing request carries the schema in the Gemini generation
+        config so the provider enforces the schema server-side (native pass-through).
+        """
+        from unified_llm.types import ResponseFormat
+
+        adapter = _make_adapter()
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+            "required": ["name", "age"],
+        }
+        request = Request(
+            model="gemini-2.0-flash",
+            messages=[Message.user("Extract info")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=schema,
+                strict=True,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        config = kwargs.get("config", {})
+        assert config.get("response_mime_type") == "application/json", (
+            "Gemini requires response_mime_type='application/json' for structured output"
+        )
+        assert config.get("response_schema") == schema, (
+            "Gemini requires response_schema set to the caller's JSON schema"
+        )
+
+    def test_json_response_format_sets_mime_type_only(self) -> None:
+        """Plain json response_format → only response_mime_type (no schema) in config."""
+        from unified_llm.types import ResponseFormat
+
+        adapter = _make_adapter()
+        request = Request(
+            model="gemini-2.0-flash",
+            messages=[Message.user("Return JSON")],
+            response_format=ResponseFormat(type="json"),
+        )
+        kwargs = adapter._translate_request(request)
+
+        config = kwargs.get("config", {})
+        assert config.get("response_mime_type") == "application/json"
+        assert "response_schema" not in config
+
+    def test_no_response_format_omits_config_schema_fields(self) -> None:
+        """Without response_format the config carries no schema fields."""
+        adapter = _make_adapter()
+        request = Request(
+            model="gemini-2.0-flash",
+            messages=[Message.user("Hi")],
+        )
+        kwargs = adapter._translate_request(request)
+
+        config = kwargs.get("config", {})
+        assert "response_mime_type" not in config
+        assert "response_schema" not in config
+
 
 # ---------------------------------------------------------------------------
 # Task 35: Gemini Response Translation

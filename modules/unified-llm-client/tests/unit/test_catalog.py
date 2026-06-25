@@ -5,7 +5,12 @@ from datetime import date
 import pytest
 
 import unified_llm.catalog as _cat
-from unified_llm.catalog import _parse_catalog, get_latest_model, get_model_info, list_models
+from unified_llm.catalog import (
+    _parse_catalog,
+    get_latest_model,
+    get_model_info,
+    list_models,
+)
 from unified_llm.types import ModelInfo
 
 
@@ -55,7 +60,7 @@ class TestGetModelInfo:
     """Spec §2.9 — get_model_info() lookup."""
 
     def test_known_model(self) -> None:
-        info = get_model_info("claude-sonnet-4-20250514")
+        info = get_model_info("claude-sonnet-4-6")
         assert info is not None
         assert info.provider == "anthropic"
         assert info.supports_tools is True
@@ -126,9 +131,7 @@ class TestGetLatestModel:
 class TestGetLatestModelRecency:
     """The core red→green proof: recency, not file order."""
 
-    def test_get_latest_model_uses_recency_not_file_order(
-        self, monkeypatch
-    ) -> None:
+    def test_get_latest_model_uses_recency_not_file_order(self, monkeypatch) -> None:
         """An older model listed FIRST must NOT beat a newer model listed SECOND.
 
         This test FAILS against the original candidates[0] implementation and
@@ -219,9 +222,7 @@ class TestGetLatestModelFailLoud:
         with pytest.raises(ValueError) as exc_info:
             get_latest_model("ghost-provider")
         msg = str(exc_info.value)
-        assert "provider=" in msg, (
-            f"Error message must mention provider=, got: {msg!r}"
-        )
+        assert "provider=" in msg, f"Error message must mention provider=, got: {msg!r}"
         assert "ghost-provider" in msg, (
             f"Error message must include the provider name, got: {msg!r}"
         )
@@ -235,11 +236,11 @@ class TestGetLatestModelFailLoud:
         msg = str(exc_info.value)
         assert "provider=" in msg
 
-    def test_get_latest_model_impossible_capability_raises(
-        self, monkeypatch
-    ) -> None:
+    def test_get_latest_model_impossible_capability_raises(self, monkeypatch) -> None:
         """Valid provider + capability that no model satisfies → legible ValueError."""
-        no_reasoning = _model("plain-model", "testprov", date(2025, 1, 1), supports_reasoning=False)
+        no_reasoning = _model(
+            "plain-model", "testprov", date(2025, 1, 1), supports_reasoning=False
+        )
         _inject_catalog(monkeypatch, [no_reasoning])
         with pytest.raises(ValueError) as exc_info:
             get_latest_model("testprov", capability="reasoning")
@@ -271,9 +272,7 @@ class TestParseFailLoud:
         assert "bad-model-no-date" in msg, (
             f"Error must name the offending model id; got: {msg!r}"
         )
-        assert "release_date" in msg, (
-            f"Error must mention 'release_date'; got: {msg!r}"
-        )
+        assert "release_date" in msg, f"Error must mention 'release_date'; got: {msg!r}"
 
     def test_malformed_release_date_fails_loud(self) -> None:
         """An entry with an unparseable release_date must raise ValueError."""

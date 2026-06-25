@@ -345,3 +345,146 @@ for production deployments with SLA requirements.
 **Compatibility:** Additive. Pipelines that do not set `max_pipeline_duration` are unaffected
 (the attribute defaults to `None` and the check is skipped). The attribute name does not collide
 with any upstream spec-defined graph attribute.
+
+---
+
+## 16. Fail-Fast Edge Routing with `runs_on` / `continue_on_fail`
+
+**What:** On a node `FAIL` outcome, unconditional out-edges are followed only if the target
+node declares `runs_on` ∈ {`always`, `failure`}; otherwise routing stops (fail-fast). The
+`continue_on_fail` attribute opts a node out of fail-fast propagation. Canonical §3.3 step 4
+selects the highest-weight unconditional edge regardless of outcome status.
+
+**Why:** Fail-fast prevents a failed stage from silently feeding garbage into downstream work.
+Cleanup/notification nodes can still run via `runs_on=always|failure`. This is the engine's
+"fail loud, don't proceed in a lesser state" stance.
+
+**Compatibility:** Pipelines with no failures behave identically to canonical. Pipelines that
+relied on canonical "continue past FAIL on the best unconditional edge" must add
+`runs_on=always` (or `continue_on_fail`) to the intended successor.
+
+## 17. Node I/O Contracts: `requires=` / `outputs=` with Skip Propagation
+
+**What:** Nodes may declare `requires=<keys>` and `outputs=<keys>`. A node whose required
+inputs are absent (e.g. produced by a skipped/failed upstream node) is itself skipped, emitting
+`PIPELINE_NODE_SKIPPED`; a node that completes without producing its declared `outputs` emits
+`PIPELINE_NODE_CONTRACT_VIOLATION`. Skips propagate along the dependency chain.
+
+**Why:** Makes data dependencies explicit and turns "ran but produced nothing useful" into a
+loud, observable event rather than a silent downstream failure.
+
+**Compatibility:** Additive — nodes that declare neither attribute are unaffected.
+
+## 18. Parallel Join Policies Beyond Canonical: `k_of_n` / `quorum` / `error_policy`
+
+**What:** `shape=parallel` fan-out supports join policies beyond canonical `wait_all` /
+`first_success`: `k_of_n` (proceed when k branches succeed), `quorum`, and a configurable
+`error_policy` governing how branch errors affect the join.
+
+**Why:** Real fan-out workloads need partial-completion semantics (e.g. "best 3 of 5 drafts")
+without hand-rolling them in conditions.
+
+**Compatibility:** Additive — default join behavior matches canonical `wait_all`.
+
+## 19. `wait.human` `freeform` Mode and Attachments
+
+**What:** The human-gate node supports a `freeform` response mode (open text, not only
+accelerator-key choices) and file attachments alongside the human's response.
+
+**Why:** Review gates often need a paragraph of guidance or a file, not just an approve/reject
+keypress.
+
+**Compatibility:** Additive — accelerator-key gates behave as in canonical.
+
+## 20. Tool Node: `parse_json`, `tool_env`, `tool.last_line`
+
+**What:** `shape=tool` nodes support `parse_json` (parse stdout as JSON into context),
+`tool_env` (inject env vars for the command), and expose `tool.last_line` as a routing key in
+addition to `tool.output`.
+
+**Why:** Tools that emit JSON or a terminal status line are common; routing on `last_line`
+avoids brittle full-stdout matching (the canonical "prose-vs-JSON" hazard).
+
+**Compatibility:** Additive — `tool.output` and existing tool routing are unchanged.
+
+## 21. Variable Expansion Beyond `$goal`: `$param` and `${key}`
+
+**What:** Prompt/attribute substitution supports `$param` and `${key}` forms in addition to the
+canonical `$goal`, resolving against pipeline context. Substitution remains simple string
+replacement, not a templating engine (consistent with canonical §4.5).
+
+**Why:** Pipelines need to thread context values (not just the goal) into prompts without a
+full template language.
+
+**Compatibility:** Additive — `$goal` behaves as in canonical; literals without `$`/`${` are
+untouched.
+
+## 22. `outcome=` Condition Resolves to `preferred_label` First
+
+**What:** In edge conditions, the `outcome` key resolves to `outcome.preferred_label` when set
+(via `report_outcome`), falling back to `outcome.status`. Canonical §10.4 defines `outcome` as
+`outcome.status` only, with `preferred_label` as a separate key.
+
+**Why:** Lets a node steer its own routing by emitting a `preferred_label` through
+`report_outcome`, which is load-bearing for outcome-driven pipelines.
+
+**Compatibility:** **Not behavior-neutral.** A canonical pipeline matching `outcome=<status>`
+still works *unless* a node also sets a `preferred_label`, in which case `outcome=` matches the
+label. Pipelines needing strict status matching should branch on the explicit status value.
+Tracked as gap `ATX-5` in `SPEC_CONFORMANCE.md`.
+
+---
+
+## 23. `response_schema` Node Attribute (Structured Output)
+
+> **This extension is NOT in the canonical attractor spec.** Canonical §4.5 explicitly keeps
+> output format at the backend layer, outside the DOT pipeline language. This attribute is an
+> additive, backward-compatible extension that is safe to ignore by spec-conformant backends
+> that do not support it.
+
+**What:** A node may carry a `response_schema` DOT attribute that declares a JSON Schema object
+for its LLM response. When set, the pipeline engine passes a `ResponseFormat(type="json_schema",
+json_schema=<schema>, strict=True)` to the `unified-llm-client`'s `generate()` call, requesting
+provider-native structured output. The raw JSON text returned by the LLM is stored as the node's
+output (`outcome.notes`) and the parsed object is also stashed in pipeline context under the node
+ID for downstream use.
+
+**Value forms — either of:**
+
+- **Inline JSON object** (trimmed value starts with `{`): the attribute value is parsed directly
+  as a JSON object. Example:
+  ```dot
+  extract [response_schema="{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}}}"]
+  ```
+- **File path** (any other value): resolved relative to the `.dot` file's directory (or the
+  current working directory if the graph was loaded from an inline string). The file must contain
+  a valid JSON object. Example:
+  ```dot
+  extract [response_schema="schemas/person.json"]
+  ```
+
+**Fail-loud:** If the value is neither valid inline JSON nor a readable file containing a valid
+JSON object, `apply_transforms()` raises `ValueError` immediately with a clear message — no
+silent skip, no proceeding without a resolved schema.
+
+**Provider threading:** The resolved schema is passed as `ResponseFormat(type="json_schema",
+json_schema=schema, strict=True)` to `unified_llm.generate()`. Provider mapping is handled by
+the `unified-llm-client` library:
+- OpenAI: native `response_format` JSON Schema mode.
+- Gemini: `response_mime_type="application/json"` + `response_schema`.
+- Anthropic: tool-extraction technique (the library synthesizes a `__structured_output__` tool).
+
+**Spawn path limitation:** `response_schema` is **only** supported when the node executes via the
+direct-LLM path (`AmplifierBackend` Path B or `DirectProviderBackend`). If a node with
+`response_schema` routes through `AmplifierBackend._run_with_spawn` (Path A — full child
+session), the engine returns `Outcome(FAIL)` with a clear message:
+_"response\_schema is only supported on direct-LLM nodes (not spawned-agent nodes) yet."_
+
+**Downstream:** The structured JSON string is set as `outcome.notes`. The parsed object (when
+JSON is valid) is stored in pipeline context as `context[node.id]` for downstream nodes to
+reference via `${node_id}` substitution or direct context lookup.
+
+**Compatibility:** Fully additive and backward-compatible. Nodes without `response_schema` are
+unaffected. Existing `.dot` files work without modification. Canonical spec-conformant backends
+that do not read `response_schema` will silently treat it as an unknown attribute (per the
+existing unknown-attr passthrough behaviour of `dot_parser.py::_apply_node`).

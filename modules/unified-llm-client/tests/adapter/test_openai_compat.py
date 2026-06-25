@@ -456,14 +456,19 @@ class TestComplete:
                 total_tokens=8,
             ),
         )
-        adapter._client.chat.completions.create = AsyncMock(return_value=mock_raw)
+        _mock_raw_http = MagicMock()
+        _mock_raw_http.parse.return_value = mock_raw
+        _mock_raw_http.headers = {}
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            return_value=_mock_raw_http
+        )
 
         request = Request(model="llama-3.1-8b", messages=[Message.user("Hello")])
         response = await adapter.complete(request)
 
         assert response.text == "Hello from vLLM!"
         assert response.provider == "openai_compat"
-        adapter._client.chat.completions.create.assert_called_once()
+        adapter._client.chat.completions.with_raw_response.create.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +488,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=401, headers={}),
             body={"error": {"message": "Invalid API key"}},
         )
-        adapter._client.chat.completions.create = AsyncMock(side_effect=api_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.AuthenticationError):
@@ -498,7 +505,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=429, headers={}),
             body={"error": {"message": "Rate limited"}},
         )
-        adapter._client.chat.completions.create = AsyncMock(side_effect=api_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.RateLimitError):
@@ -513,7 +522,9 @@ class TestErrorTranslation:
             response=MagicMock(status_code=404, headers={}),
             body={"error": {"message": "Model not found"}},
         )
-        adapter._client.chat.completions.create = AsyncMock(side_effect=api_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=api_error
+        )
         request = Request(model="nonexistent", messages=[Message.user("Hi")])
 
         with pytest.raises(E.NotFoundError):
@@ -524,7 +535,9 @@ class TestErrorTranslation:
         """Timeout → RequestTimeoutError."""
         adapter = _make_adapter()
         timeout_error = openai.APITimeoutError(request=MagicMock())
-        adapter._client.chat.completions.create = AsyncMock(side_effect=timeout_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=timeout_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.RequestTimeoutError):
@@ -535,7 +548,9 @@ class TestErrorTranslation:
         """Connection error → NetworkError."""
         adapter = _make_adapter()
         conn_error = openai.APIConnectionError(request=MagicMock())
-        adapter._client.chat.completions.create = AsyncMock(side_effect=conn_error)
+        adapter._client.chat.completions.with_raw_response.create = AsyncMock(
+            side_effect=conn_error
+        )
         request = Request(model="model", messages=[Message.user("Hi")])
 
         with pytest.raises(E.NetworkError):
@@ -821,3 +836,95 @@ class TestSupportsToolChoice:
         assert adapter.supports_tool_choice("none") is True
         assert adapter.supports_tool_choice("required") is True
         assert adapter.supports_tool_choice("named") is True
+
+
+# ---------------------------------------------------------------------------
+# ULM-16: OpenAI-compat strict-mode schema transform (optional-field fix)
+# ---------------------------------------------------------------------------
+
+
+class TestStrictModeSchemaTransformCompat:
+    """ULM-16: Verify strict-mode schema transform in the Chat Completions adapter.
+
+    The openai_compat adapter uses the Chat Completions /v1/chat/completions endpoint.
+    When strict:true is requested, it must apply the same schema transform as the
+    native OpenAI Responses-API adapter.
+    """
+
+    def test_strict_mode_transforms_schema_in_response_format(self) -> None:
+        """With strict:true, the outgoing response_format contains the transformed schema."""
+        import copy
+
+        from unified_llm.adapters.openai_compat import OpenAICompatAdapter
+        from unified_llm.types import ResponseFormat
+
+        with patch("unified_llm.adapters.openai_compat.openai.AsyncOpenAI"):
+            adapter = OpenAICompatAdapter(
+                api_key="test-key",
+                base_url="https://my-service.example.com/v1",
+            )
+
+        user_schema: dict = {
+            "type": "object",
+            "properties": {
+                "review_text": {"type": "string"},
+                "sentiment": {"type": "string"},
+                "discount_code": {"type": "string"},  # optional
+            },
+            "required": ["review_text", "sentiment"],
+            "additionalProperties": False,
+        }
+        original_schema = copy.deepcopy(user_schema)
+
+        request = Request(
+            model="llama-3.1-8b",
+            messages=[Message.user("Analyze")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=user_schema,
+                strict=True,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+        sent_schema = kwargs["response_format"]["json_schema"]["schema"]
+
+        # Strict mode requirements satisfied in the sent schema
+        assert sent_schema.get("additionalProperties") is False
+        assert set(sent_schema["required"]) == {
+            "review_text",
+            "sentiment",
+            "discount_code",
+        }
+        dc_type = sent_schema["properties"]["discount_code"]["type"]
+        assert "null" in dc_type
+
+        # Original schema not mutated
+        assert user_schema == original_schema
+
+    def test_non_strict_does_not_transform(self) -> None:
+        """Without strict:true, the raw schema is passed through unchanged."""
+        from unified_llm.adapters.openai_compat import OpenAICompatAdapter
+        from unified_llm.types import ResponseFormat
+
+        with patch("unified_llm.adapters.openai_compat.openai.AsyncOpenAI"):
+            adapter = OpenAICompatAdapter(api_key="test-key")
+
+        user_schema = {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": [],
+        }
+        request = Request(
+            model="model",
+            messages=[Message.user("Hi")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=user_schema,
+                strict=False,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+        sent_schema = kwargs["response_format"]["json_schema"]["schema"]
+
+        # Schema must be passed through as-is when strict=False
+        assert sent_schema is user_schema

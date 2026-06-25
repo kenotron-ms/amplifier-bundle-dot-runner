@@ -97,10 +97,12 @@ class ToolHandler:
         os.makedirs(stage_dir, exist_ok=True)
         _write_file(os.path.join(stage_dir, "command.txt"), command)
 
-        # M-16: Read timeout from node attribute (seconds)
+        # M-16: Read timeout from node attribute.
+        # The DOT parser stores all durations as milliseconds; divide by 1000
+        # to convert to seconds for subprocess timeout enforcement.
         timeout_s: float | None = None
         if node.timeout is not None:
-            timeout_s = float(node.timeout)
+            timeout_s = float(node.timeout) / 1000.0
 
         # Build environment for subprocess: handle tool_env attribute
         env: dict[str, str] | None = None

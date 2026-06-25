@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import openai
@@ -18,11 +20,15 @@ import openai
 from collections.abc import AsyncIterator
 
 from unified_llm import errors
+from unified_llm.adapters._openai_strict_schema import (
+    make_openai_strict_schema as _make_strict_schema,
+)
 from unified_llm.types import (
     ContentKind,
     ContentPart,
     FinishReason,
     Message,
+    RateLimitInfo,
     Request,
     Response,
     Role,
@@ -34,6 +40,113 @@ from unified_llm.types import (
     ToolChoice,
     Usage,
 )
+
+
+def _serialize_raw(obj: Any) -> dict[str, Any] | None:
+    """Defensively serialize a provider SDK response to a JSON-serializable dict.
+
+    Tries, in order:
+    1. Already a dict — return as-is.
+    2. Pydantic model_dump() — OpenAI SDK objects are pydantic v2 BaseModel.
+    3. to_dict() — fallback for other SDK styles.
+    4. vars() — for SimpleNamespace and plain objects.
+    5. Fallback sentinel {"_unserializable": repr(obj)}.
+
+    Returns None only if *obj* is None.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        try:
+            result = model_dump()
+            if isinstance(result, dict):
+                return result
+        except Exception:
+            pass
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        try:
+            result = to_dict()
+            if isinstance(result, dict):
+                return result
+        except Exception:
+            pass
+    try:
+        d = vars(obj)
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return {"_unserializable": repr(obj)}
+
+
+def _parse_ratelimit_headers(headers: Any) -> RateLimitInfo | None:
+    """Parse x-ratelimit-* HTTP headers into a RateLimitInfo.
+
+    Supports both integer fields and the reset timestamp, which providers
+    encode as either an ISO-8601 string or a Go-style duration
+    (e.g. ``"6m5.128s"``, ``"1m"``, ``"100ms"``).
+
+    Returns None when no recognised rate-limit header is present (so
+    callers can skip setting Response.rate_limit entirely).
+    """
+
+    def _int(key: str) -> int | None:
+        v = headers.get(key)
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None
+
+    def _reset_dt(key: str) -> datetime | None:
+        v = headers.get(key)
+        if not v:
+            return None
+        # ISO-8601 path (some providers send a timestamp)
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        # Go-style duration path: "6m5.128s", "1m30s", "5s", "100ms"
+        m = re.fullmatch(
+            r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?",
+            v.strip(),
+        )
+        if m and any(g is not None for g in m.groups()):
+            hours = int(m.group(1) or 0)
+            minutes = int(m.group(2) or 0)
+            seconds = float(m.group(3) or 0)
+            millis = int(m.group(4) or 0)
+            delta = timedelta(
+                hours=hours, minutes=minutes, seconds=seconds, milliseconds=millis
+            )
+            return datetime.now(timezone.utc) + delta
+        return None
+
+    limit_req = _int("x-ratelimit-limit-requests")
+    remaining_req = _int("x-ratelimit-remaining-requests")
+    limit_tok = _int("x-ratelimit-limit-tokens")
+    remaining_tok = _int("x-ratelimit-remaining-tokens")
+    reset_at = _reset_dt("x-ratelimit-reset-requests")
+
+    if all(
+        v is None
+        for v in [limit_req, remaining_req, limit_tok, remaining_tok, reset_at]
+    ):
+        return None
+
+    return RateLimitInfo(
+        requests_limit=limit_req,
+        requests_remaining=remaining_req,
+        tokens_limit=limit_tok,
+        tokens_remaining=remaining_tok,
+        reset_at=reset_at,
+    )
 
 
 class OpenAIAdapter:
@@ -73,8 +186,17 @@ class OpenAIAdapter:
         """Send a request, block until done, return full Response."""
         try:
             kwargs = self._translate_request(request)
-            raw = await self._client.responses.create(**kwargs)
-            return self._translate_response(raw)
+            # ULM-5/ULM-6: use with_raw_response to access HTTP headers for
+            # rate-limit info while still getting the parsed SDK object.
+            raw_http = await self._client.responses.with_raw_response.create(**kwargs)
+            raw = raw_http.parse()
+            headers = raw_http.headers
+            response = self._translate_response(raw)
+            response.raw = _serialize_raw(raw)
+            rate_limit = _parse_ratelimit_headers(headers)
+            if rate_limit is not None:
+                response.rate_limit = rate_limit
+            return response
         except (openai.APIError, openai.APIConnectionError) as e:
             raise self._translate_error(e) from e
 
@@ -297,10 +419,18 @@ class OpenAIAdapter:
         if request.response_format:
             fmt = request.response_format
             if fmt.type == "json_schema" and fmt.json_schema:
-                # OpenAI strict mode requires additionalProperties: false
-                schema = dict(fmt.json_schema)
-                if fmt.strict and "additionalProperties" not in schema:
-                    schema["additionalProperties"] = False
+                if fmt.strict:
+                    # ULM-16: OpenAI strict mode requires additionalProperties:false
+                    # and required=[all property keys] on EVERY object node.
+                    # A standard schema with optional fields (in properties but
+                    # not required) causes a 400 at runtime.  Transform a deep
+                    # copy of the user's schema to satisfy strict mode without
+                    # mutating the caller's dict.  Originally-optional fields
+                    # become nullable (type includes "null") so the model can
+                    # signal "absent" as null rather than omitting the key.
+                    schema = _make_strict_schema(fmt.json_schema)
+                else:
+                    schema = dict(fmt.json_schema)
                 kwargs["text"] = {
                     "format": {
                         "type": "json_schema",

@@ -37,6 +37,49 @@ from unified_llm.types import (
 )
 
 
+def _serialize_raw(obj: Any) -> dict[str, Any] | None:
+    """Defensively serialize a provider SDK response to a JSON-serializable dict.
+
+    Tries, in order:
+    1. Already a dict — return as-is.
+    2. to_dict() — google-genai SDK objects expose this.
+    3. Pydantic model_dump() — fallback for other SDK styles.
+    4. vars() — for SimpleNamespace and plain objects.
+    5. Fallback sentinel {"_unserializable": repr(obj)}.
+
+    Returns None only if *obj* is None.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    # google-genai SDK objects expose to_dict()
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        try:
+            result = to_dict()
+            if isinstance(result, dict):
+                return result
+        except Exception:
+            pass
+    # pydantic BaseModel fallback
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        try:
+            result = model_dump()
+            if isinstance(result, dict):
+                return result
+        except Exception:
+            pass
+    try:
+        d = vars(obj)
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return {"_unserializable": repr(obj)}
+
+
 class GeminiAdapter:
     """Gemini API adapter."""
 
@@ -70,7 +113,14 @@ class GeminiAdapter:
             raw = await self._client.aio.models.generate_content(
                 model=request.model, **kwargs
             )
-            return self._translate_response(raw, model=request.model)
+            response = self._translate_response(raw, model=request.model)
+            # ULM-5: populate Response.raw with the serialized provider response.
+            response.raw = _serialize_raw(raw)
+            # ULM-6 NOTE: the google-genai SDK does NOT expose x-ratelimit-* headers
+            # through its public API (generate_content returns a GenerateContentResponse
+            # object; the underlying HTTP response headers are not surfaced).
+            # Response.rate_limit remains None for Gemini until the SDK exposes headers.
+            return response
         except Exception as e:
             raise self._translate_error(e) from e
 
@@ -273,6 +323,17 @@ class GeminiAdapter:
             tc_config = self._translate_tool_choice(request.tool_choice)
             if tc_config:
                 config["tool_config"] = tc_config
+
+        # Structured output — native Gemini pass-through (Spec §4.5, capability matrix :988)
+        # Sets response_mime_type="application/json" and response_schema=<schema> so the
+        # provider enforces the schema on its side rather than relying on text parsing alone.
+        if request.response_format:
+            fmt = request.response_format
+            if fmt.type == "json_schema" and fmt.json_schema:
+                config["response_mime_type"] = "application/json"
+                config["response_schema"] = self._sanitize_gemini_schema(fmt.json_schema)
+            elif fmt.type == "json":
+                config["response_mime_type"] = "application/json"
 
         if config:
             kwargs["config"] = config
@@ -552,6 +613,55 @@ class GeminiAdapter:
             retryable=True,
             cause=error,
         )
+
+    def _sanitize_gemini_schema(self, schema: dict) -> dict:
+        """Recursively strip JSON Schema keywords unsupported by Gemini response_schema.
+
+        Gemini accepts a restricted subset of JSON Schema / OpenAPI 3.0.
+        Keywords like additionalProperties, $schema, $id,
+        patternProperties, allOf, not, if/then/else
+        cause a 400 INVALID_ARGUMENT from the API and must be removed before
+        the schema is forwarded.  Supported keywords are:
+        type, format, description, nullable, properties,
+        required, items, enum, anyOf, title, $ref,
+        $defs.
+        """
+        # Keywords that Gemini does NOT accept in response_schema
+        _UNSUPPORTED = frozenset(
+            {
+                "additionalProperties",
+                "$schema",
+                "$id",
+                "patternProperties",
+                "unevaluatedProperties",
+                "allOf",
+                "not",
+                "if",
+                "then",
+                "else",
+                "dependentRequired",
+                "dependentSchemas",
+                "contains",
+                "minContains",
+                "maxContains",
+                "prefixItems",
+                "definitions",  # old JSON Schema draft-07 spelling of $defs
+            }
+        )
+
+        def _clean(node: object) -> object:
+            if isinstance(node, dict):
+                return {
+                    k: _clean(v)
+                    for k, v in node.items()
+                    if k not in _UNSUPPORTED
+                }
+            if isinstance(node, list):
+                return [_clean(item) for item in node]
+            return node
+
+        result = _clean(schema)
+        return result if isinstance(result, dict) else schema
 
     def _translate_tool_choice(self, tool_choice: ToolChoice) -> dict[str, Any] | None:
         """Map unified ToolChoice to Gemini's tool_config format."""

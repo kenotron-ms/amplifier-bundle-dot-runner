@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
 import pytest
@@ -266,6 +266,106 @@ class TestRequestTranslation:
         kwargs = adapter._translate_request(request)
         assert kwargs["extra_headers"] == {"anthropic-beta": "some-feature"}
         assert kwargs["metadata"] == {"user_id": "user-123"}
+
+    # ------------------------------------------------------------------
+    # Structured output (Spec §4.5 / capability matrix :989)
+    # ------------------------------------------------------------------
+
+    def test_json_schema_response_format_injects_extraction_tool(self) -> None:
+        """json_schema response_format injects __structured_output__ tool.
+
+        Asserts the outgoing request carries a synthetic extraction tool whose
+        input_schema matches the caller's JSON schema, enabling tool-based
+        structured output extraction (Anthropic has no native json_schema mode).
+        """
+        from unified_llm.types import ResponseFormat
+
+        # Convention: the extraction tool name is "__structured_output__".
+        # Must match STRUCTURED_OUTPUT_TOOL_NAME in adapters/anthropic.py
+        # and _ANTHROPIC_STRUCTURED_OUTPUT_TOOL in generate.py.
+        _TOOL_NAME = "__structured_output__"
+
+        adapter = _make_adapter()
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+            "required": ["name", "age"],
+        }
+        request = Request(
+            model="claude-sonnet-4-20250514",
+            messages=[Message.user("Extract info")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=schema,
+                strict=True,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        # A tools list must be present containing the extraction tool
+        tools = kwargs.get("tools", [])
+        extraction = next(
+            (t for t in tools if t.get("name") == _TOOL_NAME),
+            None,
+        )
+        assert extraction is not None, (
+            f"Expected '{_TOOL_NAME}' tool to be injected, "
+            f"got tools: {[t.get('name') for t in tools]}"
+        )
+        # The tool's input_schema must BE the caller's schema
+        assert extraction["input_schema"] == schema
+
+    def test_json_schema_response_format_forces_tool_choice(self) -> None:
+        """json_schema response_format forces tool_choice to the extraction tool.
+
+        Anthropic will only call the extraction tool if tool_choice is explicitly
+        set to that tool name — otherwise it may choose to generate text.
+        """
+        from unified_llm.types import ResponseFormat
+
+        _TOOL_NAME = "__structured_output__"
+
+        adapter = _make_adapter()
+        schema = {
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+            "required": ["result"],
+        }
+        request = Request(
+            model="claude-sonnet-4-20250514",
+            messages=[Message.user("Hi")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=schema,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        tc = kwargs.get("tool_choice", {})
+        assert tc.get("type") == "tool", (
+            "tool_choice type must be 'tool' to force a named call"
+        )
+        assert tc.get("name") == _TOOL_NAME
+
+    def test_json_response_format_without_schema_raises(self) -> None:
+        """Plain json response_format (no schema) raises ConfigurationError on Anthropic.
+
+        Anthropic cannot guarantee structured output without a schema, so we
+        fail loud rather than silently degrade (Spec: no silent fallback).
+        """
+        import pytest
+
+        from unified_llm.errors import ConfigurationError
+        from unified_llm.types import ResponseFormat
+
+        adapter = _make_adapter()
+        request = Request(
+            model="claude-sonnet-4-20250514",
+            messages=[Message.user("Hi")],
+            response_format=ResponseFormat(type="json"),
+        )
+        with pytest.raises(ConfigurationError):
+            adapter._translate_request(request)
 
     def test_thinking_blocks_preserved_in_assistant(self) -> None:
         """Thinking blocks in assistant messages round-trip with signatures."""
@@ -706,11 +806,13 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                return_value=_mock_anthropic_response(
-                    content=[SimpleNamespace(type="text", text="Hello from Claude!")],
-                )
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_anthropic_response(
+                content=[SimpleNamespace(type="text", text="Hello from Claude!")],
+            )
+            _mock_raw.headers = {}
+            mock_client.messages.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -722,7 +824,7 @@ class TestCompleteIntegration:
             assert response.text == "Hello from Claude!"
             assert response.provider == "anthropic"
             assert response.finish_reason.reason == "stop"
-            mock_client.messages.create.assert_called_once()
+            mock_client.messages.with_raw_response.create.assert_called_once()
 
     def test_complete_passes_translated_kwargs(self) -> None:
         """complete() passes correctly translated kwargs to SDK."""
@@ -731,9 +833,11 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                return_value=_mock_anthropic_response()
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_anthropic_response()
+            _mock_raw.headers = {}
+            mock_client.messages.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -747,7 +851,7 @@ class TestCompleteIntegration:
             )
             asyncio.run(adapter.complete(request))
 
-            call_kwargs = mock_client.messages.create.call_args[1]
+            call_kwargs = mock_client.messages.with_raw_response.create.call_args[1]
             assert call_kwargs["model"] == "claude-sonnet-4-20250514"
             assert call_kwargs["max_tokens"] == 1024
             assert call_kwargs["temperature"] == 0.5
@@ -760,8 +864,7 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
+            mock_client.messages.with_raw_response.create = AsyncMock(
                 side_effect=_make_api_status_error(429, "Rate limited")
             )
 
@@ -779,8 +882,7 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
+            mock_client.messages.with_raw_response.create = AsyncMock(
                 side_effect=anthropic.APIConnectionError(
                     request=SimpleNamespace(url="test")
                 )
@@ -800,19 +902,21 @@ class TestCompleteIntegration:
         ) as mock_cls:
             adapter = AnthropicAdapter(api_key="test-key")
             mock_client = mock_cls.return_value
-            mock_client.messages = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                return_value=_mock_anthropic_response(
-                    content=[
-                        SimpleNamespace(
-                            type="tool_use",
-                            id="toolu_1",
-                            name="get_weather",
-                            input={"city": "SF"},
-                        ),
-                    ],
-                    stop_reason="tool_use",
-                )
+            _mock_raw = MagicMock()
+            _mock_raw.parse.return_value = _mock_anthropic_response(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="toolu_1",
+                        name="get_weather",
+                        input={"city": "SF"},
+                    ),
+                ],
+                stop_reason="tool_use",
+            )
+            _mock_raw.headers = {}
+            mock_client.messages.with_raw_response.create = AsyncMock(
+                return_value=_mock_raw
             )
 
             request = Request(
@@ -1227,7 +1331,9 @@ class TestPromptCaching:
             ],
             provider_options={
                 "anthropic": {
-                    "extra_headers": {"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+                    "extra_headers": {
+                        "anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"
+                    },
                 }
             },
         )

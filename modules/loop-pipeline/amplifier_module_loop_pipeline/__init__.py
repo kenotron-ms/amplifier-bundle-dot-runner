@@ -113,6 +113,15 @@ class DirectProviderBackend:
         tools = _build_unified_tools(self._tools)
         client = self._get_or_create_unified_client()
 
+        # EXT-23: Build response_format when response_schema is set on the node
+        response_format_obj: Any = None
+        if node.response_schema is not None:
+            response_format_obj = unified_llm.ResponseFormat(
+                type="json_schema",
+                json_schema=node.response_schema,
+                strict=True,
+            )
+
         # Build generate() kwargs based on fidelity mode
         generate_kwargs: dict[str, Any] = dict(
             model=model,
@@ -123,6 +132,7 @@ class DirectProviderBackend:
             reasoning_effort=reasoning_effort,
             provider=provider_name,
             client=client,
+            response_format=response_format_obj,
         )
 
         if fidelity == "full":
@@ -219,6 +229,45 @@ class DirectProviderBackend:
                 "step_count": len(result.steps),
             },
         )
+
+        # EXT-23: Structured output mode — result.text is the JSON response, not an Outcome.
+        # Skip Outcome-parsing logic entirely; stash the JSON as the node output.
+        if node.response_schema is not None:
+            raw_json = result.text or ""
+            # Anthropic tool-extraction path: structured output lives in the
+            # __structured_output__ tool call arguments, not in result.text.
+            # Recover the JSON string when result.text is empty and a tool call is present.
+            if not raw_json.strip() and result.tool_calls:
+                _STRUCT_TOOL = "__structured_output__"
+                for _tc in result.tool_calls:
+                    if _tc.name == _STRUCT_TOOL:
+                        _args = _tc.arguments
+                        raw_json = (
+                            json.dumps(_args)
+                            if isinstance(_args, dict)
+                            else (str(_args) if _args else "")
+                        )
+                        break
+            parsed_obj: Any = None
+            if raw_json.strip():
+                try:
+                    parsed_obj = json.loads(raw_json)
+                except json.JSONDecodeError:
+                    pass
+            ctx_ext23: dict[str, Any] = {
+                "last_stage": node.id,
+                "last_response": raw_json[:200],
+            }
+            if parsed_obj is not None:
+                ctx_ext23[node.id] = parsed_obj
+            outcome = Outcome(
+                status=StageStatus.SUCCESS,
+                notes=raw_json,
+                context_updates=ctx_ext23,
+            )
+            self._completed_nodes[node.id] = outcome
+            self._last_node_id = node.id
+            return outcome
 
         # Map GenerateResult → Outcome (same priority order as _run_with_tool_loop)
         text = result.text
