@@ -525,6 +525,13 @@ class OpenAICompatAdapter:
                                 },
                             }
                         )
+                else:
+                    # ULM-10: No silent drops — fail loud for unsupported content kinds.
+                    raise errors.ConfigurationError(
+                        f"OpenAI-compat adapter: unsupported content kind "
+                        f"{part.kind!r} in message. Only TEXT and IMAGE parts are "
+                        "supported. AUDIO and DOCUMENT parts are not yet implemented."
+                    )
             return {"role": role, "content": content_parts}
 
         # Simple text message
