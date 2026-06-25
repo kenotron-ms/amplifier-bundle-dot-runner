@@ -20,6 +20,9 @@ import openai
 from collections.abc import AsyncIterator
 
 from unified_llm import errors
+from unified_llm.adapters._openai_strict_schema import (
+    make_openai_strict_schema as _make_strict_schema,
+)
 from unified_llm.types import (
     ContentKind,
     ContentPart,
@@ -569,11 +572,21 @@ class OpenAICompatAdapter:
     def _translate_response_format(self, fmt: Any) -> dict[str, Any]:
         """Translate ResponseFormat to Chat Completions format."""
         if fmt.type == "json_schema" and fmt.json_schema:
+            if fmt.strict:
+                # ULM-16: OpenAI-compatible endpoints that enforce strict mode
+                # have the same schema requirements as the native OpenAI API:
+                # every object must have additionalProperties:false and
+                # required=[all property keys].  Transform a deep copy of the
+                # user's schema; originally-optional fields become nullable so
+                # the model can return null instead of omitting the key.
+                schema = _make_strict_schema(fmt.json_schema)
+            else:
+                schema = fmt.json_schema
             return {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "response",
-                    "schema": fmt.json_schema,
+                    "schema": schema,
                     "strict": fmt.strict,
                 },
             }

@@ -1227,3 +1227,259 @@ class TestReasoningTokens:
         )
         response = adapter._translate_response(raw)
         assert response.usage.cache_read_tokens == 80
+
+
+# ---------------------------------------------------------------------------
+# ULM-16: OpenAI strict-mode schema transform (optional-field fix)
+# ---------------------------------------------------------------------------
+
+
+class TestStrictModeSchemaTransform:
+    """ULM-16: Verify the strict-mode schema transform helper and its integration
+    into the Responses API request path.
+
+    OpenAI strict mode requires every object node to have:
+    - additionalProperties: false
+    - required = [all property keys]
+
+    A schema with an optional field (in properties but not required) causes a
+    hard 400 at runtime.  The adapter must transform a deep copy of the schema
+    before sending.  Originally-optional fields become nullable (type includes
+    "null") so the model can return null for absent optionals.
+    """
+
+    def test_transform_adds_additional_properties_false(self) -> None:
+        """Transform adds additionalProperties:false to object nodes."""
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "score": {"type": "integer"},
+            },
+            "required": ["name", "score"],
+        }
+        result = make_openai_strict_schema(schema)
+        assert result["additionalProperties"] is False
+
+    def test_transform_expands_required_to_all_property_keys(self) -> None:
+        """Transform expands required to include ALL property keys."""
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "review_text": {"type": "string"},
+                "sentiment": {"type": "string"},
+                "stars": {"type": "integer"},
+                "discount_code": {"type": "string"},  # optional — not in required
+            },
+            "required": ["review_text", "sentiment", "stars"],
+            "additionalProperties": False,
+        }
+        result = make_openai_strict_schema(schema)
+        assert set(result["required"]) == {
+            "review_text",
+            "sentiment",
+            "stars",
+            "discount_code",
+        }
+
+    def test_transform_makes_optional_fields_nullable(self) -> None:
+        """Originally-optional field's type includes 'null' after transform."""
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "review_text": {"type": "string"},
+                "sentiment": {"type": "string"},
+                "stars": {"type": "integer"},
+                "discount_code": {"type": "string"},  # optional
+            },
+            "required": ["review_text", "sentiment", "stars"],
+            "additionalProperties": False,
+        }
+        result = make_openai_strict_schema(schema)
+        dc_type = result["properties"]["discount_code"]["type"]
+        assert "null" in dc_type, (
+            f"Optional field must be nullable; got type={dc_type!r}"
+        )
+
+    def test_transform_does_not_make_required_fields_nullable(self) -> None:
+        """Required fields are NOT made nullable by the transform."""
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "review_text": {"type": "string"},
+                "discount_code": {"type": "string"},  # optional
+            },
+            "required": ["review_text"],
+            "additionalProperties": False,
+        }
+        result = make_openai_strict_schema(schema)
+        rt_type = result["properties"]["review_text"]["type"]
+        # Required field must stay as plain "string", no null added
+        assert rt_type == "string", (
+            f"Required field must not be nullable; got type={rt_type!r}"
+        )
+
+    def test_transform_does_not_mutate_input_schema(self) -> None:
+        """Transform must NOT mutate the caller's schema dict."""
+        import copy
+
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "stars": {"type": "integer"},
+                "discount_code": {"type": "string"},  # optional
+            },
+            "required": ["stars"],
+            "additionalProperties": False,
+        }
+        original = copy.deepcopy(schema)
+        make_openai_strict_schema(schema)
+
+        # Schema dict unchanged
+        assert schema == original, "make_openai_strict_schema must not mutate the input"
+
+    def test_transform_recurses_into_nested_objects(self) -> None:
+        """Nested object schemas are also transformed."""
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "address": {
+                    "type": "object",
+                    "properties": {
+                        "street": {"type": "string"},
+                        "zip": {"type": "string"},  # optional at nested level
+                    },
+                    "required": ["street"],
+                },
+            },
+            "required": ["name", "address"],
+        }
+        result = make_openai_strict_schema(schema)
+        addr = result["properties"]["address"]
+        # Nested object must have additionalProperties:false
+        assert addr["additionalProperties"] is False
+        # Nested object required must include all keys
+        assert set(addr["required"]) == {"street", "zip"}
+        # "zip" was optional in nested object → must be nullable
+        zip_type = addr["properties"]["zip"]["type"]
+        assert "null" in zip_type
+
+    def test_transform_recurses_into_array_items(self) -> None:
+        """Array items schemas are also transformed."""
+        from unified_llm.adapters._openai_strict_schema import make_openai_strict_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "qty": {"type": "integer"},
+                            "note": {"type": "string"},  # optional
+                        },
+                        "required": ["name", "qty"],
+                    },
+                }
+            },
+            "required": ["items"],
+        }
+        result = make_openai_strict_schema(schema)
+        item_schema = result["properties"]["items"]["items"]
+        assert item_schema["additionalProperties"] is False
+        assert set(item_schema["required"]) == {"name", "qty", "note"}
+        note_type = item_schema["properties"]["note"]["type"]
+        assert "null" in note_type
+
+    def test_outgoing_openai_request_satisfies_strict_mode(self) -> None:
+        """For a schema with an optional field, the outgoing OpenAI request is strict-valid.
+
+        Specifically:
+        - additionalProperties:false present on root
+        - required lists ALL property keys (including the optional one)
+        - the optional field's type includes 'null'
+        - the required fields' types are unmodified
+        - the original user schema is NOT mutated
+        """
+        import copy
+
+        from unified_llm.types import ResponseFormat
+
+        adapter = _make_adapter()
+
+        # S4-like schema with one optional field (discount_code)
+        user_schema: dict = {
+            "title": "ProductReview",
+            "type": "object",
+            "properties": {
+                "review_text": {"type": "string"},
+                "sentiment": {
+                    "type": "string",
+                    "enum": ["positive", "negative", "neutral"],
+                },
+                "stars": {"type": "integer", "minimum": 1, "maximum": 5},
+                "discount_code": {"type": "string"},  # optional — NOT in required
+            },
+            "required": ["review_text", "sentiment", "stars"],
+            "additionalProperties": False,
+        }
+        original_schema = copy.deepcopy(user_schema)
+
+        request = Request(
+            model="gpt-4o-mini",
+            messages=[Message.user("Analyze this review")],
+            response_format=ResponseFormat(
+                type="json_schema",
+                json_schema=user_schema,
+                strict=True,
+            ),
+        )
+        kwargs = adapter._translate_request(request)
+
+        sent_schema = kwargs["text"]["format"]["schema"]
+
+        # 1. additionalProperties:false present
+        assert sent_schema.get("additionalProperties") is False, (
+            "strict mode requires additionalProperties:false on root object"
+        )
+
+        # 2. required includes ALL property keys (including optional discount_code)
+        assert set(sent_schema["required"]) == {
+            "review_text",
+            "sentiment",
+            "stars",
+            "discount_code",
+        }, f"required must list all property keys; got {sent_schema['required']!r}"
+
+        # 3. originally-optional field is nullable
+        dc_type = sent_schema["properties"]["discount_code"]["type"]
+        assert "null" in dc_type, (
+            f"optional field 'discount_code' must be nullable; got type={dc_type!r}"
+        )
+
+        # 4. required fields are NOT made nullable
+        for req_field in ("review_text", "stars"):
+            ft = sent_schema["properties"][req_field]["type"]
+            assert ft != ["string", "null"] and ft != ["integer", "null"], (
+                f"required field '{req_field}' must not be nullable; got {ft!r}"
+            )
+
+        # 5. the user's original schema was not mutated
+        assert user_schema == original_schema, (
+            "adapter must not mutate the caller's schema dict"
+        )

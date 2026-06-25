@@ -20,6 +20,9 @@ import openai
 from collections.abc import AsyncIterator
 
 from unified_llm import errors
+from unified_llm.adapters._openai_strict_schema import (
+    make_openai_strict_schema as _make_strict_schema,
+)
 from unified_llm.types import (
     ContentKind,
     ContentPart,
@@ -416,10 +419,18 @@ class OpenAIAdapter:
         if request.response_format:
             fmt = request.response_format
             if fmt.type == "json_schema" and fmt.json_schema:
-                # OpenAI strict mode requires additionalProperties: false
-                schema = dict(fmt.json_schema)
-                if fmt.strict and "additionalProperties" not in schema:
-                    schema["additionalProperties"] = False
+                if fmt.strict:
+                    # ULM-16: OpenAI strict mode requires additionalProperties:false
+                    # and required=[all property keys] on EVERY object node.
+                    # A standard schema with optional fields (in properties but
+                    # not required) causes a 400 at runtime.  Transform a deep
+                    # copy of the user's schema to satisfy strict mode without
+                    # mutating the caller's dict.  Originally-optional fields
+                    # become nullable (type includes "null") so the model can
+                    # signal "absent" as null rather than omitting the key.
+                    schema = _make_strict_schema(fmt.json_schema)
+                else:
+                    schema = dict(fmt.json_schema)
                 kwargs["text"] = {
                     "format": {
                         "type": "json_schema",
