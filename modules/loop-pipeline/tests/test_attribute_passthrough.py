@@ -83,7 +83,20 @@ class MockCoordinator:
         self.spawn_called = False
         self.last_spawn_kwargs: dict[str, Any] = {}
         self.session = _MockSession()
-        self.config: dict[str, Any] = {"agents": {}}
+        # Provide a minimal agent config that satisfies the recursion guard.
+        # The guard requires agents[name]["session"]["orchestrator"] to be non-empty
+        # so the spawner will override the orchestrator (and not inherit loop-pipeline).
+        self.config: dict[str, Any] = {
+            "agents": {
+                "attractor-anthropic": {
+                    "session": {
+                        "orchestrator": {
+                            "module": "loop-agent",
+                        }
+                    }
+                }
+            }
+        }
 
     def get_capability(self, name: str) -> Any:
         if name == "session.spawn":
@@ -204,7 +217,13 @@ async def test_tool_loop_passes_reasoning_effort_all_values(
         profiles={},
         provider=object(),  # truthy sentinel enables Path B
     )
-    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model", "reasoning_effort": effort})
+    node = _make_node(
+        attrs={
+            "llm_provider": "test",
+            "llm_model": "test-model",
+            "reasoning_effort": effort,
+        }
+    )
     result = await backend.run(node, "task", _make_context())
 
     assert result.status.value == "success"
@@ -353,7 +372,13 @@ async def test_tool_loop_passes_max_agent_turns(
         profiles={},
         provider=object(),
     )
-    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model", "max_agent_turns": "8"})
+    node = _make_node(
+        attrs={
+            "llm_provider": "test",
+            "llm_model": "test-model",
+            "max_agent_turns": "8",
+        }
+    )
     result = await backend.run(node, "task", _make_context())
 
     assert result.status.value == "success"
