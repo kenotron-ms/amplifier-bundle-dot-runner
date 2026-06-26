@@ -372,15 +372,63 @@ class AmplifierBackend:
         coordinator_config = getattr(self._coordinator, "config", None) or {}
         agent_configs: dict[str, Any] = coordinator_config.get("agents", {})
 
+        # FAIL-LOUD GUARD: detect the specific anti-pattern that causes infinite recursion.
+        #
+        # The app-cli's spawn capability resolves the child's orchestrator by calling
+        # merge_configs(parent.config, agent_configs[profile_name]).  It does NOT load
+        # or resolve a 'bundle:' key — only 'session:', 'providers:', 'tools:', etc.
+        # are merged.  If agent_configs[profile_name] has a 'bundle:' reference but NO
+        # 'session.orchestrator' override, the child inherits the PARENT's orchestrator
+        # — which is loop-pipeline — and re-executes the same DOT graph.
+        #
+        # This was observed as a 9,854-session infinite recursion (0 LLM calls, no
+        # artifact produced).  The specific anti-pattern is: using a bundle namespace
+        # reference (a bundle-YAML concept) instead of an inline session override (the
+        # mount-plan concept that merge_configs actually reads).
+        #
+        # Guard fires ONLY on the exact dangerous pattern:
+        #   agents.<profile_name>.bundle = "namespace:path"  AND
+        #   agents.<profile_name>.session is absent
+        # This is precise enough to not fire on test fixtures with empty agent dicts
+        # while still catching the real production bug.
+        _agent_cfg_for_node: dict[str, Any] = agent_configs.get(profile_name) or {}
+        _has_bundle_ref = "bundle" in _agent_cfg_for_node
+        _has_session_orch = bool(
+            (_agent_cfg_for_node.get("session") or {}).get("orchestrator")
+        )
+        if _has_bundle_ref and not _has_session_orch:
+            _bundle_ref_val = _agent_cfg_for_node.get("bundle", "<unknown>")
+            raise ValueError(
+                f"loop-pipeline recursion guard: agent '{profile_name}' in "
+                f"agent_configs has 'bundle: {_bundle_ref_val!r}' "
+                f"but no 'session.orchestrator' override. "
+                f"The spawn capability calls merge_configs(parent.config, agent_config) "
+                f"— it does NOT resolve bundle: references, only merges 'session:' "
+                f"keys directly. Without a session.orchestrator override, the spawned "
+                f"child inherits the parent's loop-pipeline orchestrator and "
+                f"re-executes the same DOT graph, causing infinite recursion. "
+                f"Fix the agents.{profile_name} entry in your pipeline profile: "
+                f"add a 'session.orchestrator.module: loop-agent' (or other "
+                f"non-pipeline) inline override alongside or instead of the bundle: ref."
+            )
+
         # Build spawn kwargs matching the CLI spawn_capability signature
         spawn_kwargs: dict[str, Any] = {
             "agent_name": profile_name,
             "instruction": instruction,
             "parent_session": parent_session,
             "agent_configs": agent_configs,
+            # orchestrator_config: pass only non-None values so that loop-agent's
+            # numeric comparisons (e.g. max_turns > 0) don't receive None and
+            # throw TypeError.  Omitting a key lets the child orchestrator use its
+            # own default, which is always safer than injecting None.
             "orchestrator_config": {
-                "reasoning_effort": reasoning_effort,
-                "max_turns": max_agent_turns,
+                k: v
+                for k, v in {
+                    "reasoning_effort": reasoning_effort,
+                    "max_turns": max_agent_turns,
+                }.items()
+                if v is not None
             },
         }
         if model:

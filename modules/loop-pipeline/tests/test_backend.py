@@ -157,9 +157,22 @@ class MockCoordinator:
         self.spawn_call_count = 0
         self.last_spawn_kwargs: dict = {}
         self._capabilities: dict = {}
-        # Provide session and config like a real coordinator
+        # Provide session and config like a real coordinator.
+        # Default agent config satisfies the recursion guard: any pipeline-node
+        # agent must have session.orchestrator so the spawner doesn't inherit
+        # loop-pipeline and recurse.  Tests that explicitly pass agents= override this.
         self.session = _MockSession()
-        self.config: dict[str, Any] = {"agents": agents or {}}
+        _default_agents: dict[str, Any] = {
+            "attractor-anthropic": {
+                "session": {"orchestrator": {"module": "loop-agent"}},
+            },
+            "attractor-openai": {
+                "session": {"orchestrator": {"module": "loop-agent"}},
+            },
+        }
+        self.config: dict[str, Any] = {
+            "agents": agents if agents is not None else _default_agents
+        }
 
     def get_capability(self, name: str):
         if name == "session.spawn":
@@ -935,7 +948,13 @@ async def test_reasoning_effort_passed_to_tool_loop(monkeypatch):
         profiles={},
         provider=object(),  # truthy sentinel to enable Path B
     )
-    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model", "reasoning_effort": "low"})
+    node = _make_node(
+        attrs={
+            "llm_provider": "test",
+            "llm_model": "test-model",
+            "reasoning_effort": "low",
+        }
+    )
     result = await backend.run(node, "task", _make_context())
 
     assert result.status == StageStatus.SUCCESS
