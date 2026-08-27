@@ -198,6 +198,13 @@ class AmplifierAgentOrchestrator:
     OWN bundle with its OWN provider mounting (see ``_run_turn``), because
     it is a self-contained agent runtime, not a participant in this
     kernel's provider/tool mount plan.
+
+    ``context`` (the PARENT session's mounted ContextManager), by contrast,
+    IS consumed: the foundation spawn path seeds prior-turn history into it as
+    ``parent_messages`` before ``execute`` runs, and this adapter replays that
+    history into the hosted amplifier-agent session so that fidelity="full"
+    cross-node continuity actually reaches the model (support#497). See
+    ``execute`` / ``_history_from_context`` / ``_run_turn``.
     """
 
     def __init__(self, coordinator: Any, config: dict[str, Any]) -> None:
@@ -226,7 +233,20 @@ class AmplifierAgentOrchestrator:
             self._coordinator = coordinator
 
         try:
-            reply, last_outcome = await self._run_turn(prompt)
+            # Session continuity (support#497): the parent dot-pipeline backend
+            # delivers prior-turn history as ``parent_messages``; the foundation
+            # spawn path seeds it into THIS (adapter) session's mounted context
+            # BEFORE ``execute`` is called. Read it here and replay it into the
+            # hosted amplifier-agent session in ``_run_turn`` -- otherwise the
+            # hosted turn boots with an empty transcript and fidelity="full"
+            # cross-node continuity is silently inert (the model only ever sees
+            # the fresh prompt). Mirrors the library's own is_resumed replay
+            # (amplifier_agent_lib._runtime: coordinator.get("context")
+            # .set_messages). Kept INSIDE this try so that a context whose
+            # get_messages() raises still emits the ORCHESTRATOR_COMPLETE
+            # envelope the spawn boundary is owed -- like every other exit path.
+            history = await self._history_from_context(context)
+            reply, last_outcome = await self._run_turn(prompt, history=history)
         except Exception:
             # A raised exception means the invocation never completed --
             # still owes the spawn boundary an envelope (mirrors loop-agent's
@@ -263,6 +283,30 @@ class AmplifierAgentOrchestrator:
         )
         return reply
 
+    @staticmethod
+    async def _history_from_context(
+        context: Any,
+    ) -> list[dict[str, Any]] | None:
+        """Read prior-turn messages from the (already-seeded) adapter context.
+
+        The foundation spawn path seeds ``parent_messages`` into this session's
+        mounted context via ``set_messages`` before ``execute`` is called
+        (``amplifier_foundation.bundle._prepared.PreparedBundle.spawn``). Return
+        them so ``_run_turn`` can replay them into the hosted amplifier-agent
+        session. Returns ``None`` when there is no context, no ``get_messages``
+        surface, or no prior messages -- each meaning "fresh turn, nothing to
+        replay".
+        """
+        if context is None or not hasattr(context, "get_messages"):
+            return None
+        messages = await context.get_messages()
+        # A conforming ContextManager returns ``list[dict]``; anything else (a
+        # misbehaving custom module) is treated as "nothing to replay" rather
+        # than forwarded into ``set_messages`` as garbage.
+        if not isinstance(messages, list):
+            return None
+        return messages or None
+
     async def _emit_completion(
         self,
         hooks: Any,
@@ -298,7 +342,9 @@ class AmplifierAgentOrchestrator:
             },
         )
 
-    async def _run_turn(self, prompt: str) -> tuple[str, dict[str, Any] | None]:
+    async def _run_turn(
+        self, prompt: str, history: list[dict[str, Any]] | None = None
+    ) -> tuple[str, dict[str, Any] | None]:
         """Boot a fresh Engine, run exactly one turn, return (reply, last_outcome).
 
         Config-key mapping (``orchestrator_config`` keys the dot-pipeline
@@ -531,6 +577,29 @@ class AmplifierAgentOrchestrator:
                 return await deps.spawn_sub_session(**kw)
 
             session.coordinator.register_capability("session.spawn", _spawn_fn)
+
+            # Session continuity (support#497): replay the parent's prior-turn
+            # history into the hosted session's context BEFORE the turn runs,
+            # so fidelity="full" cross-node memory actually reaches the model.
+            # Mirrors amplifier_agent_lib._runtime's own is_resumed replay:
+            # same mount-registry seam (context-simple mounts via
+            # coordinator.mount, so use coordinator.get, NOT get_capability),
+            # same hasattr guard so a context module without set_messages is
+            # skipped rather than crashing the turn.
+            if history:
+                hosted_context = session.coordinator.get("context")
+                if hosted_context is not None and hasattr(
+                    hosted_context, "set_messages"
+                ):
+                    await hosted_context.set_messages(history)
+                else:
+                    logger.warning(
+                        "loop-amplifier-agent: hosted session context module "
+                        "does not expose set_messages -- prior-turn history "
+                        "not replayed (fidelity='full' continuity inert). "
+                        "Context module: %r",
+                        hosted_context,
+                    )
 
             async with session:
                 return await session.execute(ctx.prompt)

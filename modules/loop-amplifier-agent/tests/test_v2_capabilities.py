@@ -18,12 +18,19 @@ the pre-fix source before the fix landed).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-import amplifier_module_loop_amplifier_agent as laa
 import pytest
 
-from ._fakes import CapturingHooks, FakeSessionCoordinator, make_fake_deps
+import amplifier_module_loop_amplifier_agent as laa
+
+from ._fakes import (
+    CapturingHooks,
+    FakeContextManager,
+    FakeSessionCoordinator,
+    make_fake_deps,
+)
 
 
 def _install_fake_deps(monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
@@ -414,3 +421,180 @@ async def test_hooks_default_fields_stamped_with_session_and_turn_id(
     stamped = calls[0]
     assert isinstance(stamped.get("session_id"), str) and stamped["session_id"]
     assert stamped["turn_id"] == "turn-1"
+
+
+# ---------------------------------------------------------------------------
+# Gap 6: parent_messages / context continuity (RED-proof) -- support#497
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parent_history_replayed_into_hosted_session_context(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """RED-proof (support#497): against the pre-fix adapter, execute()'s
+    ``context`` parameter was accepted and silently DROPPED -- the hosted
+    amplifier-agent session booted with an empty transcript, so fidelity="full"
+    cross-node continuity never reached the model (RECALL: NONE every turn).
+    Post-fix, the adapter reads the parent's already-seeded history off
+    ``context.get_messages()`` and replays it into the hosted session's own
+    mounted context via ``coordinator.get("context").set_messages(history)``
+    BEFORE the turn executes.
+    """
+    captured = _install_fake_deps(
+        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
+    )
+
+    history = [
+        {"role": "user", "content": "The secret code is ZEBRA-42."},
+        {"role": "assistant", "content": "Understood, I will remember it."},
+    ]
+    parent_context = FakeContextManager(history)
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    await orchestrator.execute(
+        "What was the secret code?",
+        parent_context,
+        {},
+        {},
+        hooks,
+        coordinator=None,
+    )
+
+    hosted_context = captured["session"].coordinator.get("context")
+    assert hosted_context.set_messages_calls == [history], (
+        "parent history was not replayed into the hosted session context -- "
+        "support#497 regression: fidelity='full' continuity would be inert"
+    )
+    # The hosted context holds the prior turns before the turn executes, so
+    # the model actually sees them.
+    assert hosted_context.messages == history
+
+
+@pytest.mark.asyncio
+async def test_no_parent_context_replays_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A fresh turn (``context=None`` -- the first-iteration / non-full-
+    fidelity case) must not call ``set_messages`` at all: nothing to replay,
+    and the hosted session starts clean.
+    """
+    captured = _install_fake_deps(
+        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
+    )
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
+
+    hosted_context = captured["session"].coordinator.get("context")
+    assert hosted_context.set_messages_calls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_parent_context_replays_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An empty-but-present parent context (a real spawn that carried no
+    ``parent_messages``) is treated exactly like "no history": its
+    ``get_messages()`` returns ``[]``, which must NOT trigger a
+    ``set_messages`` replay onto the hosted session.
+    """
+    captured = _install_fake_deps(
+        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
+    )
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    await orchestrator.execute(
+        "do the work",
+        FakeContextManager([]),
+        {},
+        {},
+        hooks,
+        coordinator=None,
+    )
+
+    hosted_context = captured["session"].coordinator.get("context")
+    assert hosted_context.set_messages_calls == []
+
+
+class _RaisingContext:
+    """A context whose ``get_messages()`` raises -- proves the history read
+    lives INSIDE the completion-envelope ``try`` (support#497 review finding).
+    """
+
+    async def get_messages(self) -> list[dict[str, Any]]:
+        raise RuntimeError("context store unavailable")
+
+
+class _ContextNoSetMessages:
+    """A hosted-side context module exposing ``get_messages`` but NOT
+    ``set_messages`` -- proves the replay skips (warns) instead of crashing.
+    """
+
+    async def get_messages(self) -> list[dict[str, Any]]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_context_get_messages_failure_still_emits_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If reading parent history raises, execute() must STILL emit the
+    ``ORCHESTRATOR_COMPLETE(incomplete)`` envelope it owes the spawn boundary
+    (and re-raise) -- the history read is inside the same try/except that
+    protects every other exit path, and never fabricates a verdict on the way
+    out.
+    """
+    _install_fake_deps(
+        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
+    )
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+
+    with pytest.raises(RuntimeError):
+        await orchestrator.execute(
+            "do the work", _RaisingContext(), {}, {}, hooks, coordinator=None
+        )
+
+    assert hooks.completion.get("status") == "incomplete"
+    # fail-closed: no fabricated report_outcome on the incomplete path.
+    assert hooks.completion.get("metadata", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_hosted_context_without_set_messages_warns_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """When the hosted session's context module lacks ``set_messages``, the
+    replay is skipped with a WARNING and the turn still completes -- mirrors the
+    library's own is_resumed guard, and this file's convention of a caplog test
+    for every warn-and-continue branch.
+    """
+    captured = _install_fake_deps(
+        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
+    )
+    # Hosted session's mounted context has no set_messages (set before execute).
+    captured["session"].coordinator.context_module = _ContextNoSetMessages()
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    parent_context = FakeContextManager(
+        [
+            {"role": "user", "content": "prior turn"},
+            {"role": "assistant", "content": "ok"},
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await orchestrator.execute(
+            "do the work", parent_context, {}, {}, hooks, coordinator=None
+        )
+
+    assert hooks.completion.get("status") == "success"
+    assert any(
+        "does not expose set_messages" in rec.getMessage() for rec in caplog.records
+    )

@@ -48,6 +48,31 @@ class FakeHookRegistry:
         self.default_fields_calls.append(kwargs)
 
 
+class FakeContextManager:
+    """Faithful double for the ContextManager mount seam (support#497).
+
+    The real context module (context-simple) stores messages as its single
+    source of truth: ``set_messages`` writes ``self.messages`` and
+    ``get_messages`` reads it back, and the hosted loop-streaming orchestrator
+    folds those into ``get_messages_for_request`` on every provider call. This
+    fake records ``set_messages`` calls and serves ``get_messages`` from the
+    same list so a hermetic test can assert the continuity handoff without the
+    real amplifier-agent stack. Both methods are async, matching the real
+    ``amplifier_core.interfaces.ContextManager`` protocol.
+    """
+
+    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+        self.messages: list[dict[str, Any]] = list(messages or [])
+        self.set_messages_calls: list[list[dict[str, Any]]] = []
+
+    async def get_messages(self) -> list[dict[str, Any]]:
+        return list(self.messages)
+
+    async def set_messages(self, messages: list[dict[str, Any]]) -> None:
+        self.set_messages_calls.append(list(messages))
+        self.messages = list(messages)
+
+
 class FakeSessionCoordinator:
     def __init__(self) -> None:
         self.capabilities: dict[str, Any] = {}
@@ -61,6 +86,23 @@ class FakeSessionCoordinator:
         self.config: dict[str, Any] = {}
         # Mirrors ``coordinator.hooks`` (gap 5).
         self.hooks = FakeHookRegistry()
+        # Mirrors the mounted "context" module (context-simple) that the
+        # support#497 continuity fix seeds via
+        # coordinator.get("context").set_messages(history). Present-but-empty
+        # by default; only exercised when execute() is handed a non-empty
+        # parent context.
+        self.context_module = FakeContextManager()
+
+    def get(self, name: str) -> Any:
+        """Mount-registry accessor (``coordinator.get``), mirroring the real
+        seam the support#497 continuity fix relies on: context-simple mounts
+        via ``coordinator.mount()``, so the adapter reads it back with
+        ``coordinator.get`` (NOT ``get_capability``). Returns the mounted
+        context module for "context"; None for any other name.
+        """
+        if name == "context":
+            return self.context_module
+        return None
 
     def register_capability(self, name: str, fn: Any) -> None:
         self.capabilities[name] = fn

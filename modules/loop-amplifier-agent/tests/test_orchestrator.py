@@ -14,9 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import amplifier_module_loop_amplifier_agent as laa
 import pytest
 from amplifier_core.events import ORCHESTRATOR_COMPLETE
+
+import amplifier_module_loop_amplifier_agent as laa
 
 from ._fakes import CapturingHooks, make_fake_deps
 

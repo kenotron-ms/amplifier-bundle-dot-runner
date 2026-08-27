@@ -87,7 +87,11 @@ async def _run_child(prompt: str) -> dict[str, Any]:
     """Run one REAL amplifier-agent invocation, foundation-spawn-shaped."""
     hooks = _CapturingHooks()
     orch = AmplifierAgentOrchestrator(coordinator=MagicMock(), config={})
-    output = await orch.execute(prompt, MagicMock(), {}, {}, hooks, coordinator=None)
+    # context=None: this fresh probe has no prior-turn history to replay
+    # (support#497 -- execute() now READS context, so an unused MagicMock here
+    # would be awaited as get_messages() and fail; None is the faithful
+    # "no parent_messages" value for a first turn).
+    output = await orch.execute(prompt, None, {}, {}, hooks, coordinator=None)
 
     return {
         "output": output,
