@@ -59,9 +59,9 @@ from amplifier_module_pipeline_runner.runner import drive_engine
 # Pinned to a commit already on `main` (not this feature branch) -- see the
 # module docstring for why. `fixture_tool_reads_param.dot` has been
 # unchanged at this path since it landed in #87.
-_PINNED_SHA = "a7369965615629ece6e5eb1724dd15095de8043e"
+_PINNED_SHA = "ae1c35c88ce6188358a2c5822296638fc333b266"
 _ENTRY = (
-    "git+https://github.com/microsoft/amplifier-bundle-attractor"
+    "git+https://github.com/microsoft/amplifier-bundle-dot-runner"
     f"@{_PINNED_SHA}"
     "#subdirectory=modules/pipeline-runner/tests/fixtures/fixture_tool_reads_param.dot"
 )

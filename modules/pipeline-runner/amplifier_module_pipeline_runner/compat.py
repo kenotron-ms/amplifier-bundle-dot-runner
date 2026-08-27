@@ -164,7 +164,7 @@ def check_engine_compatibility() -> None:
         f"  Fix: reinstall the runner, forcing a fresh engine resolution:\n"
         f"    uv tool install --reinstall \\\n"
         f"      'amplifier-module-pipeline-runner @ "
-        f"git+https://github.com/microsoft/amplifier-bundle-attractor"
+        f"git+https://github.com/microsoft/amplifier-bundle-dot-runner"
         f"@main#subdirectory=modules/pipeline-runner'\n"
         f"\n"
         f"  Or, if running from the repo tree:\n"
