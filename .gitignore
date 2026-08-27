@@ -5,3 +5,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# Pipeline scratch/evidence state (never committed -- may contain local
+# machine paths from test runs). Matches sibling amplifier-bundle-attractor.
+.ai/
