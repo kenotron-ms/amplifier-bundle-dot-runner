@@ -221,6 +221,36 @@ flag):
   `test_hooks_default_fields_stamped_with_session_and_turn_id` (RED-proof:
   against v1, `coordinator.hooks.set_default_fields` was never called at all).
 
+The sixth item below is NOT one of those five disclosed scope cuts -- it is a
+later bug fix for a parameter that was being dropped:
+
+- **Session continuity (`context` replay) -- fixed (support#497).** The
+  `Orchestrator.execute()` `context` parameter is the PARENT session's mounted
+  `ContextManager`, which the foundation spawn path seeds with the parent's
+  prior-turn `parent_messages` (`fidelity="full"` cross-node history) BEFORE
+  `execute` runs. v1 accepted it and silently DROPPED it, so the hosted
+  amplifier-agent session (a second, inner session booted per turn) started
+  with an empty transcript -- `fidelity="full"` continuity never reached the
+  model (a real hosted turn asked to recall a prior-turn fact replies "no code
+  was given" and self-reports `status=fail`). `execute` now reads that history
+  (`_history_from_context`, inside the completion-envelope `try` so a failing
+  read still emits `ORCHESTRATOR_COMPLETE`) and replays it into the hosted
+  session's OWN mounted context via
+  `session.coordinator.get("context").set_messages(history)` -- the SAME
+  mount-registry seam (`coordinator.get`, not `get_capability`), `hasattr`
+  guard, and warn-on-missing that `amplifier_agent_lib._runtime`'s own
+  `is_resumed` replay uses. See `test_parent_history_replayed_into_hosted_session_context`
+  (RED-proof: against the pre-fix adapter the hosted context's `set_messages`
+  was never called), the two negative guards
+  (`test_no_parent_context_replays_nothing`,
+  `test_empty_parent_context_replays_nothing`), the fail-closed-envelope guard
+  (`test_context_get_messages_failure_still_emits_incomplete`), the
+  missing-`set_messages` warn branch
+  (`test_hosted_context_without_set_messages_warns_and_continues`), and the
+  live end-to-end proof `tests/test_continuity_live.py` (a real hosted
+  amplifier-agent turn recalls a secret that exists ONLY in the replayed
+  history).
+
 ## Python version note
 
 `amplifier-agent` (the peer library this module hosts) declares
