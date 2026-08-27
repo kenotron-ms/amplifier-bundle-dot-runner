@@ -30,6 +30,17 @@ RED against origin/main: at `701edc7` loop-agent emitted no
 `orchestrator:complete` at all, so `metadata` was always `{}` and the parent
 recorded `notes="Child session completed with empty final message",
 is_explicit=False`.
+
+Standalone note: `loop-agent` is the "Agent" concept and lives in
+amplifier-bundle-attractor, not in this engine repo, so it is not a sibling
+module here and is not guaranteed to be importable when pipeline-runner is
+synced/tested on its own. This file `pytest.importorskip`s it below and
+SKIPS as a whole when it is absent (e.g. a fresh `uv sync` + `uv run pytest`
+in this repo alone); the full producer+verdict+consumer coverage only runs
+where all three modules are checked out side by side, which today means
+amplifier-bundle-attractor. Follow-up: attractor should own this
+runner<->agent integration test explicitly rather than relying on it
+surviving, silently skipped, inside pipeline-runner's own test suite.
 """
 
 from typing import Any, ClassVar
@@ -38,12 +49,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from amplifier_core.events import ORCHESTRATOR_COMPLETE
 from amplifier_core.message_models import ChatResponse, ToolCall, Usage
-from amplifier_module_loop_agent import AgentOrchestrator
 from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Node
 from amplifier_module_loop_pipeline.outcome import StageStatus
 from amplifier_module_tool_report_outcome import ReportOutcomeTool
+
+# loop-agent is the real PRODUCER half of this test (see module docstring
+# above). It lives in amplifier-bundle-attractor, not this repo, so it is
+# not necessarily installed for a standalone pipeline-runner sync/test run --
+# skip the whole module rather than break `uv sync` or fail collection.
+_loop_agent = pytest.importorskip(
+    "amplifier_module_loop_agent",
+    reason="loop-agent lives in amplifier-bundle-attractor, not this repo",
+)
+AgentOrchestrator = _loop_agent.AgentOrchestrator
 
 # ---------------------------------------------------------------------------
 # Child-side harness: a real loop-agent invocation with a scripted provider
@@ -326,8 +346,16 @@ async def test_last_declared_verdict_is_the_one_transported():
     result = await _run_child(
         [
             _tool_response(
-                ("tc1", "report_outcome", {"status": "success", "preferred_label": "ship"}),
-                ("tc2", "report_outcome", {"status": "fail", "preferred_label": "escalate"}),
+                (
+                    "tc1",
+                    "report_outcome",
+                    {"status": "success", "preferred_label": "ship"},
+                ),
+                (
+                    "tc2",
+                    "report_outcome",
+                    {"status": "fail", "preferred_label": "escalate"},
+                ),
             )
         ]
     )
