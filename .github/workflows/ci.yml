@@ -1,0 +1,244 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. a PR pushed again before the
+# previous run finished) so we don't burn runner time on stale commits.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    # One job per (module, python-version) combination. Each module is its
+    # own uv-managed package with its own venv, dependency group, and pytest
+    # addopts -- mirrors amplifier-bundle-attractor's ci.yml pattern (this
+    # repo was extracted from there via git filter-repo; see HISTORY-MAP.tsv).
+    # Modules are NOT run in one shared pytest process: doing so produces
+    # `--import-mode` collisions and cross-module state pollution, and
+    # bypasses each module's own `addopts` (e.g. unified-llm-client's
+    # `-m 'not integration'` marker filter, which is what keeps
+    # API-key-requiring tests out of CI).
+    name: Unit Tests (${{ matrix.module.name }}, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # A red matrix cell must never mask the other cells.
+      fail-fast: false
+      matrix:
+        # Floor (3.11, the repo-wide requires-python minimum) and ceiling
+        # (3.13, latest stable) only -- matches the source repo's tradeoff.
+        python-version: ["3.11", "3.13"]
+        module:
+          - name: loop-pipeline
+            # tests/test_remote_dot.py imports amplifier_module_remote_source,
+            # which is only wired in as the optional `remote` extra. Without
+            # it, pytest collection fails before any test runs.
+            extra_args: "--extra remote"
+          - name: pipeline-runner
+            extra_args: ""
+          - name: remote-source
+            extra_args: ""
+          - name: tool-report-outcome
+            extra_args: ""
+          - name: unified-llm-client
+            extra_args: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: modules/${{ matrix.module.name }}
+        run: uv sync ${{ matrix.module.extra_args }}
+
+      - name: Run tests
+        working-directory: modules/${{ matrix.module.name }}
+        run: uv run pytest -q
+
+  conformance-matrix:
+    # Separate, distinctly-named job so a failure here reads as "the spec
+    # conformance matrix broke" rather than a generic unit-test failure.
+    # DESIGN-repo-split.md S2 (constraint #2): this is a REPACKAGING, zero
+    # semantic change -- all 38 rows in specs/conformance/attractor-matrix.yaml
+    # must pass UNMODIFIED. An edited row (beyond a file-path adjustment) is
+    # a failed move, not a passing gate.
+    name: Conformance Matrix (specs/conformance/attractor-matrix.yaml, all rows)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install loop-pipeline
+        working-directory: modules/loop-pipeline
+        run: uv sync --extra remote
+
+      - name: Run conformance matrix suite
+        working-directory: modules/loop-pipeline
+        run: uv run pytest tests/test_spec_conformance_matrix.py -v
+
+  dot-render-gate:
+    # This repo carries tracked *.dot fixtures under modules/*/tests/fixtures/
+    # (engine test corpus, not the authored examples/ corpus -- that stayed
+    # in amplifier-bundle-attractor per DESIGN-repo-split.md S3.1). Mirrors
+    # the source repo's dot-render-gate job scope and intent: every
+    # git-tracked .dot in THIS repository must render under `dot -Tsvg`.
+    name: DOT Render Gate (every tracked .dot renders)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install graphviz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y graphviz
+          dot -V
+
+      - name: Render every git-tracked .dot
+        run: |
+          set -uo pipefail
+
+          failed=0
+          checked=0
+          while IFS= read -r f; do
+            checked=$((checked + 1))
+            if err="$(dot -Tsvg "$f" -o /dev/null 2>&1)"; then
+              continue
+            fi
+            failed=$((failed + 1))
+            echo "::error file=${f}::does not render under 'dot -Tsvg': ${err}"
+          done < <(git ls-files '*.dot')
+
+          echo ""
+          echo "Checked ${checked} git-tracked .dot file(s); ${failed} failed to render."
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::No .dot files were checked -- the sweep is vacuous. Failing rather than reporting a false green."
+            exit 1
+          fi
+
+  type-check:
+    # Mirrors the source repo's scope: unified-llm-client only, verified
+    # clean (0 errors, 0 warnings) at extraction time. A missing tool is a
+    # hard failure here, not a silent skip.
+    name: Type Check (unified-llm-client)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install unified-llm-client
+        working-directory: modules/unified-llm-client
+        run: uv sync
+
+      - name: Run pyright
+        working-directory: modules/unified-llm-client
+        run: uv run --with pyright pyright unified_llm/
+
+  validate-bundle:
+    # This repo is a proper thin Amplifier bundle (bundle.md + behaviors/),
+    # not just a bag of pip-installable modules. Runs the foundation
+    # validate-bundle-repo recipe against the repo root with amplifier-core
+    # + amplifier-foundation installed, so BundleRegistry-backed checks run
+    # in FULL mode (not the degraded hygiene_only/structural_only mode the
+    # recipe falls back to when foundation isn't importable). PASS threshold:
+    # both bundle.md (root, namespace dot-runner) and
+    # behaviors/dot-runner.yaml (dot-runner-core) must load with zero errors.
+    name: Validate Bundle Repo (bundle.md + behaviors/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install amplifier-core + amplifier-foundation + hatchling
+        run: |
+          uv venv .venv-validate
+          uv pip install --python .venv-validate \
+            hatchling \
+            "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
+            "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main"
+
+      - name: Run validate-bundle-repo recipe against the repo root
+        run: |
+          source .venv-validate/bin/activate
+          uv run --python .venv-validate --with amplifier \
+            amplifier tool invoke recipes \
+            operation=execute \
+            recipe_path=foundation:recipes/validate-bundle-repo.yaml \
+            context="{\"repo_path\": \"${GITHUB_WORKSPACE}\"}"
+
+  ci-gate:
+    # Aggregate "all-green" summary gate -- the ONE stable check to require
+    # in branch protection. `if: always()` + explicit result inspection
+    # gives fail-closed semantics: this job cannot report green while any
+    # upstream job failed, was cancelled, or was skipped.
+    name: CI Gate (all checks passed)
+    if: always()
+    needs:
+      - unit-tests
+      - conformance-matrix
+      - dot-render-gate
+      - type-check
+      - validate-bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every upstream job to have succeeded
+        run: |
+          set -euo pipefail
+
+          declare -A results=(
+            [unit-tests]="${{ needs.unit-tests.result }}"
+            [conformance-matrix]="${{ needs.conformance-matrix.result }}"
+            [dot-render-gate]="${{ needs.dot-render-gate.result }}"
+            [type-check]="${{ needs.type-check.result }}"
+            [validate-bundle]="${{ needs.validate-bundle.result }}"
+          )
+
+          overall_ok=true
+          for job_id in "${!results[@]}"; do
+            result="${results[$job_id]}"
+            echo "${job_id}: ${result}"
+            if [ "${result}" != "success" ]; then
+              echo "::error::Upstream job '${job_id}' did not succeed (result: ${result})"
+              overall_ok=false
+            fi
+          done
+
+          if [ "${overall_ok}" != "true" ]; then
+            echo ""
+            echo "One or more upstream jobs did not succeed. Failing the aggregate CI gate."
+            exit 1
+          fi
+
+          echo ""
+          echo "All upstream jobs succeeded."
