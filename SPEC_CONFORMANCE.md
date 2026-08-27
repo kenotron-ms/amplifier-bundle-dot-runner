@@ -1,6 +1,6 @@
 # Spec Conformance Ledger
 
-A living record of where this implementation (`amplifier-bundle-attractor`) is **off-spec**
+A living record of where this implementation (`amplifier-bundle-dot-runner`) is **off-spec**
 relative to the upstream natural-language specs at [strongdm/attractor](https://github.com/strongdm/attractor),
 and the chosen disposition for each gap. The goal is not 100% literal conformance — it is that
 **every divergence is a deliberate, recorded choice**, trending over time toward one of:
