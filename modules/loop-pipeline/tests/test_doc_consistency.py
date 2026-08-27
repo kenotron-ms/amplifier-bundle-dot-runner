@@ -12,6 +12,8 @@ assert the doc's claim against LIVE engine code
 import re
 from pathlib import Path
 
+import pytest
+
 BUNDLE_ROOT = Path(__file__).parent.parent.parent.parent
 
 
@@ -113,6 +115,10 @@ def _authoring_guide_reasoning_effort_default_cell() -> str:
     return m.group("default").strip()
 
 
+@pytest.mark.skipif(
+    not (BUNDLE_ROOT / _AUTHORING_GUIDE_REL).is_file(),
+    reason="docs/DOT-AUTHORING-GUIDE.md not present (opinionated-layer content stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
 def test_authoring_guide_reasoning_effort_default_matches_engine():
     """The guide's reasoning_effort Default cell must describe the code (D-243).
 

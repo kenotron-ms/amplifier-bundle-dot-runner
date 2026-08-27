@@ -53,6 +53,14 @@ from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 _REPO_ROOT = Path(__file__).parent.parent.parent.parent
 _DOT_FILE = _REPO_ROOT / "examples" / "pipelines" / "02-plan-implement-test.dot"
 
+# examples/pipelines/ is opinionated-layer content that stayed in
+# amplifier-bundle-attractor per DESIGN-repo-split.md S3.1. See
+# test_p6_convergence_factory.py's pytestmark for the full rationale.
+pytestmark = pytest.mark.skipif(
+    not _DOT_FILE.is_file(),
+    reason="examples/pipelines/02-plan-implement-test.dot not present (opinionated-layer content stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Event capture

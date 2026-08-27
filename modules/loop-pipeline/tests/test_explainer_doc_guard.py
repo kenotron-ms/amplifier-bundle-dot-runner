@@ -13,6 +13,8 @@ import html as _html
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _find_bundle_root() -> Path | None:
     for candidate in Path(__file__).resolve().parents:
@@ -26,6 +28,15 @@ def _find_bundle_root() -> Path | None:
 BUNDLE_ROOT = _find_bundle_root()
 PAGE_REL = "docs/attractor-explained.html"
 PAGE_PATH = (BUNDLE_ROOT / PAGE_REL) if BUNDLE_ROOT is not None else None
+
+# docs/attractor-explained.html is opinionated-layer content that stayed in
+# amplifier-bundle-attractor per DESIGN-repo-split.md S3.1. All four residual
+# checks in this file assert the page's claims against live engine modules,
+# but still need the page itself to exist first.
+pytestmark = pytest.mark.skipif(
+    PAGE_PATH is None or not PAGE_PATH.is_file(),
+    reason="docs/attractor-explained.html not present (opinionated-layer content stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
 
 _BLOCK_RE = re.compile(r"<(script|style|svg)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")

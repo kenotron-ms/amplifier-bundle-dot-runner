@@ -1401,6 +1401,11 @@ def _repo_root():
     return Path(__file__).parent.parent.parent.parent
 
 
+@pytest.mark.skipif(
+    not (_repo_root() / "README.md").exists()
+    or "| Shape |" not in (_repo_root() / "README.md").read_text(),
+    reason="README.md's detailed shape table is opinionated-layer doc content that stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1",
+)
 def test_doc_shape_tables_match_shape_to_handler():
     """Agent-visible shape tables must match SHAPE_TO_HANDLER exactly.
 
@@ -1430,6 +1435,11 @@ def test_doc_shape_tables_match_shape_to_handler():
     )
 
 
+@pytest.mark.skipif(
+    not (_repo_root() / "README.md").exists()
+    or "| Shape |" not in (_repo_root() / "README.md").read_text(),
+    reason="README.md's detailed shape table is opinionated-layer doc content that stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1",
+)
 def test_readme_shape_table_matches_shape_to_handler():
     """README.md's shape table must not omit a supported shape.
 

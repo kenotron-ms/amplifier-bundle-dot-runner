@@ -332,6 +332,15 @@ class ToolCallingWorkerBackend:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not (
+        Path(__file__).parent.parent.parent
+        / "hooks-pipeline-observability"
+        / "amplifier_module_hooks_pipeline_observability"
+        / "session_events.py"
+    ).is_file(),
+    reason="modules/hooks-pipeline-observability not present (that module stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
 async def test_end_to_end_real_events_persisted_and_locatable(tmp_path):
     """The money path: engine run -> worker emits real tool events -> the
     shipped persister writes them under <stage_dir>/sessions/<session_id>/

@@ -34,6 +34,7 @@ Covers:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -63,7 +64,10 @@ def _make_outcome_with_tool_output(text: str) -> Outcome:
     return Outcome(
         status=StageStatus.SUCCESS,
         is_explicit=True,
-        context_updates={"tool.output": text, "tool.last_line": text.splitlines()[-1] if text else ""},
+        context_updates={
+            "tool.output": text,
+            "tool.last_line": text.splitlines()[-1] if text else "",
+        },
     )
 
 
@@ -219,7 +223,9 @@ def test_accumulates_across_iterations(tmp_path):
 
     # The per-target key for node "work" is "prior_critiques_work"
     prior = str(context.get(PRIOR_CRITIQUES_KEY_PREFIX + "work") or "")
-    assert "CRITIQUE-mark-1" in prior, "Iteration 1 critique must survive into iteration 2"
+    assert "CRITIQUE-mark-1" in prior, (
+        "Iteration 1 critique must survive into iteration 2"
+    )
     assert "CRITIQUE-mark-2" in prior, "Iteration 2 critique must appear"
     assert "Iteration 1 critique:" in prior
     assert "Iteration 2 critique:" in prior
@@ -234,7 +240,9 @@ def test_curation_bound_drops_oldest(tmp_path):
     for i in range(1, MAX_CRITIQUES + 3):
         collect_and_inject_feedback(
             graph=graph,
-            node_outcomes={"critic": _make_outcome_with_tool_output(f"CRITIQUE-mark-{i}")},
+            node_outcomes={
+                "critic": _make_outcome_with_tool_output(f"CRITIQUE-mark-{i}")
+            },
             context=context,
             iteration_count=i,
             logs_root=str(tmp_path),
@@ -249,7 +257,9 @@ def test_curation_bound_drops_oldest(tmp_path):
         f"Channel depth {len(channel)} exceeds MAX_CRITIQUES={MAX_CRITIQUES}"
     )
     # Oldest entries should be gone; newest should be present
-    assert f"CRITIQUE-mark-{MAX_CRITIQUES + 2}" in prior, "Latest critique must be present"
+    assert f"CRITIQUE-mark-{MAX_CRITIQUES + 2}" in prior, (
+        "Latest critique must be present"
+    )
     assert "CRITIQUE-mark-1" not in prior, "Oldest critique must have been dropped"
 
 
@@ -621,6 +631,7 @@ async def test_engine_3iteration_durable_artifact_colocation(tmp_path):
 
     # Must contain critiques from >=2 distinct iterations (co-location check)
     import re
+
     distinct_marks = set(re.findall(r"CRITIQUE-mark-\d+", content))
     assert len(distinct_marks) >= 2, (
         f"Durable artifact must hold critiques from >=2 distinct iterations; "
@@ -877,6 +888,15 @@ def test_multi_target_isolation_no_leakage(tmp_path):
         )
 
 
+@pytest.mark.skipif(
+    not (
+        Path(__file__).parent.parent.parent.parent
+        / "examples"
+        / "patterns"
+        / "convergence-factory.dot"
+    ).is_file(),
+    reason="examples/patterns/convergence-factory.dot not present (opinionated-layer content stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
 def test_convergence_factory_exemplar_prompt_expands_scoped_key(tmp_path):
     """Case 16: convergence-factory.dot generate node uses $prior_critiques_generate.
 
@@ -915,10 +935,12 @@ def test_convergence_factory_exemplar_prompt_expands_scoped_key(tmp_path):
 
     # Verify the exemplar declares feedback_from= on the generate node
     generate_node = graph.nodes.get("generate")
-    assert generate_node is not None, "convergence-factory.dot must have a 'generate' node"
+    assert generate_node is not None, (
+        "convergence-factory.dot must have a 'generate' node"
+    )
     feedback_from = (generate_node.attrs or {}).get("feedback_from")
     assert feedback_from == "feedback", (
-        f"generate node must declare feedback_from=\"feedback\"; got {feedback_from!r}"
+        f'generate node must declare feedback_from="feedback"; got {feedback_from!r}'
     )
 
     # Simulate a loop_restart: collect the feedback node's critique
@@ -935,7 +957,9 @@ def test_convergence_factory_exemplar_prompt_expands_scoped_key(tmp_path):
     )
 
     # The per-target key for node "generate" must be set
-    per_target_key = PRIOR_CRITIQUES_KEY_PREFIX + "generate"  # "prior_critiques_generate"
+    per_target_key = (
+        PRIOR_CRITIQUES_KEY_PREFIX + "generate"
+    )  # "prior_critiques_generate"
     assert context.get(per_target_key) is not None, (
         f"collect_and_inject_feedback must set '{per_target_key}' in context; "
         "check that the 'generate' node's feedback_from= is correctly parsed."

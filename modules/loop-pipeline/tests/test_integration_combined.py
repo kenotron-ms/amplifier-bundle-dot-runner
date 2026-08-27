@@ -37,6 +37,14 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.parent
 _PATTERNS_DIR = _REPO_ROOT / "examples" / "patterns"
 _COMBINED_DOT = _PATTERNS_DIR / "demo-combined.dot"
 
+# examples/patterns/ is opinionated-layer content that stayed in
+# amplifier-bundle-attractor per DESIGN-repo-split.md S3.1. See
+# test_p6_convergence_factory.py's pytestmark for the full rationale.
+pytestmark = pytest.mark.skipif(
+    not _PATTERNS_DIR.is_dir(),
+    reason="examples/patterns/ not present (opinionated-layer content stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Mock backends

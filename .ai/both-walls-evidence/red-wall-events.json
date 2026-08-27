@@ -1,0 +1,270 @@
+[
+  {
+    "event": "pipeline:start",
+    "data": {
+      "graph_name": "DeltaGateRedWall",
+      "node_count": 5,
+      "edge_count": 6,
+      "goal": "Assert that durable commits exist in src/ since the recorded base SHA",
+      "dot_source": "digraph DeltaGateRedWall {\n    graph [goal=\"Assert that durable commits exist in src/ since the recorded base SHA\"]\n\n    start [shape=Mdiamond]\n    done  [shape=Msquare]\n\n    RecordBaseSHA [\n        shape=parallelogram,\n        label=\"Record Base SHA\",\n        tool_command=\"mkdir -p .ai && git rev-parse HEAD > .ai/base-sha && printf ok || { printf fail; exit 1; }\"\n    ]\n\n    work [\n        shape=parallelogram,\n        label=\"Do Work (uncommitted first, committed second)\",\n        tool_command=\"mkdir -p src .ai; if [ ! -f .ai/work-flag ]; then echo 'uncommitted' > src/work.py; touch .ai/work-flag; printf work_done; else git add src/work.py && git commit -m 'feat: add work.py' && printf committed; fi\"\n    ]\n\n    AssertDelta [\n        shape=parallelogram,\n        label=\"Assert Delta (commits since base)\",\n        goal_gate=true,\n        retry_target=work,\n        tool_command=\"if [ ! -f .ai/base-sha ]; then printf no_anchor; exit 1; fi; BASE=$(cat .ai/base-sha); COUNT=$(git log ${BASE}..HEAD -- src/ | wc -l | tr -d ' '); [ \\\"$COUNT\\\" -gt 0 ] && printf changed || { printf unchanged; exit 1; }\"\n    ]\n\n    start -> RecordBaseSHA\n    RecordBaseSHA -> work         [condition=\"context.tool.last_line=ok && outcome=success\", label=\"anchor written\"]\n    RecordBaseSHA -> done         [condition=\"outcome=fail\", label=\"not a git repo\"]\n\n    work -> AssertDelta\n\n    AssertDelta -> done [condition=\"context.tool.last_line=changed && outcome=success\", label=\"durable delta confirmed\"]\n    AssertDelta -> work [condition=\"outcome=fail\", label=\"no durable commits -- retry\"]\n}\n"
+    }
+  },
+  {
+    "event": "pipeline:node_start",
+    "data": {
+      "node_id": "start",
+      "handler_type": "Mdiamond",
+      "attempt": 1,
+      "execution_index": 1
+    }
+  },
+  {
+    "event": "pipeline:node_complete",
+    "data": {
+      "node_id": "start",
+      "status": "success",
+      "duration_ms": 0.007872004061937332,
+      "notes": "Start node: start",
+      "failure_reason": null,
+      "session_id": null,
+      "execution_index": 1,
+      "failed_step": null,
+      "attempt": 1
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "start",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:edge_selected",
+    "data": {
+      "from_node": "start",
+      "to_node": "RecordBaseSHA",
+      "edge_label": ""
+    }
+  },
+  {
+    "event": "pipeline:node_start",
+    "data": {
+      "node_id": "RecordBaseSHA",
+      "handler_type": "parallelogram",
+      "attempt": 1,
+      "execution_index": 1
+    }
+  },
+  {
+    "event": "pipeline:node_complete",
+    "data": {
+      "node_id": "RecordBaseSHA",
+      "status": "success",
+      "duration_ms": 3.7937460001558065,
+      "notes": "Tool completed: mkdir -p .ai && git rev-parse HEAD > .ai/base-sha && printf ok || { printf fail; exit 1; }",
+      "failure_reason": null,
+      "session_id": null,
+      "execution_index": 1,
+      "failed_step": null,
+      "attempt": 1
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "RecordBaseSHA",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:edge_selected",
+    "data": {
+      "from_node": "RecordBaseSHA",
+      "to_node": "work",
+      "edge_label": "anchor written"
+    }
+  },
+  {
+    "event": "pipeline:node_start",
+    "data": {
+      "node_id": "work",
+      "handler_type": "parallelogram",
+      "attempt": 1,
+      "execution_index": 1
+    }
+  },
+  {
+    "event": "pipeline:node_complete",
+    "data": {
+      "node_id": "work",
+      "status": "success",
+      "duration_ms": 2.8033931739628315,
+      "notes": "Tool completed: mkdir -p src .ai; if [ ! -f .ai/work-flag ]; then echo 'uncommitted' > src/work.py; touch .ai/work-flag; printf work_done; else git add src/work.py && git commit -m 'feat: add work.py' && printf committed; fi",
+      "failure_reason": null,
+      "session_id": null,
+      "execution_index": 1,
+      "failed_step": null,
+      "attempt": 1
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "work",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:edge_selected",
+    "data": {
+      "from_node": "work",
+      "to_node": "AssertDelta",
+      "edge_label": ""
+    }
+  },
+  {
+    "event": "pipeline:node_start",
+    "data": {
+      "node_id": "AssertDelta",
+      "handler_type": "parallelogram",
+      "attempt": 1,
+      "execution_index": 1
+    }
+  },
+  {
+    "event": "pipeline:node_complete",
+    "data": {
+      "node_id": "AssertDelta",
+      "status": "fail",
+      "duration_ms": 4.952177871018648,
+      "notes": null,
+      "failure_reason": "Command exited with code 1: unchanged",
+      "session_id": null,
+      "execution_index": 1,
+      "failed_step": {
+        "command": "if [ ! -f .ai/base-sha ]; then printf no_anchor; exit 1; fi; BASE=$(cat .ai/base-sha); COUNT=$(git log ${BASE}..HEAD -- src/ | wc -l | tr -d ' '); [ \"$COUNT\" -gt 0 ] && printf changed || { printf unchanged; exit 1; }",
+        "exit_code": 1,
+        "duration_s": 0.005,
+        "stdout_tail": "unchanged",
+        "stderr_tail": ""
+      },
+      "attempt": 1
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "AssertDelta",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:edge_selected",
+    "data": {
+      "from_node": "AssertDelta",
+      "to_node": "work",
+      "edge_label": "no durable commits -- retry"
+    }
+  },
+  {
+    "event": "pipeline:node_start",
+    "data": {
+      "node_id": "work",
+      "handler_type": "parallelogram",
+      "attempt": 1,
+      "execution_index": 2
+    }
+  },
+  {
+    "event": "pipeline:node_complete",
+    "data": {
+      "node_id": "work",
+      "status": "success",
+      "duration_ms": 10.152771836146712,
+      "notes": "Tool completed: mkdir -p src .ai; if [ ! -f .ai/work-flag ]; then echo 'uncommitted' > src/work.py; touch .ai/work-flag; printf work_done; else git add src/work.py && git commit -m 'feat: add work.py' && printf committed; fi",
+      "failure_reason": null,
+      "session_id": null,
+      "execution_index": 2,
+      "failed_step": null,
+      "attempt": 1
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "work",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:edge_selected",
+    "data": {
+      "from_node": "work",
+      "to_node": "AssertDelta",
+      "edge_label": ""
+    }
+  },
+  {
+    "event": "pipeline:node_start",
+    "data": {
+      "node_id": "AssertDelta",
+      "handler_type": "parallelogram",
+      "attempt": 1,
+      "execution_index": 2
+    }
+  },
+  {
+    "event": "pipeline:node_complete",
+    "data": {
+      "node_id": "AssertDelta",
+      "status": "success",
+      "duration_ms": 5.128114018589258,
+      "notes": "Tool completed: if [ ! -f .ai/base-sha ]; then printf no_anchor; exit 1; fi; BASE=$(cat .ai/base-sha); COUNT=$(git log ${BASE}..HEAD -- src/ | wc -l | tr -d ' '); [ \"$COUNT\" -gt 0 ] && printf changed || { printf unchanged; exit 1; }",
+      "failure_reason": null,
+      "session_id": null,
+      "execution_index": 2,
+      "failed_step": null,
+      "attempt": 1
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "AssertDelta",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:edge_selected",
+    "data": {
+      "from_node": "AssertDelta",
+      "to_node": "done",
+      "edge_label": "durable delta confirmed"
+    }
+  },
+  {
+    "event": "pipeline:checkpoint",
+    "data": {
+      "node_id": "done",
+      "checkpoint_path": "/tmp/pytest-of-bkrabach/pytest-132/test_red_wall_assert_delta_rou0/logs-red/checkpoint.json"
+    }
+  },
+  {
+    "event": "pipeline:goal_gate_check",
+    "data": {
+      "satisfied": [
+        "AssertDelta"
+      ],
+      "unsatisfied": []
+    }
+  },
+  {
+    "event": "pipeline:complete",
+    "data": {
+      "status": "success",
+      "total_nodes_executed": 6,
+      "duration_ms": 30.543226981535554
+    }
+  }
+]

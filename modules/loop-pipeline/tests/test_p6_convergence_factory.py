@@ -39,6 +39,19 @@ _PATTERNS_DIR = _REPO_ROOT / "examples" / "patterns"
 _FACTORY_DOT = _PATTERNS_DIR / "convergence-factory.dot"
 _DEMO_DOT = _PATTERNS_DIR / "demo-convergence-factory.dot"
 
+# examples/patterns/ is opinionated-layer content that stayed in
+# amplifier-bundle-attractor per DESIGN-repo-split.md S3.1 (the repo split's
+# ratified boundary). This whole file reads the shipped exemplar .dot files
+# by path, so -- like test_p2_conversational_gate.py, test_integration_combined.py,
+# test_plan_implement_test_evidence.py, and test_retry_with_fallback_evidence.py --
+# it cannot resolve its target paths standalone in this engine-only repo.
+# Boundary finding, not a mechanism failure: skipped with an explicit reason
+# rather than deleted, so the gap stays visible.
+pytestmark = pytest.mark.skipif(
+    not _PATTERNS_DIR.is_dir(),
+    reason="examples/patterns/ not present (opinionated-layer content stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Mock backends
