@@ -598,3 +598,73 @@ async def test_hosted_context_without_set_messages_warns_and_continues(
     assert any(
         "does not expose set_messages" in rec.getMessage() for rec in caplog.records
     )
+
+
+class _WiringCoordinator:
+    """Minimal coordinator mirroring what
+    ``amplifier_core._session_exec.run_orchestrator`` reads: ``get(...)`` for
+    ``orchestrator``/``context``/``providers``/``tools``, plus ``.hooks``,
+    ``.config``, and ``get_capability(...)``. Lets a test drive the REAL kernel
+    caller boundary (``run_orchestrator``) instead of calling ``execute()``
+    directly -- the analogue of loop-pipeline's
+    ``test_handler_backend_continuity_wiring`` driving the real
+    ``CodergenHandler.execute`` caller.
+    """
+
+    def __init__(self, orchestrator: Any, context: Any, hooks: Any) -> None:
+        self._orchestrator = orchestrator
+        self._context = context
+        self.hooks = hooks
+        self.config: dict[str, Any] = {}
+
+    def get(self, name: str) -> Any:
+        return {
+            "orchestrator": self._orchestrator,
+            "context": self._context,
+        }.get(name)
+
+    def get_capability(self, name: str) -> Any:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_history_flows_through_the_real_run_orchestrator_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Wiring proof at the REAL kernel caller boundary (support#497): drive
+    ``amplifier_core._session_exec.run_orchestrator`` -- the exact function the
+    kernel uses to invoke a mounted orchestrator -- with a context seeded the
+    way foundation's ``PreparedBundle.spawn`` seeds it (via ``set_messages``,
+    NOT the constructor), and assert the prior-turn history reaches the hosted
+    session's context. Mirrors loop-pipeline's
+    ``test_handler_backend_continuity_wiring``, which exists specifically
+    because backend-level hermetic tests proved the mechanism but not the
+    caller->callee wiring. RED against the pre-fix adapter (``execute`` drops
+    ``context``).
+    """
+    from amplifier_core._session_exec import run_orchestrator
+
+    captured = _install_fake_deps(
+        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
+    )
+
+    history = [
+        {"role": "user", "content": "First instruction"},
+        {"role": "assistant", "content": "First output"},
+    ]
+    # Seed exactly as foundation's PreparedBundle.spawn does: via set_messages,
+    # not the constructor.
+    parent_context = FakeContextManager()
+    await parent_context.set_messages(history)
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    coordinator = _WiringCoordinator(orchestrator, parent_context, hooks)
+
+    await run_orchestrator(coordinator, "recall the first instruction")
+
+    hosted_context = captured["session"].coordinator.get("context")
+    assert hosted_context.set_messages_calls == [history], (
+        "history did not reach the hosted session through the real "
+        "run_orchestrator boundary -- support#497 wiring regression"
+    )
