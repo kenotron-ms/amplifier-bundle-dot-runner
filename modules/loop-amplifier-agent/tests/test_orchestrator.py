@@ -19,7 +19,7 @@ from amplifier_core.events import ORCHESTRATOR_COMPLETE
 
 import amplifier_module_loop_amplifier_agent as laa
 
-from ._fakes import CapturingHooks, make_fake_deps
+from ._fakes import CapturingHooks, FakeFactoryContextManager, make_fake_deps
 
 
 def _install_fake_deps(monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
@@ -325,3 +325,91 @@ async def test_empty_reply_with_verdict_still_succeeds(monkeypatch: pytest.Monke
     assert reply == ""
     assert hooks.completion["metadata"]["report_outcome"] == verdict
     assert hooks.completion["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# 5. System-prompt survival across history replay (PR #3 adoption review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_system_framing_survives_history_replay(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Regression pin: does replaying parent-turn history into the hosted
+    session (``hosted_context.set_messages(history)``, support#497's fix)
+    clobber the hosted session's OWN system framing?
+
+    ``set_messages`` REPLACES the hosted context's whole message list, and
+    ``prepared.create_session()`` (amplifier_foundation/bundle/_prepared.py)
+    can seed system framing into that SAME message list via a static
+    ``add_message({"role": "system", ...})`` fallback -- but only when the
+    context module does NOT support ``set_system_prompt_factory``. The real
+    (and only) context module amplifier-agent's own baked-in bundle ever
+    mounts is context-simple (see ``amplifier_agent_lib/bundle/bundle.md``'s
+    ``context: module: context-simple``), and
+    ``amplifier_module_context_simple.SimpleContextManager`` ALWAYS supports
+    ``set_system_prompt_factory``. So ``create_session()`` always takes the
+    factory branch for this adapter's hosted sessions, never the add_message
+    fallback -- and the factory-produced system message is never written
+    into the message list ``set_messages`` replaces (it's synthesized fresh,
+    and stored system messages are filtered out, on every
+    ``get_messages_for_request()`` call -- see ``FakeFactoryContextManager``'s
+    docstring for the precise mechanism this fake mirrors).
+
+    This test proves that claim rather than assuming it: it registers a
+    system-prompt factory on the hosted context BEFORE ``execute()`` runs
+    (mirroring what the real ``create_session()`` does), feeds a non-empty
+    parent history through ``context`` so replay actually happens, and
+    asserts that whatever the hosted session would send to the provider
+    (``get_messages_for_request()``, captured by ``FakeSession.execute()``
+    into ``messages_sent_to_provider``) still leads with the fresh system
+    framing followed by the replayed history -- i.e. NO clobbering occurs
+    for the real seam. (If a future context module dropped factory support,
+    this test's own mechanics would catch the regression: swap in a fake
+    without ``set_system_prompt_factory`` and the system message would
+    vanish from ``messages_sent_to_provider`` after replay.)
+    """
+    hosted_context = FakeFactoryContextManager()
+
+    async def system_factory() -> str:
+        return "You are the amplifier-agent coding persona. Persist across turns."
+
+    # Mirrors create_session() calling set_system_prompt_factory BEFORE
+    # _run_turn's replay code ever touches the hosted context.
+    await hosted_context.set_system_prompt_factory(system_factory)
+
+    captured = _install_fake_deps(
+        monkeypatch,
+        reply_text="ok",
+        outcome_to_set={"status": "success"},
+        context_module=hosted_context,
+    )
+
+    parent_history = [
+        {"role": "user", "content": "earlier turn: the secret is ZEBRA"},
+        {"role": "assistant", "content": "earlier reply: noted, ZEBRA"},
+    ]
+
+    class _ParentContext:
+        async def get_messages(self) -> list[dict[str, Any]]:
+            return parent_history
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    await orchestrator.execute(
+        "do the work", _ParentContext(), {}, {}, hooks, coordinator=None
+    )
+
+    # Replay actually happened (support#497's fix is doing its job).
+    assert hosted_context.set_messages_calls == [parent_history]
+
+    # And the system framing was NOT clobbered by that replay: it still
+    # leads whatever the hosted session would send to the provider.
+    sent = captured["session"].messages_sent_to_provider
+    assert sent is not None, "execute() never asked the context for a request"
+    assert sent[0] == {
+        "role": "system",
+        "content": "You are the amplifier-agent coding persona. Persist across turns.",
+    }
+    assert sent[1:] == parent_history
