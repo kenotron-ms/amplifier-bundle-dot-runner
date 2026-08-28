@@ -50,6 +50,8 @@ from amplifier_module_loop_pipeline.outcome import StageStatus
 
 from amplifier_module_loop_amplifier_agent import AmplifierAgentOrchestrator
 
+from ._fakes import FakeContextManager
+
 pytest.importorskip(
     "amplifier_agent_lib",
     reason="amplifier-agent is a heavy, Python>=3.12-only peer dependency",
@@ -87,11 +89,20 @@ async def _run_child(prompt: str) -> dict[str, Any]:
     """Run one REAL amplifier-agent invocation, foundation-spawn-shaped."""
     hooks = _CapturingHooks()
     orch = AmplifierAgentOrchestrator(coordinator=MagicMock(), config={})
-    # context=None: this fresh probe has no prior-turn history to replay
-    # (support#497 -- execute() now READS context, so an unused MagicMock here
-    # would be awaited as get_messages() and fail; None is the faithful
-    # "no parent_messages" value for a first turn).
-    output = await orch.execute(prompt, None, {}, {}, hooks, coordinator=None)
+    # Adopted-PR fix: the original PR swapped an unused MagicMock() for
+    # context=None here (correct direction -- execute() now READS context,
+    # so an unused MagicMock would be awaited as get_messages() and fail).
+    # But the kernel never actually passes context=None in a real spawn --
+    # foundation's PreparedBundle.spawn always seeds a REAL, live
+    # ContextManager instance (possibly empty, never bare None) before
+    # execute() runs. An empty FakeContextManager() is the faithful "no
+    # prior-turn history" value for a first turn: it exercises the real
+    # read-path shape (``context.get_messages()`` returns ``[]`` ->
+    # ``_history_from_context`` treats that as "nothing to replay") instead
+    # of short-circuiting on ``context is None``.
+    output = await orch.execute(
+        prompt, FakeContextManager(), {}, {}, hooks, coordinator=None
+    )
 
     return {
         "output": output,

@@ -49,16 +49,28 @@ class FakeHookRegistry:
 
 
 class FakeContextManager:
-    """Faithful double for the ContextManager mount seam (support#497).
+    """Minimal double for the ContextManager mount seam (support#497 replay).
+
+    Honest scope note (adopted-PR review): ``amplifier_core.interfaces.
+    ContextManager`` declares FIVE async methods -- ``add_message``,
+    ``get_messages_for_request``, ``get_messages``, ``set_messages``,
+    ``clear``. This fake implements only TWO of them: ``get_messages`` and
+    ``set_messages``. That is deliberate, not an oversight -- those are the
+    only two the continuity-replay seam under test ever calls
+    (``_history_from_context`` reads the PARENT context via
+    ``get_messages``; ``_run_turn`` replays into the HOSTED context via
+    ``set_messages``). It does not model compaction, the dynamic
+    system-prompt-factory mechanism, or ``get_messages_for_request``
+    filtering -- see ``FakeFactoryContextManager`` below for the one test
+    that actually needs that fuller behavior. Reach for a fuller double
+    (or extend that one) rather than growing this one past what its own
+    tests exercise.
 
     The real context module (context-simple) stores messages as its single
     source of truth: ``set_messages`` writes ``self.messages`` and
-    ``get_messages`` reads it back, and the hosted loop-streaming orchestrator
-    folds those into ``get_messages_for_request`` on every provider call. This
-    fake records ``set_messages`` calls and serves ``get_messages`` from the
-    same list so a hermetic test can assert the continuity handoff without the
-    real amplifier-agent stack. Both methods are async, matching the real
-    ``amplifier_core.interfaces.ContextManager`` protocol.
+    ``get_messages`` reads it back. This fake records ``set_messages`` calls
+    and serves ``get_messages`` from the same list so a hermetic test can
+    assert the continuity handoff without the real amplifier-agent stack.
     """
 
     def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
@@ -73,8 +85,70 @@ class FakeContextManager:
         self.messages = list(messages)
 
 
-class FakeSessionCoordinator:
+class FakeFactoryContextManager:
+    """Models context-simple's dynamic-system-prompt path (the REAL, only
+    mechanism amplifier-agent's own baked-in bundle ever uses -- see
+    ``amplifier_agent_lib/bundle/bundle.md``'s ``context: module:
+    context-simple``, and ``amplifier_module_context_simple.
+    SimpleContextManager``, the module installed at that seam).
+
+    Built for exactly one question raised in PR #3 review (adopted-with-
+    changes): ``_run_turn``'s history replay
+    (``hosted_context.set_messages(history)``) runs AFTER
+    ``prepared.create_session()`` has already seeded the hosted session's
+    system framing. ``create_session()`` prefers
+    ``context.set_system_prompt_factory(factory)`` when the context module
+    supports it (``hasattr(context_manager, "set_system_prompt_factory")``
+    -- see ``amplifier_foundation/bundle/_prepared.py::create_session``),
+    falling back to a static ``add_message({"role": "system", ...})`` only
+    when it does not. context-simple -- the ONLY context module
+    amplifier-agent's bundle ever mounts -- always supports the factory.
+
+    The real ``SimpleContextManager.get_messages_for_request()`` calls the
+    factory fresh on EVERY request and PREPENDS its output, filtering any
+    stored ``role="system"`` message out of ``self.messages`` (unless
+    hook-injected). Critically, a factory-produced system message is NEVER
+    written into ``self.messages`` at all -- so ``set_messages()`` replacing
+    ``self.messages`` wholesale (exactly what history replay does) has
+    nothing of the system framing to clobber. This fake reproduces that
+    subset of the real behavior precisely enough to pin that claim; see
+    ``test_system_framing_survives_history_replay`` in
+    ``test_orchestrator.py``.
+    """
+
     def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+        self._system_prompt_factory: Any = None
+        self.set_messages_calls: list[list[dict[str, Any]]] = []
+
+    async def add_message(self, message: dict[str, Any]) -> None:
+        self.messages.append(message)
+
+    async def set_system_prompt_factory(self, factory: Any) -> None:
+        self._system_prompt_factory = factory
+
+    async def get_messages(self) -> list[dict[str, Any]]:
+        return list(self.messages)
+
+    async def set_messages(self, messages: list[dict[str, Any]]) -> None:
+        self.set_messages_calls.append(list(messages))
+        self.messages = list(messages)
+
+    async def get_messages_for_request(
+        self, token_budget: int | None = None, provider: Any | None = None
+    ) -> list[dict[str, Any]]:
+        """Mirrors SimpleContextManager's factory-mode branch: fresh system
+        message from the factory, prepended to conversation messages with
+        any stored system messages filtered out."""
+        if self._system_prompt_factory is not None:
+            system_content = await self._system_prompt_factory()
+            conversation = [m for m in self.messages if m.get("role") != "system"]
+            return [{"role": "system", "content": system_content}, *conversation]
+        return list(self.messages)
+
+
+class FakeSessionCoordinator:
+    def __init__(self, context_module: Any = None) -> None:
         self.capabilities: dict[str, Any] = {}
         self.mounted_tools: dict[str, Any] = {}
         # Mirrors the coordinator's ``.config`` attribute -- the live session
@@ -90,8 +164,12 @@ class FakeSessionCoordinator:
         # support#497 continuity fix seeds via
         # coordinator.get("context").set_messages(history). Present-but-empty
         # by default; only exercised when execute() is handed a non-empty
-        # parent context.
-        self.context_module = FakeContextManager()
+        # parent context. A test that needs to pin the system-prompt-survival
+        # question (does replay clobber the hosted session's OWN system
+        # framing?) overrides this with a ``FakeFactoryContextManager``.
+        self.context_module = (
+            context_module if context_module is not None else FakeContextManager()
+        )
 
     def get(self, name: str) -> Any:
         """Mount-registry accessor (``coordinator.get``), mirroring the real
@@ -122,8 +200,9 @@ class FakeSession:
         reply_text: str = "",
         outcome_to_set: dict[str, Any] | None = None,
         raise_on_execute: Exception | None = None,
+        context_module: Any = None,
     ) -> None:
-        self.coordinator = FakeSessionCoordinator()
+        self.coordinator = FakeSessionCoordinator(context_module=context_module)
         self._reply_text = reply_text
         self._outcome_to_set = outcome_to_set
         self._raise_on_execute = raise_on_execute
@@ -137,6 +216,14 @@ class FakeSession:
         # every code path this module wires (an ``ApprovalOverride`` of
         # YES or NO) decides before ever inspecting the request.
         self.last_approval_response: dict[str, Any] | None = None
+        # Captured during execute() when the mounted context module exposes
+        # ``get_messages_for_request`` (only ``FakeFactoryContextManager``
+        # does) -- i.e. what the hosted loop-streaming orchestrator would
+        # actually have sent to the provider for this turn. Lets a test pin
+        # the system-prompt-survival question: does history replay clobber
+        # the hosted session's own system framing? See
+        # ``test_system_framing_survives_history_replay``.
+        self.messages_sent_to_provider: list[dict[str, Any]] | None = None
 
     async def __aenter__(self) -> Self:
         return self
@@ -148,6 +235,17 @@ class FakeSession:
         self.prompt_seen = prompt
         if self._raise_on_execute is not None:
             raise self._raise_on_execute
+        # Mirrors what the REAL hosted loop-streaming orchestrator does
+        # before every provider call: ask the mounted context module for
+        # the request-ready message list. Only meaningful for context
+        # doubles that implement it (FakeFactoryContextManager); the plain
+        # FakeContextManager doesn't, so this is a no-op for every other
+        # existing test.
+        get_for_request = getattr(
+            self.coordinator.context_module, "get_messages_for_request", None
+        )
+        if callable(get_for_request):
+            self.messages_sent_to_provider = await get_for_request()
         approval_fn = self.coordinator.capabilities.get("approval.request")
         if approval_fn is not None:
             self.last_approval_response = await approval_fn(
@@ -306,6 +404,7 @@ def make_fake_deps(
     resolved_workspace: str = "fake-default-workspace",
     agents_mount_plan: dict[str, Any] | None = None,
     spawn_sub_session_result: dict[str, Any] | None = None,
+    context_module: Any = None,
 ) -> tuple[SimpleNamespace, dict[str, Any]]:
     """Build a fake ``_load_dependencies()``-shaped namespace + capture dict.
 
@@ -345,6 +444,7 @@ def make_fake_deps(
         reply_text=reply_text,
         outcome_to_set=outcome_to_set,
         raise_on_execute=raise_on_execute,
+        context_module=context_module,
     )
     prepared = FakePreparedBundle(session)
     if agents_mount_plan is not None:
