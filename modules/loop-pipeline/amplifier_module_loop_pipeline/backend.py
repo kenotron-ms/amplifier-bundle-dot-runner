@@ -599,39 +599,43 @@ class AmplifierBackend:
             # mapped to a valid status.  Honor it unconditionally — the child's
             # prose output is preserved in the transcript below but does not
             # override the structured routing signal.
-            session_id = (
-                result.get("session_id") if isinstance(result, dict) else None
-            )
+            session_id = result.get("session_id") if isinstance(result, dict) else None
             if session_id:
                 spawn_outcome.session_id = session_id
-            # output.strip() guard (issue #287): a child can carry an explicit
-            # verdict AND no closing prose (it did its work via tool calls and
-            # ended on a terminal report_outcome).  Appending that exchange puts
-            # an empty turn in the transcript, which
-            # _get_parent_messages_for_thread expands into
-            # {"role": "assistant", "content": ""} for a LATER same-thread spawn
-            # — and some providers reject empty assistant content.
+            # support#498 (supersedes the issue #287 output.strip() guard): a
+            # child can carry an explicit verdict AND no closing prose (it did
+            # its work via tool calls and ended on a terminal report_outcome).
+            # #287 SKIPPED the whole (instruction, output) exchange in that
+            # case, because appending the empty `output` verbatim would
+            # expand — in _get_parent_messages_for_thread — into
+            # {"role": "assistant", "content": ""} for a LATER same-thread
+            # spawn, and some providers reject empty assistant content.
             #
-            # Append NEITHER half, not just the assistant half: a transcript
-            # entry is an indivisible (instruction, output) exchange that the
-            # emission site always expands into a user+assistant PAIR, and every
-            # other empty-output path already appends nothing — the
-            # non-explicit empty-output branch below returns before reaching an
-            # append, and the tool-loop path never appends at all.  Skipping the
-            # whole exchange keeps this consistent with them (and matches the
-            # pre-#286 behavior for an empty-output child).
+            # That guard was too broad: skipping the exchange entirely also
+            # dropped the node's turn from the thread transcript, so a later
+            # same-thread spawn's parent_messages silently omitted the
+            # actor's own prior attempt — its own earlier work (and verdict)
+            # vanished across loop_restart / goal_gate retries (measured:
+            # 5/7 real turns dropped in the reported incident).
             #
-            # The verdict is unaffected: spawn_outcome (status /
-            # preferred_label / is_explicit) is still returned exactly as the
-            # #231 parent-side fix made it.  Only the empty turn stops being
-            # written.
-            if (
-                fidelity == "full"
-                and graph is not None
-                and thread_key is not None
-                and output.strip()
-            ):
-                self._append_to_transcript(thread_key, node.id, instruction, output)
+            # Fix: synthesize a compact, deterministic, non-empty
+            # assistant-content string from the structured outcome (status /
+            # preferred_label / notes) via _synthesize_outcome_output() and
+            # append THAT instead of skipping.  This preserves continuity —
+            # the turn is never dropped — while keeping #287's guarantee
+            # that assistant content is never empty.  The verdict itself
+            # (spawn_outcome: status / preferred_label / is_explicit) is
+            # unaffected — only the transcript's stored `output` differs
+            # from the (empty) raw child output.
+            if fidelity == "full" and graph is not None and thread_key is not None:
+                transcript_output = (
+                    output
+                    if output.strip()
+                    else _synthesize_outcome_output(spawn_outcome)
+                )
+                self._append_to_transcript(
+                    thread_key, node.id, instruction, transcript_output
+                )
             return spawn_outcome
 
         if not output.strip():
@@ -649,6 +653,21 @@ class AmplifierBackend:
                 )
                 if session_id:
                     spawn_outcome.session_id = session_id
+                # support#498: the SAME continuity hole as the explicit-verdict
+                # branch above, reached here when the outcome was instead
+                # recovered from the orchestrator's completion status alone
+                # (no report_outcome tool call — e.g. a clean completion with
+                # empty closing text).  spawn_outcome.notes already describes
+                # what happened ("Child session completed with empty final
+                # message"), so the same synthesis keeps this node's turn
+                # from silently vanishing from the thread transcript too.
+                if fidelity == "full" and graph is not None and thread_key is not None:
+                    self._append_to_transcript(
+                        thread_key,
+                        node.id,
+                        instruction,
+                        _synthesize_outcome_output(spawn_outcome),
+                    )
                 return spawn_outcome
 
             # Genuinely empty: no text, no report_outcome, no success status.
@@ -1303,6 +1322,33 @@ def _outcome_from_structured_output(
         context_updates=ctx_updates,
         is_explicit=False,
     )
+
+
+def _synthesize_outcome_output(outcome: Outcome) -> str:
+    """Synthesize non-empty assistant content for a transcript turn whose
+    child produced no closing prose but carried a recovered Outcome (an
+    explicit ``report_outcome`` verdict, or a status-only spawn completion).
+
+    support#498: appending the empty ``output`` verbatim would either (a)
+    require skipping the transcript turn outright — the pre-fix behavior,
+    which silently dropped the actor's own prior attempt from continuity
+    across ``loop_restart`` / goal-gate retries — or (b) reintroduce
+    ``{"role": "assistant", "content": ""}`` in
+    ``_get_parent_messages_for_thread``, the exact shape issue #287 guarded
+    against because some providers reject empty assistant content.
+
+    This produces a compact, deterministic string derived from the
+    structured outcome instead: ``[reported outcome: <status>[/<label>]]
+    <notes>``. It is guaranteed non-empty: ``StageStatus.value`` is always a
+    non-empty string, so the bracketed prefix alone satisfies that guarantee
+    even when there are no notes or failure_reason to append.
+    """
+    label_part = f"/{outcome.preferred_label}" if outcome.preferred_label else ""
+    notes_part = (outcome.notes or outcome.failure_reason or "").strip()
+    text = f"[reported outcome: {outcome.status.value}{label_part}]"
+    if notes_part:
+        text = f"{text} {notes_part}"
+    return text
 
 
 # Spawn-result status strings that count as a real, non-failing completion.

@@ -403,6 +403,43 @@ silently broken — it never preserved history because session_id is an identity
 not a history pointer. This change restores the spec-mandated behavior. No spec-conformant
 `.dot` file can depend on the broken non-continuity.
 
+**Empty-output turns with a recovered outcome (support#498).** This section's "one
+node-exchange pair per full node" contract did not originally say what happens when a
+node's final `output` is empty but an `Outcome` was still recovered from the spawn result
+— either an explicit `metadata.report_outcome` verdict, or a status-only lifecycle
+completion (both described in §25/§35). The implementation (`backend.py`, issue #287's
+`output.strip()` guard) resolved that silence by skipping the transcript append
+*entirely* in this case, on the reasoning that appending the empty string verbatim would
+expand into `{"role": "assistant", "content": ""}` — a shape some providers reject. That
+was too broad a fix: skipping the append also dropped the node's turn from the
+transcript, so a LATER same-thread node's `parent_messages` silently omitted the actor's
+own prior attempt (measured: 5/7 real turns dropped across `loop_restart` / `goal_gate`
+iterations in the reported incident).
+
+The corrected behavior: the pair is always written for a `full`-fidelity node, with no
+exception for empty output. When `output` is empty and an `Outcome` was recovered, the
+assistant half of the pair is a synthesized, deterministic, non-empty string derived from
+that `Outcome` (`backend._synthesize_outcome_output()`:
+`[reported outcome: <status>[/<preferred_label>]] <notes>`) rather than the empty raw
+`output`. This preserves both invariants at once — the turn is never dropped, and
+assistant content is never empty (issue #287's actual concern). The recovered `Outcome`
+itself (`status` / `preferred_label` / `is_explicit`) is unaffected; only the transcript's
+stored text differs from the raw (empty) child output. Nodes that produce non-empty
+output are unaffected by this fix — the synthesis path is only reachable when `output` is
+empty AND an outcome was recovered from the spawn result.
+
+*Downstream-thread visibility (design note).* Because a synthesized turn is a real
+transcript entry, it participates in `parent_messages` for any LATER node that resolves to
+the same thread key (§5.4). Under the default `previous_node_id or node.id` thread-key
+fallback, a linear `actor -> reviewer` chain with no explicit `thread_id` shares one thread,
+so a same-thread judge/`goal_gate` node now sees `[reported outcome: <status>] …` framed as a
+prior assistant turn — where pre-fix it saw nothing from that exchange. This does NOT affect
+gate routing (`_check_goal_gates` consults the returned `Outcome`, not transcript text), but
+the synthesized verdict string is a more declarative artifact than ordinary prose. A pipeline
+that wants a judge isolated from the actor's own verdict announcements should give the judge
+node a distinct `thread_id` from the node(s) it evaluates (already the recommended pattern for
+independent verification).
+
 ---
 
 ## 13. `thread_id` Is Branch-Local — Same `thread_id` in Sibling Branches Does Not Join Conversations

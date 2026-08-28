@@ -228,6 +228,44 @@ are the current state; these are the reasoning behind it.
 
 ## Changelog
 
+### 2026-08-28 — Bug fix: empty-output `report_outcome` turns no longer vanish from the fidelity=full transcript (amplifier-support#498)
+
+- **Not a new ATX/CAL/ULM row — bug fix restoring the already-documented `specs/EXTENSIONS.md`
+  §12 contract** ("one node-exchange pair per full node"). The issue-#287 `output.strip()`
+  guard (`backend.py`, the `if spawn_outcome is not None and spawn_outcome.is_explicit:` branch)
+  skipped `_append_to_transcript(...)` entirely whenever a full-fidelity node's spawn ended with
+  empty closing prose, even when an explicit `report_outcome` verdict was present. The turn never
+  entered `_thread_transcripts`, so a LATER same-thread spawn's `parent_messages` silently
+  omitted the actor's own prior attempt — measured 5/7 real turns dropped across `loop_restart` /
+  `goal_gate` iterations in the reported incident. The identical hole existed in the neighboring
+  `if not output.strip():` branch (status-only lifecycle completion, no `report_outcome` call at
+  all) — that branch never called `_append_to_transcript` in any case.
+  - **Fix:** synthesize a compact, deterministic, non-empty assistant-content string from the
+    recovered `Outcome` (`backend._synthesize_outcome_output()`:
+    `[reported outcome: <status>[/<preferred_label>]] <notes>`) and append THAT instead of
+    skipping, at both empty-output-with-recovered-outcome sites. This preserves #287's guarantee
+    that assistant content is never empty (`{"role": "assistant", "content": ""}`, which some
+    providers reject) while no longer dropping the turn. The recovered `Outcome` verdict itself
+    (`status` / `preferred_label` / `is_explicit`) is unaffected — only the transcript's stored
+    text differs from the (empty) raw child output.
+  - **`specs/EXTENSIONS.md` §12 amended in place** (not a new numbered entry) — the empty-output
+    synthesis behavior is new specificity for a case §12's prose was previously silent on (it
+    neither documented nor precluded it), so it is recorded directly in §12 rather than as a
+    separate ledger row.
+  - **Tests:**
+    `modules/loop-pipeline/tests/test_backend_report_outcome_empty_output_continuity.py` — 2 new
+    tests, one per empty-output recovery path (explicit `report_outcome` verdict; status-only
+    lifecycle completion). Both proven RED against the unfixed `backend.py` (production edit
+    stashed, re-ran — both failed with 0 transcript turns for node_a) and GREEN with the fix
+    restored.
+  - loop-pipeline suite (`uv sync --extra remote && uv run pytest -q`, provider keys unset):
+    2115 passed, 251 skipped (includes the 2 new tests above). 4 pre-existing
+    `test_engine_must_write.py` failures
+    (mtime-freshness-floor timing assertions) reproduce identically against the unmodified
+    pre-fix `backend.py` (verified via `git stash`) — unrelated to this change, not introduced by
+    it. `ruff check` / `ruff format --check` clean on the two touched/added files; pre-existing
+    lint debt elsewhere in `tests/` (import-sort, `RUF012`) is untouched by this change.
+
 ### 2026-08-26 — CAL-10 DONE: tool:post hook modifications (truncation) reach the LLM again (amplifier-support#485)
 
 - **CAL-10 NEW → DONE — ALIGN.** §5.1's MUST ("tool output exceeds the configured limit, it MUST be
